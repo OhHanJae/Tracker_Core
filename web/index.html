@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TRACK-EYE Controller Configurator</title>
+  <link rel="stylesheet" href="assets/css/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">TE</div>
+        <div>
+          <strong>TRACK-EYE</strong>
+          <span>Controller Configurator</span>
+        </div>
+      </div>
+
+      <div class="controller-summary">
+        <div class="summary-row">
+          <span class="status-dot online"></span>
+          <div>
+            <strong>BPC_LINE_01</strong>
+            <small>192.168.0.210</small>
+          </div>
+        </div>
+        <button class="ghost small" id="changeControllerBtn">컨트롤러 변경</button>
+      </div>
+
+      <nav class="nav" id="sidebarNav">
+        <button class="nav-item active" data-view="dashboard"><span>◫</span>Dashboard</button>
+        <div class="nav-label">CONFIGURATION</div>
+        <button class="nav-item" data-view="controller"><span>⌁</span>Controller</button>
+        <button class="nav-item" data-view="plc"><span>▦</span>PLC</button>
+        <button class="nav-item" data-view="ptm"><span>◎</span>PTM</button>
+        <button class="nav-item" data-view="services"><span>▶</span>Process Manager</button>
+        <button class="nav-item" data-view="process"><span>⏱</span>Watchdog</button>
+        <button class="nav-item" data-view="logging"><span>≡</span>Logging</button>
+        <button class="nav-item" data-view="alarm"><span>!</span>Alarm / Fault</button>
+        <button class="nav-item" data-view="system"><span>⚙</span>System</button>
+        <div class="nav-label">REFERENCE</div>
+        <button class="nav-item" data-view="settings"><span>▤</span>전체 설정 목록</button>
+        <button class="nav-item" data-view="scope"><span>◇</span>설정 책임 범위</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="version-line"><span>Core</span><strong>v1.2.3</strong></div>
+        <div class="version-line"><span>Schema</span><strong>v1.0</strong></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <div class="file-menu-wrap">
+            <button class="toolbar-btn" id="fileMenuBtn">파일 ▾</button>
+            <div class="dropdown hidden" id="fileMenu">
+              <button data-file-action="new">새 파일</button>
+              <button data-file-action="open">파일 불러오기</button>
+              <button data-file-action="save">파일 저장</button>
+              <div class="divider"></div>
+              <button data-file-action="export">설정 내보내기</button>
+            </div>
+          </div>
+          <button class="toolbar-btn" id="discoverBtn">컨트롤러 검색</button>
+          <button class="toolbar-btn" id="connectBtn">연결 해제</button>
+        </div>
+        <div class="topbar-right">
+          <span class="connection-badge"><span class="status-dot online"></span>CONNECTED</span>
+          <button class="secondary" id="saveBtn">저장</button>
+          <button class="primary" id="applyBtn">설정 적용</button>
+        </div>
+      </header>
+
+      <section class="content">
+        <div class="page-head">
+          <div>
+            <h1 id="pageTitle">Dashboard</h1>
+          </div>
+          <div class="page-actions" id="pageActions"></div>
+        </div>
+
+        <div id="viewRoot"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop hidden" id="modalBackdrop">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <div class="eyebrow">UDP BROADCAST DISCOVERY</div>
+          <h2>검색된 컨트롤러</h2>
+        </div>
+        <button class="icon-btn" id="closeModalBtn">×</button>
+      </div>
+      <div class="scan-line"><span></span></div>
+      <div id="controllerResults"></div>
+      <div class="modal-foot">
+        <button class="secondary" id="rescanBtn">다시 검색</button>
+        <button class="primary" id="selectControllerBtn">선택한 컨트롤러 연결</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="external-web-modal hidden" id="externalWebModal" role="dialog" aria-modal="true" aria-labelledby="externalWebModalTitle">
+    <div class="external-web-dialog">
+      <div class="external-web-modal-head">
+        <div>
+          <strong id="externalWebModalTitle">Web UI</strong>
+          <small class="mono" id="externalWebModalUrl"></small>
+        </div>
+        <button class="icon-btn" id="externalWebModalClose" type="button" aria-label="닫기">×</button>
+      </div>
+      <iframe id="externalWebModalFrame" title="External Web UI"></iframe>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <input type="file" id="projectFileInput" accept=".tre" hidden />
+
+  <script src="assets/js/data.js"></script>
+  <script src="assets/js/plc_map_data.js"></script>
+  <script type="module" src="assets/js/app.js"></script>
+</body>
+</html>

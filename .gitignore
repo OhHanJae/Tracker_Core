@@ -1,0 +1,15 @@
+venv/
+.venv/
+.venv-linux/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+logs/*.log
+runtime
+tests
+logs
+datas/global.json
+
