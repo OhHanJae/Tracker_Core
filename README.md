@@ -136,7 +136,7 @@ TCP JSON Lines 방식은 한 줄에 JSON 객체 하나와 LF(`\n`)를 보냅니�
 
 | 항목 | 설명 |
 |---|---|
-| `start_script` | Windows는 `.bat/.cmd/.ps1/.exe`, Linux는 `.sh` 파일 경로 |
+| `start_scripts` | Windows는 `.bat/.cmd/.ps1/.exe`, Linux는 `.sh` 파일 경로 |
 | `stop_script` | 정지용 스크립트 경로, 비워두면 Core가 추적 중인 프로세스를 종료 |
 | `working_dir` | 스크립트 실행 작업 폴더, 비워두면 스크립트 폴더 사용 |
 | `health_type` | `tcp`, `http`, `process`, `none` 중 하나 |

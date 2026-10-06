@@ -218,7 +218,7 @@ function bindDynamicEvents() {
     await pushCommand(cmd, payload);
   }));
 
-  document.querySelectorAll('[data-module-field]').forEach(input => input.addEventListener('change', () => {
+  document.querySelectorAll('[data-module-field]').forEach(input => input.addEventListener('input', () => {
     const module = state.modules.find(m => m.id === input.dataset.moduleId);
     if (module) {
       module[input.dataset.moduleField] = input.type === 'checkbox'

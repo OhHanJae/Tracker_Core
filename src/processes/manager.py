@@ -210,7 +210,7 @@ class ProcessManager:
 
         script = self._script_path(self._script_setting(config, "start"))
         if script is None:
-            raise ValueError(f"start_script is empty: {process_name}")
+            raise ValueError(f"start_scripts is empty: {process_name}")
 
         self._validate_script(script)
         working_dir = self._working_dir(config, script)
@@ -623,7 +623,7 @@ class ProcessManager:
             "name": config.get("name", process_name),
             "process_name": process_name,
             "enabled": bool(config.get("enabled", True)),
-            "start_script": self._script_setting(config, "start") or "",
+            "start_scripts": self._script_setting(config, "start") or "",
             "stop_script": self._script_setting(config, "stop") or "",
             "working_dir": config.get("working_dir", ""),
             "health_type": config.get("health_type", "none"),
@@ -914,7 +914,7 @@ class ProcessManager:
         wrapper_pid: int,
         script: Path,
     ) -> dict[str, Any] | None:
-        """Find the real service PID created by start_script.
+        """Find the real service PID created by start_scripts.
 
         Discovery priority:
         1. PID that owns configured health_port.
@@ -1103,7 +1103,7 @@ class ProcessManager:
             "executable": str(info.get("executable") or ""),
             "command_line": str(info.get("command_line") or ""),
             "health_port": int(config.get("health_port") or 0),
-            "start_script": str(script),
+            "start_scripts": str(script),
         }
 
     def _valid_runtime_record_sync(
@@ -2035,10 +2035,8 @@ class ProcessManager:
 
     @staticmethod
     def _script_setting(config: dict[str, Any], action: str) -> Any:
-        platform = "windows" if os.name == "nt" else "linux"
-        specific = config.get(f"{action}_script_{platform}")
-        if specific is not None and str(specific).strip():
-            return specific
+        if action == "start":
+            return config.get("start_scripts")
         return config.get(f"{action}_script")
 
     def _working_dir(self, config: dict[str, Any], script: Path) -> Path:
