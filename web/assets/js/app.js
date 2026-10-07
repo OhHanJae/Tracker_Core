@@ -1,6 +1,7 @@
 import { renderDashboard } from './dashboard.js';
 import { renderPLC, startPlcRuntime, stopPlcRuntime } from './plc/connection.js';
 import { renderPTM, startPtmRuntime, stopPtmRuntime } from './ptm/connection.js';
+import { renderVision, startVisionRuntime, stopVisionRuntime } from './vision/connection.js';
 import { renderServices } from './service.js';
 import { renderProcess } from './process_manager.js';
 import {
@@ -68,7 +69,8 @@ function renderScope() {
 function render() {
   stopPlcRuntime();
   stopPtmRuntime();
-  const externalFrameView = ['plc', 'ptm'].includes(state.view);
+  stopVisionRuntime();
+  const externalFrameView = ['plc', 'ptm', 'vision'].includes(state.view);
   document.documentElement.classList.toggle('external-frame-view', externalFrameView);
   document.body.classList.toggle('external-frame-view', externalFrameView);
   const [title, desc] = titles[state.view];
@@ -78,15 +80,18 @@ function render() {
   if (state.view === 'dashboard') viewRoot.innerHTML = renderDashboard();
   else if (state.view === 'plc') viewRoot.innerHTML = renderPLC();
   else if (state.view === 'ptm') viewRoot.innerHTML = renderPTM();
+  else if (state.view === 'vision') viewRoot.innerHTML = renderVision();
   else if (state.view === 'process') viewRoot.innerHTML = renderProcess();
   else if (state.view === 'services') viewRoot.innerHTML = renderServices();
   else if (state.view === 'settings') viewRoot.innerHTML = renderAllSettings();
   else if (state.view === 'scope') viewRoot.innerHTML = renderScope();
+  else if (state.view === 'controller') viewRoot.innerHTML = renderControllerSettings();
   else viewRoot.innerHTML = renderSettingsCategory(categoryMap[state.view]);
 
   bindDynamicEvents();
   if (state.view === 'plc') startPlcRuntime();
   if (state.view === 'ptm') startPtmRuntime();
+  if (state.view === 'vision') startVisionRuntime();
 }
 
 async function pushCommand(command, payload = {}) {
@@ -152,6 +157,15 @@ async function applyModuleConfig(module) {
 }
 
 function bindDynamicEvents() {
+  document.querySelectorAll('[data-controller-tab]').forEach(btn => btn.addEventListener('click', () => {
+    state.activeSubgroup.controller = btn.dataset.controllerTab;
+    render();
+    if (btn.dataset.controllerTab === 'network' && !state.networkStatus) refreshNetworkSettings();
+  }));
+  document.getElementById('saveDiscoverySettings')?.addEventListener('click', saveDiscoverySettings);
+  document.getElementById('applyNetworkSettings')?.addEventListener('click', applyNetworkSettings);
+  document.getElementById('confirmNetworkSettings')?.addEventListener('click', confirmNetworkSettings);
+  document.getElementById('refreshNetworkSettings')?.addEventListener('click', refreshNetworkSettings);
   document.querySelectorAll('[data-subgroup]').forEach(btn => btn.addEventListener('click', () => {
     state.activeSubgroup[state.view] = btn.dataset.subgroup;
     render();
@@ -297,6 +311,103 @@ function downloadFile(text, filename) {
   URL.revokeObjectURL(url);
 }
 
+function renderControllerSettings() {
+  const tab = state.activeSubgroup.controller || 'basic';
+  const tabs = [['basic', '기본 설정'], ['network', '네트워크'], ['discovery', 'Discovery']];
+  const nav = `<div class="tabs">${tabs.map(([id, title]) => `<button class="tab ${tab === id ? 'active' : ''}" data-controller-tab="${id}">${title}</button>`).join('')}</div>`;
+  if (tab === 'basic') {
+    const content = renderSettingsCategory(categoryMap.controller, '기본 설정', true);
+    state.activeSubgroup.controller = 'basic';
+    return nav + content;
+  }
+  if (tab === 'discovery') {
+    const d = state.coreConfig?.discovery || {};
+    return nav + `<div class="card form-card"><div class="form-section-title">Core Discovery</div><div class="form-grid">
+      <label>사용 <input id="discoveryEnabled" type="checkbox" ${d.enabled ? 'checked' : ''}></label>
+      <label>장치 이름 <input id="discoveryName" value="${esc(d.name || '')}"></label>
+      <label>방식 <select id="discoveryMethod"><option value="udp_broadcast" ${d.method === 'udp_broadcast' ? 'selected' : ''}>UDP Broadcast</option><option value="manual" ${d.method === 'manual' ? 'selected' : ''}>Manual</option></select></label>
+      <label>인터페이스 <input id="discoveryInterface" value="${esc(d.interface || 'eth0')}"></label>
+      <label>브로드캐스트 주소 <input id="discoveryBroadcast" value="${esc(d.broadcast_address || '255.255.255.255')}"></label>
+      <label>UDP 포트 <input id="discoveryPort" type="number" min="1" max="65535" value="${esc(d.port || 37020)}"></label>
+      <label>검색 대기 (ms) <input id="discoveryTimeout" type="number" min="100" value="${esc(d.timeout_ms || 1000)}"></label>
+      <label>재시도 <input id="discoveryRetries" type="number" min="1" max="5" value="${esc(d.retries || 2)}"></label>
+    </div><button id="saveDiscoverySettings">Discovery 설정 저장</button></div>`;
+  }
+  const n = state.networkStatus || {};
+  const pending = n.pending ? `<p>네트워크 변경 확인 대기 중 (60초 안에 확인하지 않으면 자동 복구)</p><button id="confirmNetworkSettings">현재 네트워크 설정 확인</button>` : '';
+  const networkMessage = n.error || (n.supported === false ? 'RDK Linux / NetworkManager에서만 지원' : n.connection || '설정 조회 중');
+  return nav + `<div class="card form-card"><div class="form-section-title">RDK eth0 · NetworkManager</div><div class="form-grid">
+    <label>NIC <input value="${esc(n.interface || 'eth0')}" readonly></label>
+    <label>MAC <input value="${esc(n.mac || '')}" readonly></label>
+    <label>IPv4 방식 <select id="networkMethod"><option value="manual" ${n.method === 'manual' ? 'selected' : ''}>고정 IP</option><option value="auto" ${n.method === 'auto' ? 'selected' : ''}>DHCP</option></select></label>
+    <label>IP / Prefix <input id="networkAddress" value="${esc(n.address || '')}" placeholder="192.168.0.210/24"></label>
+    <label>Gateway <input id="networkGateway" value="${esc(n.gateway || '')}"></label>
+    <label>DNS (쉼표 구분) <input id="networkDns" value="${esc((n.dns || []).join(', '))}"></label>
+    <label>MTU (0=자동) <input id="networkMtu" type="number" min="0" max="9000" value="${esc(n.mtu ?? '0')}"></label>
+  </div><p id="networkStatusText">${esc(networkMessage)}</p>
+  <button id="refreshNetworkSettings" class="secondary">현재 설정 조회</button>
+  <button id="applyNetworkSettings">RDK 네트워크 적용</button>${pending}</div>`;
+}
+
+async function saveDiscoverySettings() {
+  try {
+    const d = {
+      enabled: document.getElementById('discoveryEnabled').checked,
+      name: document.getElementById('discoveryName').value.trim(),
+      method: document.getElementById('discoveryMethod').value,
+      interface: document.getElementById('discoveryInterface').value.trim(),
+      broadcast_address: document.getElementById('discoveryBroadcast').value.trim(),
+      port: Number(document.getElementById('discoveryPort').value),
+      timeout_ms: Number(document.getElementById('discoveryTimeout').value),
+      retries: Number(document.getElementById('discoveryRetries').value),
+    };
+    state.coreConfig = await apiRequest('/api/config', { method: 'PATCH', body: JSON.stringify({ discovery: d }) });
+    showToast('Discovery 설정을 저장했습니다.');
+    render();
+  } catch (error) { showToast(`Discovery 저장 실패: ${error.message}`); }
+}
+
+async function refreshNetworkSettings() {
+  try {
+    state.networkStatus = await coreCommand('network.status');
+    if (state.view === 'controller' && state.activeSubgroup.controller === 'network') render();
+  } catch (error) { showToast(`네트워크 조회 실패: ${error.message}`); }
+}
+
+async function applyNetworkSettings() {
+  const params = {
+    method: document.getElementById('networkMethod').value,
+    address: document.getElementById('networkAddress').value.trim(),
+    gateway: document.getElementById('networkGateway').value.trim(),
+    dns: document.getElementById('networkDns').value.trim(),
+    mtu: document.getElementById('networkMtu').value.trim(),
+  };
+  const nextUrl = params.method === 'manual'
+    ? `${window.location.protocol}//${params.address.split('/')[0]}${window.location.port ? `:${window.location.port}` : ''}${window.location.pathname}?network_pending=1`
+    : '';
+  try {
+    const result = await coreCommand('network.apply', params);
+    state.networkStatus = { ...(state.networkStatus || {}), pending: true };
+    render();
+    showToast('새 IP에서 60초 안에 설정을 확인하세요.');
+    if (nextUrl) setTimeout(() => window.location.assign(nextUrl), 1500);
+    return result;
+  } catch (error) {
+    if (nextUrl && error instanceof TypeError) {
+      showToast('연결이 변경되었습니다. 새 IP로 이동합니다.');
+      setTimeout(() => window.location.assign(nextUrl), 2000);
+    } else showToast(`네트워크 적용 실패: ${error.message}`);
+  }
+}
+
+async function confirmNetworkSettings() {
+  try {
+    await coreCommand('network.confirm');
+    showToast('RDK 네트워크 설정을 확정했습니다.');
+    await refreshNetworkSettings();
+  } catch (error) { showToast(`네트워크 확인 실패: ${error.message}`); }
+}
+
 async function saveTextFile(text, { suggestedName, description, extension }) {
   if ('showSaveFilePicker' in window) {
     const handle = await window.showSaveFilePicker({
@@ -390,30 +501,42 @@ document.getElementById('applyBtn').addEventListener('click', async () => {
 
 const backdrop = document.getElementById('modalBackdrop');
 const controllerResults = document.getElementById('controllerResults');
-const controllers = [
-  { name: 'BPC_LINE_01', id: 'TRK-A8F21C', ip: '192.168.0.210', mac: 'A4:11:62:9C:2D:01', version: '1.0.3', state: 'ONLINE' },
-  { name: 'BPC_LINE_02', id: 'TRK-C7D312', ip: '192.168.0.211', mac: 'A4:11:62:9C:2D:02', version: '1.0.3', state: 'ONLINE' },
-  { name: 'TRACKER_DEV', id: 'TRK-D19F04', ip: '192.168.0.220', mac: 'A4:11:62:9C:2D:0A', version: '1.0.2', state: 'ONLINE' },
-];
+let controllers = [];
 
 function renderControllers() {
-  controllerResults.innerHTML = controllers.map((c, i) => `<label class="controller-result ${state.selectedController === i ? 'selected' : ''}"><input type="radio" name="ctrl" ${state.selectedController === i ? 'checked' : ''} value="${i}"><div><strong>${c.name}</strong><small>${c.id} · ${c.mac}</small></div><div><strong>${c.ip}</strong><small>Core v${c.version}</small></div>${statusBadge(c.state)}</label>`).join('');
+  controllerResults.innerHTML = controllers.length ? controllers.map((c, i) => `<label class="controller-result ${state.selectedController === i ? 'selected' : ''}"><input type="radio" name="ctrl" ${state.selectedController === i ? 'checked' : ''} value="${i}"><div><strong>${esc(c.name)}</strong><small>${esc(c.id)}</small></div><div><strong>${esc(c.ip)}</strong><small>Web :${esc(c.web_port)}</small></div>${statusBadge('ONLINE')}</label>`).join('') : '<p>검색된 Core가 없습니다.</p>';
   controllerResults.querySelectorAll('input').forEach(r => r.addEventListener('change', () => {
     state.selectedController = Number(r.value);
     renderControllers();
   }));
 }
 
+async function scanControllers() {
+  controllerResults.textContent = '검색 중...';
+  try {
+    controllers = await coreCommand('discovery.scan');
+    state.selectedController = 0;
+    renderControllers();
+  } catch (error) { controllerResults.textContent = `검색 실패: ${error.message}`; }
+}
+
 function openDiscovery() {
   renderControllers();
   backdrop.classList.remove('hidden');
+  scanControllers();
 }
 
 document.getElementById('discoverBtn').addEventListener('click', openDiscovery);
 document.getElementById('changeControllerBtn').addEventListener('click', openDiscovery);
 document.getElementById('closeModalBtn').addEventListener('click', () => backdrop.classList.add('hidden'));
-document.getElementById('rescanBtn').addEventListener('click', () => { renderControllers(); showToast('UDP Broadcast 재검색을 시뮬레이션했습니다.'); });
-document.getElementById('selectControllerBtn').addEventListener('click', () => { backdrop.classList.add('hidden'); showToast(`${controllers[state.selectedController].name} 컨트롤러를 선택했습니다.`); });
+document.getElementById('rescanBtn').addEventListener('click', scanControllers);
+document.getElementById('selectControllerBtn').addEventListener('click', () => {
+  const selected = controllers[state.selectedController];
+  if (!selected) return;
+  const port = Number(selected.web_port || selected.core_port);
+  if (!selected.ip || !Number.isInteger(port) || port < 1 || port > 65535) return;
+  window.location.assign(`http://${selected.ip}:${port}/`);
+});
 backdrop.addEventListener('click', e => { if (e.target === backdrop) backdrop.classList.add('hidden'); });
 
 const connectBtn = document.getElementById('connectBtn');
@@ -432,9 +555,16 @@ connectBtn.addEventListener('click', async () => {
   render();
 });
 
+if (new URLSearchParams(window.location.search).has('network_pending')) {
+  state.view = 'controller';
+  state.activeSubgroup.controller = 'network';
+  document.querySelectorAll('.nav-item').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.view === 'controller'));
+}
 loadCoreState({ silent: true }).finally(() => {
   connectBtn.textContent = state.apiOnline ? '연결 해제' : '연결';
   render();
+  if (state.view === 'controller' && state.activeSubgroup.controller === 'network') refreshNetworkSettings();
 });
 setInterval(() => {
   if (!state.apiOnline && !state.connected) return;

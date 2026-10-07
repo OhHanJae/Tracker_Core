@@ -168,6 +168,19 @@ TCP JSON Lines 방식은 한 줄에 JSON 객체 하나와 LF(`\n`)를 보냅니�
 | `settings/vision` | 비전 서버별 설정 |
 | `web` | Core HTTP 서버가 제공하는 관리 화면 |
 
+## Discovery, 네트워크, Vision 준비
+
+- Core는 `discovery.enabled=true`일 때 UDP `37020`에서 검색 요청을 받고 5초마다 알림을 보냅니다. 외부 PC는 같은 LAN에서 아래 JSON을 `discovery.broadcast_address:discovery.port`로 UDP 전송하고 응답을 수신하면 됩니다. Controller > Discovery에서 이름, 인터페이스, 주소, 포트, 대기 시간과 재시도를 저장할 수 있습니다. Core 웹 화면의 검색도 같은 프로토콜을 사용합니다.
+
+```json
+{"protocol":"tracker-core-discovery","version":1,"type":"discover"}
+```
+
+응답은 `type="offer"`이며 `id`, `name`, `ip`, `core_port`, `web_port`를 포함합니다. 브로드캐스트는 동일 서브넷을 대상으로 하므로 라우터를 넘어 검색하려면 별도 경로가 필요합니다.
+
+- RDK 네트워크 탭은 NetworkManager가 관리하는 `eth0`의 IPv4 주소/게이트웨이/DNS/MTU를 조회·적용합니다. `network.apply` 후 60초 안에 새 주소에서 `network.confirm`을 호출해야 프로필에 저장됩니다. 확인하지 않으면 NetworkManager 체크포인트가 변경을 되돌립니다. Core 실행 계정에 NetworkManager 설정 변경 권한이 필요합니다.
+- Vision TCP는 기존 JSON Lines의 `vision.status`를 200ms 백그라운드 조회로 사용합니다. Process Manager에서 Vision 서버 IP/TCP 포트/Web 포트를 설정합니다. Web 포트 0은 iframe 미연결입니다. Vision 앱이 준비되기 전까지 `vision.enabled=false`이며, `runtime.orchestration_enabled=false`로 PLC의 추적 시작/정지 전달도 비활성입니다. 활성화하면 PLC `TRACKING_ENABLE` 변화에 따라 `tracking.start`/`tracking.stop`을 한 번씩 요청하고 결과는 `orchestration.status`에서 확인할 수 있습니다.
+
 ## 안전 동작
 
 PLC `FORCE_STOP=1` 또는 `RUN_ENABLE=0`이면 코어는 PTM 서비스에 `motion.stop`, Laser 서비스에 `laser.off`를 보냅니다. 안전 인증 E-Stop 대체 기능은 아닙니다.

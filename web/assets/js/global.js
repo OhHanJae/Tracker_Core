@@ -30,6 +30,7 @@ const titles = {
   controller: ['Controller', '검색, 기본 정보, 네트워크 등 컨트롤러 전역 설정입니다.'],
   plc: ['PLC', 'XGT 전용 통신, D 디바이스 주소, PLC Data Map, 공유 메모리를 관리합니다.'],
   ptm: ['PTM', 'PTM Web 화면을 표시합니다.'],
+  vision: ['Vision', 'Vision Web 화면과 연결 상태를 표시합니다.'],
   services: ['Process Manager', '프로세스 설정과 실행·중지·재시작을 관리합니다.'],
   process: ['Watchdog', '프로세스별 자동 재시작과 Watchdog 상태를 관리합니다.'],
   logging: ['Logging', '운영 로그, 패킷 로그, 설정 변경 이력을 관리합니다.'],
@@ -328,6 +329,16 @@ function buildModulePatch(module) {
       web_host: tcpHost,
       web_port: Number(module.webPort || state.coreConfig?.motor?.web_port || 8080),
     };
+  } else if (configKey === 'vision') {
+    const webPort = Number(module.webPort || 0);
+    patch.vision = {
+      host: tcpHost,
+      port: tcpPort,
+      enabled: module.enabled !== false,
+      web_host: tcpHost,
+      web_port: webPort,
+      web_enabled: webPort > 0,
+    };
   }
   return patch;
 }
@@ -386,10 +397,12 @@ function syncModulesFromCore() {
       : endpointForProcess(proc, old);
     const tcpConfig = configKey === 'plc_gateway'
       ? state.coreConfig?.xgt?.control
-      : configKey === 'ptm' ? state.coreConfig?.motor : null;
+      : configKey === 'ptm' ? state.coreConfig?.motor
+        : configKey === 'vision' ? state.coreConfig?.vision : null;
     const webConfig = configKey === 'plc_gateway'
       ? state.coreConfig?.xgt?.web
-      : configKey === 'ptm' ? state.coreConfig?.motor : null;
+      : configKey === 'ptm' ? state.coreConfig?.motor
+        : configKey === 'vision' ? state.coreConfig?.vision : null;
     return {
       ...old,
       id: displayModuleId(configKey),
@@ -582,7 +595,7 @@ function renderSettingsForm(rows, title) {
   </div>`;
 }
 
-function renderSettingsCategory(categories, forcedSubgroup = null) {
+function renderSettingsCategory(categories, forcedSubgroup = null, hideTabs = false) {
   const cats = Array.isArray(categories) ? categories : [categories];
   const rows = state.settings.filter(x => cats.includes(x['대분류']));
   if (!rows.length) return `<div class="card empty">표시할 설정이 없습니다.</div>`;
@@ -594,7 +607,7 @@ function renderSettingsCategory(categories, forcedSubgroup = null) {
   const active = forcedSubgroup || state.activeSubgroup[state.view] || subgroups[0];
   state.activeSubgroup[state.view] = active;
   const filtered = rows.filter(x => x['중분류'] === active);
-  return `<div class="tabs">${subgroups.map(s => `<button class="tab ${s === active ? 'active' : ''}" data-subgroup="${esc(s)}">${esc(state.view === 'controller' && s === '기본 설정' ? '기본설정' : s)}</button>`).join('')}</div>
+  return `${hideTabs ? '' : `<div class="tabs">${subgroups.map(s => `<button class="tab ${s === active ? 'active' : ''}" data-subgroup="${esc(s)}">${esc(state.view === 'controller' && s === '기본 설정' ? '기본설정' : s)}</button>`).join('')}</div>`}
     ${renderSettingsForm(filtered, active)}`;
 }
 

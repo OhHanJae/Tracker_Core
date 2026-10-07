@@ -23,6 +23,18 @@ class CoreServerSettings:
 
 
 @dataclass
+class DiscoverySettings:
+    enabled: bool = True
+    method: str = "udp_broadcast"
+    interface: str = "eth0"
+    broadcast_address: str = "255.255.255.255"
+    port: int = 37020
+    timeout_ms: int = 1000
+    retries: int = 2
+    name: str = "Tracker Core"
+
+
+@dataclass
 class TcpEndpointSettings:
     host: str = "127.0.0.1"
     port: int = 8765
@@ -76,6 +88,9 @@ class MotorSettings:
 class VisionSettings:
     host: str = "127.0.0.1"
     port: int = 8767
+    web_host: str = "127.0.0.1"
+    web_port: int = 0
+    web_enabled: bool = False
     timeout_s: float = 1.0
     enabled: bool = False
     camera_count: int = 4
@@ -97,6 +112,8 @@ class LaserSettings:
 
 @dataclass
 class RuntimeSettings:
+    orchestration_enabled: bool = False
+    vision_status_max_age_ms: int = 1500
     plc_heartbeat_warn_ms: int = 1000
     plc_heartbeat_fault_ms: int = 3000
     position_stable_ms: int = 300
@@ -212,6 +229,7 @@ def _default_command_map() -> dict[str, dict[str, Any]]:
 @dataclass
 class AppSettings:
     core: CoreServerSettings = field(default_factory=CoreServerSettings)
+    discovery: DiscoverySettings = field(default_factory=DiscoverySettings)
     xgt: XgtSettings = field(default_factory=XgtSettings)
     motor: MotorSettings = field(default_factory=MotorSettings)
     laser: LaserSettings = field(default_factory=LaserSettings)
@@ -263,6 +281,7 @@ def settings_from_dict(data: dict[str, Any]) -> AppSettings:
     merged = _deep_merge(default_data, data)
     return AppSettings(
         core=_coerce_dataclass(CoreServerSettings, merged["core"]),
+        discovery=_coerce_dataclass(DiscoverySettings, merged["discovery"]),
         xgt=XgtSettings(
             control=_coerce_dataclass(TcpEndpointSettings, merged["xgt"]["control"]),
             web=_coerce_dataclass(TcpEndpointSettings, merged["xgt"]["web"]),

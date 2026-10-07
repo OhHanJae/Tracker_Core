@@ -8,13 +8,13 @@ import {
 } from './global.js';
 
 function communicationFields(module) {
-  if (!['plc', 'ptm'].includes(module.id)) {
+  if (!['plc', 'ptm', 'vision'].includes(module.id)) {
     return `<label><span>Health Endpoint</span><input class="mono" data-module-id="${esc(module.id)}" data-module-field="endpoint" value="${esc(module.endpoint || '')}" placeholder="127.0.0.1:8766"></label>`;
   }
   return `
     <label><span>Server IP (TCP / Web)</span><input class="mono" data-module-id="${esc(module.id)}" data-module-field="tcpHost" value="${esc(module.tcpHost || module.webHost || '')}" placeholder="127.0.0.1"></label>
     <label><span>TCP Server Port</span><input class="mono" type="number" min="1" max="65535" data-module-id="${esc(module.id)}" data-module-field="tcpPort" value="${esc(module.tcpPort || '')}"></label>
-    <label><span>Web Server Port</span><input class="mono" type="number" min="1" max="65535" data-module-id="${esc(module.id)}" data-module-field="webPort" value="${esc(module.webPort || '')}"></label>`;
+    <label><span>Web Server Port</span><input class="mono" type="number" min="0" max="65535" data-module-id="${esc(module.id)}" data-module-field="webPort" value="${esc(module.webPort || '')}" placeholder="${module.id === 'vision' ? '미정 (0=비활성)' : ''}"></label>`;
 }
 
 export function renderServices() {

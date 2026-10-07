@@ -17,6 +17,9 @@ from src.common.settings import (
     save_settings,
 )
 from src.common.network import client_connect_host
+from src.common.discovery import DiscoveryService, validate_discovery
+from src.common.network_manager import NetworkManager
+from src.core.orchestration import CoreOrchestrator
 from src.common.system_resources import SystemResourceMonitor
 from src.common.status import (
     AlarmBook,
@@ -96,6 +99,9 @@ class CoreApplication:
         self._stop_event = asyncio.Event()
         self._started = False
         self.system_resources = SystemResourceMonitor(ROOT_DIR)
+        self.discovery = DiscoveryService(self.settings.discovery, self.settings.core.port,
+                                          self.settings.core.http_port or self.settings.core.port)
+        self.network_manager = NetworkManager("eth0")
 
         self._rebuild_clients()
         self._last_plc_heartbeat = 0
@@ -116,6 +122,7 @@ class CoreApplication:
             self.motor_api,
         )
         self.vision_service = VisionDeviceService(self.settings.vision, self.vision_api)
+        self.orchestrator = CoreOrchestrator(self.vision_service)
         self.devices = DeviceRegistry(
             [self.ptm_service, self.laser_service, self.vision_service]
         )
@@ -161,7 +168,7 @@ class CoreApplication:
             self.settings.vision.host,
             self.settings.vision.port,
             self.settings.vision.timeout_s,
-            "ping",
+            self.settings.vision.status_command,
         )
         add(
             "laser",
@@ -173,14 +180,27 @@ class CoreApplication:
         return endpoints
 
     async def _replace_settings(self, settings: AppSettings) -> None:
+        validate_discovery(settings.discovery)
+        restart_discovery = (
+            settings.discovery != self.settings.discovery
+            or settings.core.port != self.settings.core.port
+            or settings.core.http_port != self.settings.core.http_port
+        )
+        if hasattr(self, "orchestrator"):
+            await self.orchestrator.stop()
         old_devices = getattr(self, "devices", None)
         old_plc_memory = getattr(self, "plc_memory", None)
         if old_devices is not None:
             await old_devices.stop_all()
         if old_plc_memory is not None:
             old_plc_memory.close()
+        if restart_discovery:
+            await self.discovery.stop()
 
         self.settings = settings
+        if restart_discovery:
+            self.discovery = DiscoveryService(settings.discovery, settings.core.port,
+                                              settings.core.http_port or settings.core.port)
         self._server.static_root = resolve_app_path(self.settings.paths.web_dir)
         self._server.allow_remote_process_control = settings.core.allow_remote_process_control
         if self._http_server is not None:
@@ -195,6 +215,8 @@ class CoreApplication:
             # buttons; reconcile here only applies retire/disable changes.
             await self.process_manager.reconcile(start_missing=False)
             await self.devices.start_all()
+            if restart_discovery:
+                await self.discovery.start()
 
     async def start(self) -> None:
         if self.settings.xgt.shared_memory.configure_gateway_on_start:
@@ -211,6 +233,7 @@ class CoreApplication:
         await self.process_manager.reconcile()
         self.process_manager.start_watchdog()
         await self.devices.start_all()
+        await self.discovery.start()
         self._run_task = asyncio.create_task(self._run_loop())
         self._started = True
         LOGGER.info(
@@ -234,6 +257,9 @@ class CoreApplication:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
         await self.devices.stop_all()
+        await self.orchestrator.stop()
+        await self.discovery.stop()
+        await self.network_manager.cancel()
         with contextlib.suppress(Exception):
             await self.process_manager.shutdown()
         await self._server.stop()
@@ -261,6 +287,9 @@ class CoreApplication:
             await asyncio.sleep(delay_ms / 1000)
 
     async def _cycle(self) -> None:
+        if self.settings.runtime.orchestration_enabled:
+            await self.orchestrator.run_cycle(self)
+            return
         now = now_ms()
         self._read_plc_input(now)
         self._update_plc_heartbeat_alarm(now)
@@ -328,7 +357,9 @@ class CoreApplication:
 
         vision_state = self.vision_service.state
         self.vision_snapshot = self.vision_service.snapshot_value
-        if vision_state.poll_count and not vision_state.online:
+        stale = bool(vision_state.last_ok_ms and now_ms() - vision_state.last_ok_ms >
+                     self.settings.runtime.vision_status_max_age_ms)
+        if vision_state.poll_count and (not vision_state.online or stale):
             self.vision_snapshot = VisionSnapshot(online=False)
             self.alarms.set_fault_word(
                 DeviceSummaryBit.VISION_COMMON,
@@ -711,24 +742,52 @@ class CoreApplication:
             if command == "get_status":
                 processes = await self.process_manager.status_all()
                 status = self.status_snapshot(processes)
-                xgt_web, ptm_web = await asyncio.gather(
+                xgt_web, ptm_web, vision_web = await asyncio.gather(
                     self._xgt_web_status(),
                     self._ptm_web_status(),
+                    self._vision_web_status(),
                 )
                 status["http_communication"] = {
                     "plc": xgt_web,
                     "ptm": ptm_web,
+                    "vision": vision_web,
                 }
                 return JsonTcpResponse(True, status)
             if command == "get_devices":
                 return JsonTcpResponse(True, self.devices.snapshot())
+            if command == "orchestration.status":
+                return JsonTcpResponse(True, {"enabled": self.settings.runtime.orchestration_enabled,
+                                               **self.orchestrator.snapshot()})
             if command == "get_processes":
                 return JsonTcpResponse(True, await self.process_manager.status_all())
             if command == "get_config":
                 return JsonTcpResponse(True, self.settings.to_dict())
+            if command == "discovery.scan":
+                return JsonTcpResponse(True, await self.discovery.scan())
+            if command == "discovery.status":
+                return JsonTcpResponse(True, {"enabled": self.settings.discovery.enabled,
+                                               "listening": self.discovery.transport is not None,
+                                               "port": self.settings.discovery.port})
+            if command == "network.status":
+                return JsonTcpResponse(True, await self.network_manager.status())
+            if command == "network.apply":
+                return JsonTcpResponse(True, await self.network_manager.apply(params))
+            if command == "network.confirm":
+                result = await self.network_manager.confirm()
+                try:
+                    await self.discovery.stop()
+                    await self.discovery.start()
+                except Exception as exc:
+                    LOGGER.warning("Discovery restart after network change failed: %s", exc)
+                    result["discovery_error"] = str(exc)
+                return JsonTcpResponse(True, result)
+            if command == "network.cancel":
+                await self.network_manager.cancel()
+                return JsonTcpResponse(True, {"cancelled": True})
             if command == "update_config":
                 patch = params.get("patch")
                 new_settings = apply_settings_patch(self.settings, patch)
+                validate_discovery(new_settings.discovery)
                 ensure_data_directories(new_settings)
                 save_settings(new_settings, self.settings_path)
                 await self._replace_settings(new_settings)
@@ -748,6 +807,8 @@ class CoreApplication:
                 return JsonTcpResponse(True, await self._xgt_web_status())
             if command == "ptm.web_status":
                 return JsonTcpResponse(True, await self._ptm_web_status())
+            if command == "vision.web_status":
+                return JsonTcpResponse(True, await self._vision_web_status())
             if command == "xgt.shared_memory":
                 return JsonTcpResponse(True, self._xgt_shared_memory_snapshot())
             if command in {"broadcast", "broadcast.ping", "process.broadcast"}:
@@ -938,6 +999,33 @@ class CoreApplication:
             _reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, port),
                 timeout=min(self.settings.motor.timeout_s, 0.75),
+            )
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+            result["online"] = True
+        except Exception as exc:
+            result["error"] = str(exc) or "connection failed"
+        return result
+
+    async def _vision_web_status(self) -> dict[str, Any]:
+        web = self.settings.vision
+        host = client_connect_host(web.web_host)
+        enabled = bool(web.enabled and web.web_enabled and web.web_port)
+        url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        result: dict[str, Any] = {
+            "enabled": enabled,
+            "url": f"http://{url_host}:{web.web_port}/" if web.web_port else "",
+            "online": False,
+            "error": None,
+        }
+        if not enabled:
+            result["error"] = "Vision Web UI is not configured or enabled"
+            return result
+        try:
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, web.web_port),
+                timeout=min(web.timeout_s, 0.75),
             )
             writer.close()
             with contextlib.suppress(Exception):
