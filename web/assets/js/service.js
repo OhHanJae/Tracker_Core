@@ -12,9 +12,8 @@ function communicationFields(module) {
     return `<label><span>Health Endpoint</span><input class="mono" data-module-id="${esc(module.id)}" data-module-field="endpoint" value="${esc(module.endpoint || '')}" placeholder="127.0.0.1:8766"></label>`;
   }
   return `
-    <label><span>TCP Server Host</span><input class="mono" data-module-id="${esc(module.id)}" data-module-field="tcpHost" value="${esc(module.tcpHost || '')}" placeholder="127.0.0.1"></label>
+    <label><span>Server IP (TCP / Web)</span><input class="mono" data-module-id="${esc(module.id)}" data-module-field="tcpHost" value="${esc(module.tcpHost || module.webHost || '')}" placeholder="127.0.0.1"></label>
     <label><span>TCP Server Port</span><input class="mono" type="number" min="1" max="65535" data-module-id="${esc(module.id)}" data-module-field="tcpPort" value="${esc(module.tcpPort || '')}"></label>
-    <label><span>Web Server Host</span><input class="mono" data-module-id="${esc(module.id)}" data-module-field="webHost" value="${esc(module.webHost || '')}" placeholder="127.0.0.1"></label>
     <label><span>Web Server Port</span><input class="mono" type="number" min="1" max="65535" data-module-id="${esc(module.id)}" data-module-field="webPort" value="${esc(module.webPort || '')}"></label>`;
 }
 

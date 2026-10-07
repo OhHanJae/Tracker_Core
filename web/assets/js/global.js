@@ -317,7 +317,7 @@ function buildModulePatch(module) {
     patch.xgt = {
       control: { host: tcpHost, port: tcpPort },
       web: {
-        host: normalizeConnectHost(module.webHost || state.coreConfig?.xgt?.web?.host || '127.0.0.1'),
+        host: tcpHost,
         port: Number(module.webPort || state.coreConfig?.xgt?.web?.port || 5051),
       },
     };
@@ -325,7 +325,7 @@ function buildModulePatch(module) {
     patch.motor = {
       host: tcpHost,
       port: tcpPort,
-      web_host: normalizeConnectHost(module.webHost || state.coreConfig?.motor?.web_host || '127.0.0.1'),
+      web_host: tcpHost,
       web_port: Number(module.webPort || state.coreConfig?.motor?.web_port || 8080),
     };
   }
