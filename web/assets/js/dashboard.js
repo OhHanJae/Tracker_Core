@@ -102,6 +102,7 @@ export function renderDashboard() {
           <tbody>${[
             ['PLC Web', state.httpCommunication?.plc],
             ['PTM Web', state.httpCommunication?.ptm],
+            ['Vision Web', state.httpCommunication?.vision],
           ].map(([name, item]) => `<tr><td>${esc(name)}</td><td>${esc(item?.url || 'N/A')}</td><td>${statusBadge(item?.online ? 'Online' : 'Offline')}</td><td>${esc(item?.error || (item?.online ? 'Reachable' : 'N/A'))}</td></tr>`).join('')}</tbody>
         </table></div>
       </div>

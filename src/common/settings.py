@@ -102,7 +102,7 @@ class MotorSettings:
 @dataclass
 class VisionSettings:
     host: str = "127.0.0.1"
-    port: int = 8767
+    port: int = 8768
     web_host: str = "127.0.0.1"
     web_port: int = 0
     web_enabled: bool = False
@@ -185,7 +185,7 @@ def _default_process_modules() -> dict[str, dict[str, Any]]:
             "working_dir": "",
             "health_type": "tcp",
             "health_host": "127.0.0.1",
-            "health_port": 8767,
+            "health_port": 8768,
             "auto_restart": False,
         },
         "laser": {
