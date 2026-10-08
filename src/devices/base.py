@@ -160,4 +160,6 @@ class DeviceRegistry:
         service = self.get(device_id)
         if service is None:
             raise ValueError(f"unknown device: {device_id}")
+        if not service.state.enabled:
+            raise ValueError(f"device is disabled: {device_id}")
         return await service.command(command, params or {})

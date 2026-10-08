@@ -72,11 +72,11 @@ function updateArea(area, snapshot) {
   });
 }
 
-function setMonitorState(online, message) {
+function setMonitorState(online, message, disabled = false) {
   const badge = document.getElementById('shmMonitorStatus');
   if (badge) {
-    badge.className = `badge ${online ? 'green' : 'red'}`;
-    badge.textContent = online ? 'Online' : 'Offline';
+    badge.className = `badge ${disabled ? 'blue' : online ? 'green' : 'red'}`;
+    badge.textContent = disabled ? 'Disabled' : online ? 'Online' : 'Offline';
   }
   const meta = document.getElementById('shmMonitorMeta');
   if (meta) meta.textContent = message;
@@ -88,6 +88,12 @@ async function pollSharedMemory() {
   try {
     const snapshot = await coreCommand('xgt.shared_memory');
     if (!monitoring) return;
+    if (snapshot.disabled) {
+      updateArea('read', { words: [] });
+      updateArea('write', { words: [] });
+      setMonitorState(false, 'PLC Communication disabled', true);
+      return;
+    }
     updateArea('read', snapshot.read);
     updateArea('write', snapshot.write);
     const header = snapshot.header || {};

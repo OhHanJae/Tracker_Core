@@ -134,6 +134,11 @@ class AlarmBook:
     def set_warning_word(self, device: DeviceSummaryBit, word: int) -> None:
         self.warnings[int(device)] = word & 0xFFFF
 
+    def clear_device(self, device: DeviceSummaryBit) -> None:
+        self.warnings.pop(int(device), None)
+        self.faults.pop(int(device), None)
+        self.latched_faults.pop(int(device), None)
+
     def set_fault_word(
         self, device: DeviceSummaryBit, word: int, latch_enabled: bool = True
     ) -> None:

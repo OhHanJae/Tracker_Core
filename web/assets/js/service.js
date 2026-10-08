@@ -31,7 +31,7 @@ export function renderServices() {
     const processName = String(m.process || proc?.process_name || '').trim();
     const processDisabled = processName ? '' : 'disabled';
     return `<div class="card module-card">
-        <div class="module-head"><div><span class="status-dot ${proc?.online ? 'online' : 'offline'}"></span><strong>${esc(m.name)}</strong><small>${esc(endpoint)} · ${esc(m.health || m.healthType || '-')}</small></div>${statusBadge(status)}</div>
+        <div class="module-head"><div><span class="status-dot ${proc?.enabled === false ? '' : proc?.online ? 'online' : 'offline'}"></span><strong>${esc(m.name)}</strong><small>${esc(endpoint)} · ${esc(m.health || m.healthType || '-')}</small></div>${statusBadge(status)}</div>
         <div class="module-body">
           <label><span>Enabled</span><span class="switch"><input type="checkbox" data-module-id="${esc(m.id)}" data-module-field="enabled" ${m.enabled !== false ? 'checked' : ''}><span class="slider"></span></span></label>
           <label><span>Process Name</span><input class="mono" data-module-id="${esc(m.id)}" data-module-field="process" value="${esc(m.process)}"></label>

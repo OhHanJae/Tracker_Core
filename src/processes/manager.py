@@ -80,6 +80,11 @@ class ProcessManager:
         self._retired_process_names.update(set(self.modules) - set(updated))
         self._retired_process_names.difference_update(updated)
         self.modules = updated
+        for process_name, config in updated.items():
+            if not config.get("enabled", True):
+                self._communication_state.pop(process_name, None)
+                self._watchdog_failures.pop(process_name, None)
+                self._watchdog_state.pop(process_name, None)
 
     def update_communication_endpoints(
         self,

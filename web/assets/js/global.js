@@ -76,8 +76,8 @@ function priorityClass(p) {
 
 function statusBadge(text) {
   const t = String(text).toUpperCase();
-  const cls = /^(ONLINE|CONNECTED|RUNNING|ALIVE|ON|OK|LISTEN|HEALTHY)$/.test(t) ? 'green' : /WARN|DEGRADED|IDLE/.test(t) ? 'orange' : 'red';
-  const dot = cls === 'green' ? 'online' : cls === 'orange' ? 'warn' : 'offline';
+  const cls = t === 'DISABLED' ? 'blue' : /^(ONLINE|CONNECTED|RUNNING|ALIVE|ON|OK|LISTEN|HEALTHY)$/.test(t) ? 'green' : /WARN|DEGRADED|IDLE/.test(t) ? 'orange' : 'red';
+  const dot = cls === 'blue' ? '' : cls === 'green' ? 'online' : cls === 'orange' ? 'warn' : 'offline';
   return `<span class="badge ${cls}"><span class="status-dot ${dot}"></span>${esc(text)}</span>`;
 }
 

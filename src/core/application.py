@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from dataclasses import replace
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -166,17 +167,20 @@ class CoreApplication:
         root_logger.setLevel(getattr(logging, settings.level))
 
     def _rebuild_clients(self) -> None:
+        motor_settings = replace(self.settings.motor, enabled=self._motor_enabled())
+        laser_settings = replace(self.settings.laser, enabled=self._laser_enabled())
+        vision_settings = replace(self.settings.vision, enabled=self._vision_enabled())
         self.xgt_gateway = XgtGatewayClient(self.settings.xgt)
         self.plc_memory = PlcSharedMemoryClient(self.settings.xgt.shared_memory.name)
-        self.motor_api = MotorApiClient(self.settings.motor)
-        self.vision_api = VisionTcpClient(self.settings.vision)
-        self.ptm_service = PtmService(self.settings.motor, self.motor_api)
+        self.motor_api = MotorApiClient(motor_settings)
+        self.vision_api = VisionTcpClient(vision_settings)
+        self.ptm_service = PtmService(motor_settings, self.motor_api)
         self.laser_service = LaserService(
-            self.settings.laser,
+            laser_settings,
             self.ptm_service,
             self.motor_api,
         )
-        self.vision_service = VisionDeviceService(self.settings.vision, self.vision_api)
+        self.vision_service = VisionDeviceService(vision_settings, self.vision_api)
         self.orchestrator = CoreOrchestrator(self.vision_service)
         self.devices = DeviceRegistry(
             [self.ptm_service, self.laser_service, self.vision_service]
@@ -188,6 +192,25 @@ class CoreApplication:
         self.process_manager.update_communication_endpoints(
             self._process_communication_endpoints()
         )
+
+    def _process_enabled(self, key: str) -> bool:
+        return self.settings.processes.get(key, {}).get("enabled", True) is not False
+
+    def _plc_enabled(self) -> bool:
+        return self._process_enabled("plc_gateway")
+
+    def _motor_enabled(self) -> bool:
+        return self.settings.motor.enabled and self._process_enabled("ptm")
+
+    def _laser_enabled(self) -> bool:
+        return (
+            self.settings.laser.enabled
+            and self._process_enabled("laser")
+            and (self.settings.laser.mode.lower() != "ptm" or self._motor_enabled())
+        )
+
+    def _vision_enabled(self) -> bool:
+        return self.settings.vision.enabled and self._process_enabled("vision")
 
     def _process_communication_endpoints(self) -> dict[str, dict[str, Any]]:
         endpoints: dict[str, dict[str, Any]] = {}
@@ -240,6 +263,25 @@ class CoreApplication:
     async def _replace_settings(self, settings: AppSettings) -> None:
         validate_discovery(settings.discovery)
         self._validate_operator_settings(settings)
+        plc_was_enabled = self._plc_enabled()
+        disabling_plc = plc_was_enabled and settings.processes.get(
+            "plc_gateway", {}
+        ).get("enabled", True) is False
+        disabling_motor = self.ptm_service.state.enabled and not (
+            settings.motor.enabled
+            and settings.processes.get("ptm", {}).get("enabled", True)
+        )
+        disabling_laser = self.laser_service.state.enabled and not (
+            settings.laser.enabled
+            and settings.processes.get("laser", {}).get("enabled", True)
+            and (
+                settings.laser.mode.lower() != "ptm"
+                or (
+                    settings.motor.enabled
+                    and settings.processes.get("ptm", {}).get("enabled", True)
+                )
+            )
+        )
         had_motion = self._active_motion is not None or (
             self.command.status == CommandStatus.BUSY
             and self.command.last_code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME}
@@ -249,8 +291,8 @@ class CoreApplication:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._safe_stop_task
             self._safe_stop_task = None
-        if had_motion:
-            await self._perform_safe_stop()
+        if had_motion or disabling_plc or disabling_motor or disabling_laser:
+            self._safe_stop_applied = await self._perform_safe_stop()
         restart_discovery = (
             settings.discovery != self.settings.discovery
             or settings.core.port != self.settings.core.port
@@ -281,6 +323,13 @@ class CoreApplication:
                 settings.core.allow_remote_process_control
             )
         self._rebuild_clients()
+        if plc_was_enabled != self._plc_enabled():
+            self._last_plc_heartbeat = 0
+            self._last_plc_heartbeat_change_ms = now_ms()
+        if not self._plc_enabled():
+            self.plc_input = PlcInput()
+            self.alarms.clear_device(DeviceSummaryBit.PLC_COMMUNICATION)
+        self._sync_device_snapshots()
         if self._started:
             # Saving configuration must not block while starting every missing
             # process. Process lifecycle is controlled by the dedicated UI
@@ -293,7 +342,7 @@ class CoreApplication:
     async def start(self) -> None:
         self._validate_operator_settings(self.settings)
         self._configure_logging()
-        if self.settings.xgt.shared_memory.configure_gateway_on_start:
+        if self._plc_enabled() and self.settings.xgt.shared_memory.configure_gateway_on_start:
             with contextlib.suppress(Exception):
                 await self.xgt_gateway.configure_gateway()
 
@@ -386,6 +435,11 @@ class CoreApplication:
         self._write_plc_output()
 
     def _read_plc_input(self, timestamp_ms: int) -> None:
+        if not self._plc_enabled():
+            self.plc_memory.close()
+            self.plc_input = PlcInput()
+            self.alarms.clear_device(DeviceSummaryBit.PLC_COMMUNICATION)
+            return
         try:
             if not self.plc_memory.connected:
                 self.plc_memory.connect()
@@ -427,6 +481,9 @@ class CoreApplication:
             )
 
     def _update_plc_heartbeat_alarm(self, timestamp_ms: int) -> None:
+        if not self._plc_enabled():
+            self.alarms.clear_device(DeviceSummaryBit.PLC_COMMUNICATION)
+            return
         elapsed = timestamp_ms - self._last_plc_heartbeat_change_ms
         warning = 1 << 3 if elapsed >= self.settings.runtime.plc_heartbeat_warn_ms else 0
         heartbeat_fault = (
@@ -450,7 +507,7 @@ class CoreApplication:
         self._apply_ptm_alarms()
         self._apply_laser_alarms()
 
-        if not self.settings.vision.enabled:
+        if not self.vision_service.state.enabled:
             self.vision_snapshot = VisionSnapshot(online=False)
             self._clear_vision_alarms()
             return
@@ -470,19 +527,9 @@ class CoreApplication:
         self._apply_vision_alarms(self.vision_snapshot)
 
     def _apply_ptm_alarms(self) -> None:
-        if not self.settings.motor.enabled:
-            self.alarms.set_warning_word(DeviceSummaryBit.PAN_MOTOR, 0)
-            self.alarms.set_warning_word(DeviceSummaryBit.TILT_MOTOR, 0)
-            self.alarms.set_fault_word(
-                DeviceSummaryBit.PAN_MOTOR,
-                0,
-                self.settings.runtime.fault_latch_enabled,
-            )
-            self.alarms.set_fault_word(
-                DeviceSummaryBit.TILT_MOTOR,
-                0,
-                self.settings.runtime.fault_latch_enabled,
-            )
+        if not self.ptm_service.state.enabled:
+            self.alarms.clear_device(DeviceSummaryBit.PAN_MOTOR)
+            self.alarms.clear_device(DeviceSummaryBit.TILT_MOTOR)
             return
 
         state = self.ptm_service.state
@@ -507,13 +554,8 @@ class CoreApplication:
         )
 
     def _apply_laser_alarms(self) -> None:
-        if not self.settings.laser.enabled:
-            self.alarms.set_warning_word(DeviceSummaryBit.LASER, 0)
-            self.alarms.set_fault_word(
-                DeviceSummaryBit.LASER,
-                0,
-                self.settings.runtime.fault_latch_enabled,
-            )
+        if not self.laser_service.state.enabled:
+            self.alarms.clear_device(DeviceSummaryBit.LASER)
             return
 
         state = self.laser_service.state
@@ -540,12 +582,7 @@ class CoreApplication:
             DeviceSummaryBit.CAMERA_3,
             DeviceSummaryBit.CAMERA_4,
         ):
-            self.alarms.set_warning_word(device, 0)
-            self.alarms.set_fault_word(
-                device,
-                0,
-                self.settings.runtime.fault_latch_enabled,
-            )
+            self.alarms.clear_device(device)
 
     def _apply_vision_alarms(self, snapshot: VisionSnapshot) -> None:
         self.alarms.set_warning_word(
@@ -647,7 +684,7 @@ class CoreApplication:
 
     async def _perform_safe_stop(self) -> bool:
         success = True
-        if self.settings.motor.enabled:
+        if self.ptm_service.state.enabled:
             try:
                 await self.ptm_service.command("motion.stop")
             except Exception as exc:
@@ -664,12 +701,15 @@ class CoreApplication:
                     self.settings.runtime.fault_latch_enabled,
                 )
         if (
-            self.settings.laser.enabled
+            self.laser_service.state.enabled
             or self.ptm_service.state.status.get("laser_on")
-            or self.ptm_service.state.status.get("laser_connected") is True
+            or (
+                self.ptm_service.state.enabled
+                and self.ptm_service.state.status.get("laser_connected") is True
+            )
         ):
             try:
-                if self.settings.laser.enabled:
+                if self.laser_service.state.enabled:
                     await self.laser_service.command(self.settings.laser.off_command)
                 else:
                     await self.ptm_service.command("laser.off")
@@ -921,7 +961,9 @@ class CoreApplication:
             >= self.settings.runtime.position_stable_ms
         )
         laser_target_ready = (
-            position_stable
+            self.laser_service.state.enabled
+            and self.vision_service.state.enabled
+            and position_stable
             and self._active_recipe_id > 0
             and self._active_point_id > 0
             and self.plc_input.run_enable
@@ -940,7 +982,7 @@ class CoreApplication:
             self.settings.runtime.fault_latch_enabled
         ) != 0
         motor_ready = (
-            self.settings.motor.enabled
+            self.ptm_service.state.enabled
             and self.ptm_service.state.online
             and bool(ptm_status.get("connected"))
         )
@@ -986,7 +1028,7 @@ class CoreApplication:
                 homed=bool(ptm_status.get("homed")),
                 stop_active=self.plc_input.force_stop or not self.plc_input.run_enable,
                 force_stop_active=self.plc_input.force_stop,
-                camera_ready=_mask_ready(
+                camera_ready=self.vision_service.state.enabled and _mask_ready(
                     self.vision_snapshot.camera_required_mask,
                     self.vision_snapshot.camera_valid_mask,
                 ),
@@ -1018,6 +1060,8 @@ class CoreApplication:
         )
 
     def _write_plc_output(self) -> None:
+        if not self._plc_enabled():
+            return
         try:
             if not self.plc_memory.connected:
                 return
@@ -1131,9 +1175,13 @@ class CoreApplication:
                 await self._replace_settings(new_settings)
                 return JsonTcpResponse(True, self.settings.to_dict())
             if command == "xgt.configure":
+                if not self._plc_enabled():
+                    return JsonTcpResponse(False, error={"code": "PROCESS_DISABLED", "message": "PLC Communication is disabled"})
                 result = await self.xgt_gateway.configure_gateway()
                 return JsonTcpResponse(True, result)
             if command == "xgt.status":
+                if not self._plc_enabled():
+                    return JsonTcpResponse(False, error={"code": "PROCESS_DISABLED", "message": "PLC Communication is disabled"})
                 result = await self.xgt_gateway.status()
                 return JsonTcpResponse(True, result)
             if command == "xgt.web_status":
@@ -1158,6 +1206,9 @@ class CoreApplication:
                             "message": "device, command, and object params are required",
                         },
                     )
+                service = self.devices.get(device_id)
+                if service is not None and not service.state.enabled:
+                    return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": f"device is disabled: {device_id}"})
                 result = await self.devices.command(device_id, device_command, device_params)
                 return JsonTcpResponse(True, result)
             if command.startswith("process."):
@@ -1199,12 +1250,18 @@ class CoreApplication:
             if command == "laser.status":
                 return JsonTcpResponse(True, self.laser_service.snapshot())
             if command == "motion.stop":
+                if not self.ptm_service.state.enabled:
+                    return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": "PTM is disabled"})
                 await self.ptm_service.command("motion.stop")
                 return JsonTcpResponse(True, {"accepted": True})
             if command == "laser.on":
+                if not self.laser_service.state.enabled:
+                    return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": "Laser is disabled"})
                 result = await self.laser_service.command(self.settings.laser.on_command)
                 return JsonTcpResponse(True, result or {"accepted": True})
             if command == "laser.off":
+                if not self.laser_service.state.enabled:
+                    return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": "Laser is disabled"})
                 result = await self.laser_service.command(self.settings.laser.off_command)
                 return JsonTcpResponse(True, {"accepted": True})
             if command == "alarm.reset":
@@ -1224,8 +1281,9 @@ class CoreApplication:
         self,
         processes: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        with contextlib.suppress(Exception):
-            header = self.plc_memory.header().to_dict()
+        if self._plc_enabled():
+            with contextlib.suppress(Exception):
+                header = self.plc_memory.header().to_dict()
         plc_words = self.plc_input.raw_words[:20]
         output_words = self.output.to_words()[:80]
         self._last_status = {
@@ -1241,6 +1299,7 @@ class CoreApplication:
                 ),
             },
             "plc": {
+                "enabled": self._plc_enabled(),
                 "shared_memory_connected": self.plc_memory.connected,
                 "shared_memory_name": self.plc_memory.connected_name
                 or self.settings.xgt.shared_memory.name,
@@ -1252,20 +1311,20 @@ class CoreApplication:
             "devices": self.devices.snapshot(),
             "processes": processes if processes is not None else self.process_manager.snapshot(),
             "ptm": {
-                "enabled": self.settings.motor.enabled,
+                "enabled": self.ptm_service.state.enabled,
                 "online": self.ptm_service.state.online,
                 "moving": bool(self.ptm_service.state.status.get("moving")),
                 "pan_deg": self.ptm_service.state.status.get("pan_deg"),
                 "tilt_deg": self.ptm_service.state.status.get("tilt_deg"),
             },
             "laser": {
-                "enabled": self.settings.laser.enabled,
+                "enabled": self.laser_service.state.enabled,
                 "mode": self.settings.laser.mode,
                 "online": self.laser_service.state.online,
                 "on": bool(self.laser_service.state.status.get("on")),
             },
             "vision": {
-                "enabled": self.settings.vision.enabled,
+                "enabled": self.vision_service.state.enabled,
                 "online": self.vision_snapshot.online,
                 "tracking_active": self.vision_snapshot.tracking_active,
                 "tracker_valid": self.vision_snapshot.tracker_valid,
@@ -1293,12 +1352,12 @@ class CoreApplication:
         host = client_connect_host(web.host)
         url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
         result: dict[str, Any] = {
-            "enabled": web.enabled,
+            "enabled": self._plc_enabled() and web.enabled,
             "url": f"http://{url_host}:{web.port}/",
             "online": False,
             "error": None,
         }
-        if not web.enabled:
+        if not result["enabled"]:
             result["error"] = "XGT Web UI is disabled"
             return result
         try:
@@ -1321,7 +1380,7 @@ class CoreApplication:
         url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
         result: dict[str, Any] = {
             "enabled": bool(
-                process.get("enabled", self.settings.motor.enabled)
+                self.ptm_service.state.enabled
                 and self.settings.motor.web_enabled
             ),
             "url": f"http://{url_host}:{port}/",
@@ -1347,7 +1406,7 @@ class CoreApplication:
     async def _vision_web_status(self) -> dict[str, Any]:
         web = self.settings.vision
         host = client_connect_host(web.web_host)
-        enabled = bool(web.enabled and web.web_enabled and web.web_port)
+        enabled = bool(self.vision_service.state.enabled and web.web_enabled and web.web_port)
         url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
         result: dict[str, Any] = {
             "enabled": enabled,
@@ -1372,6 +1431,8 @@ class CoreApplication:
         return result
 
     def _xgt_shared_memory_snapshot(self) -> dict[str, Any]:
+        if not self._plc_enabled():
+            return {"connected": False, "disabled": True, "refresh_ms": 500}
         try:
             if not self.plc_memory.connected:
                 self.plc_memory.connect()
