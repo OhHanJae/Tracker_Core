@@ -127,7 +127,7 @@ class LaserSettings:
 
 @dataclass
 class RuntimeSettings:
-    orchestration_enabled: bool = False
+    orchestration_enabled: bool = True
     vision_status_max_age_ms: int = 1500
     plc_heartbeat_warn_ms: int = 1000
     plc_heartbeat_fault_ms: int = 3000
@@ -230,12 +230,6 @@ def _default_command_map() -> dict[str, dict[str, Any]]:
             "name": "CONTROLLER_RESTART",
             "target": "core",
             "command": "controller.restart_request",
-            "params": {},
-        },
-        "5": {
-            "name": "RELOAD_CONFIG",
-            "target": "core",
-            "command": "config.reload",
             "params": {},
         },
     }

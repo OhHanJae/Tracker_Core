@@ -171,7 +171,7 @@ class PlcOutput:
         fault_summary = self.alarms.fault_summary(self.latch_faults)
         warning_active = warning_summary != 0
         fault_active = fault_summary != 0
-        process_stop = fault_active or self.flags.force_stop_active
+        process_stop = fault_active or self.flags.stop_active
 
         words[0] = (
             bit(self.flags.controller_online, 0)

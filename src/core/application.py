@@ -66,6 +66,11 @@ class CoreApplication:
 
         self.alarms = AlarmBook()
         self.command = CommandRuntime()
+        self._command_seen = False
+        self._admin_seen = False
+        self._admin_ack_seq = 0
+        self._admin_status = CommandStatus.IDLE
+        self._admin_result = CommandResult.OK
         self.plc_input = PlcInput()
         self.vision_snapshot = VisionSnapshot()
         self.output = PlcOutput(alarms=self.alarms, command=self.command)
@@ -112,6 +117,13 @@ class CoreApplication:
         self._last_plc_heartbeat_change_ms = now_ms()
         self._position_ok_since_ms: int | None = None
         self._safe_stop_applied = False
+        self._safe_stop_task: asyncio.Task[bool] | None = None
+        self._safe_stop_retry_ms = 0
+        self._command_task: asyncio.Task[None] | None = None
+        self._pending_request: tuple[int, int, str, dict[str, Any]] | None = None
+        self._active_motion: dict[str, Any] | None = None
+        self._active_recipe_id = 0
+        self._active_point_id = 0
         self._last_status: dict[str, Any] = {}
 
     @staticmethod
@@ -228,6 +240,17 @@ class CoreApplication:
     async def _replace_settings(self, settings: AppSettings) -> None:
         validate_discovery(settings.discovery)
         self._validate_operator_settings(settings)
+        had_motion = self._active_motion is not None or (
+            self.command.status == CommandStatus.BUSY
+            and self.command.last_code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME}
+        )
+        self._abort_active_command(CommandResult.SYSTEM_NOT_READY)
+        if self._safe_stop_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._safe_stop_task
+            self._safe_stop_task = None
+        if had_motion:
+            await self._perform_safe_stop()
         restart_discovery = (
             settings.discovery != self.settings.discovery
             or settings.core.port != self.settings.core.port
@@ -310,8 +333,11 @@ class CoreApplication:
                     await task
         if was_started:
             self.plc_input = PlcInput()
-            self._safe_stop_applied = False
-            await self._apply_safe_stop_if_needed()
+            self._abort_active_command(CommandResult.SYSTEM_NOT_READY)
+            if self._safe_stop_task is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._safe_stop_task
+            await self._perform_safe_stop()
         await self.devices.stop_all()
         await self.orchestrator.stop()
         await self.discovery.stop()
@@ -569,17 +595,63 @@ class CoreApplication:
             )
 
     async def _apply_safe_stop_if_needed(self) -> None:
-        safe_stop_requested = self.plc_input.force_stop or not self.plc_input.run_enable
+        safe_stop_requested = (
+            self.plc_input.force_stop
+            or not self.plc_input.run_enable
+            or bool(self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled))
+        )
         if not safe_stop_requested:
             self._safe_stop_applied = False
+            self._safe_stop_retry_ms = 0
             return
-        if self._safe_stop_applied:
+        self._active_recipe_id = 0
+        self._active_point_id = 0
+        if (
+            self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY}
+            and self.command.last_code != CommandCode.ERROR_RESET
+        ):
+            result = (
+                CommandResult.FORCE_STOP_ACTIVE if self.plc_input.force_stop
+                else CommandResult.SYSTEM_NOT_READY
+            )
+            self._abort_active_command(result)
+        if self._safe_stop_task is not None:
+            if not self._safe_stop_task.done():
+                return
+            self._safe_stop_applied = self._safe_stop_task.result()
+            self._safe_stop_task = None
+        ptm_status = self.ptm_service.state.status
+        laser_status = self.laser_service.state.status
+        still_active = bool(
+            ptm_status.get("moving") or ptm_status.get("laser_on")
+            or laser_status.get("on")
+        )
+        if self._safe_stop_applied and not still_active:
             return
-        self._safe_stop_applied = True
+        if now_ms() < self._safe_stop_retry_ms:
+            return
+        self._safe_stop_retry_ms = now_ms() + 1000
+        self._safe_stop_task = asyncio.create_task(self._perform_safe_stop())
+
+    def _abort_active_command(self, result: CommandResult) -> None:
+        if self._command_task is not None and not self._command_task.done():
+            self._command_task.cancel()
+        self._command_task = None
+        self._pending_request = None
+        self._active_motion = None
+        self._active_recipe_id = 0
+        self._active_point_id = 0
+        if self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY}:
+            self.command.status = CommandStatus.ERROR
+            self.command.result = result
+
+    async def _perform_safe_stop(self) -> bool:
+        success = True
         if self.settings.motor.enabled:
             try:
                 await self.ptm_service.command("motion.stop")
             except Exception as exc:
+                success = False
                 LOGGER.debug("motor stop failed during safe stop: %s", exc)
                 self.alarms.set_fault_word(
                     DeviceSummaryBit.PAN_MOTOR,
@@ -591,34 +663,64 @@ class CoreApplication:
                     1 << 0,
                     self.settings.runtime.fault_latch_enabled,
                 )
-        if self.settings.laser.enabled:
+        if (
+            self.settings.laser.enabled
+            or self.ptm_service.state.status.get("laser_on")
+            or self.ptm_service.state.status.get("laser_connected") is True
+        ):
             try:
-                await self.laser_service.command(self.settings.laser.off_command)
+                if self.settings.laser.enabled:
+                    await self.laser_service.command(self.settings.laser.off_command)
+                else:
+                    await self.ptm_service.command("laser.off")
             except Exception as exc:
+                success = False
                 LOGGER.debug("laser off failed during safe stop: %s", exc)
                 self.alarms.set_fault_word(
                     DeviceSummaryBit.LASER,
                     1 << 0,
                     self.settings.runtime.fault_latch_enabled,
                 )
+        return success
 
     async def _handle_plc_command(self) -> None:
+        if self.plc_input.admin_command and (
+            not self._admin_seen or self.plc_input.admin_seq != self._admin_ack_seq
+        ):
+            self._admin_seen = True
+            self._admin_ack_seq = self.plc_input.admin_seq
+            self._admin_status = CommandStatus.REJECTED
+            self._admin_result = CommandResult.INVALID_COMMAND
+        self._progress_motion_command(now_ms())
+        if self._pending_request is not None:
+            code, seq, expected, params = self._pending_request
+            self._pending_request = None
+            self.command.status = CommandStatus.BUSY
+            self._command_task = asyncio.create_task(
+                self._dispatch_plc_command(code, seq, expected, params)
+            )
+            return
         code = self.plc_input.command_code
         seq = self.plc_input.command_seq
-        if code == 0 or seq == self.command.last_seq:
+        if code == 0 or (self._command_seen and seq == self.command.last_seq):
             return
         if self.command.status == CommandStatus.BUSY:
-            self.command.status = CommandStatus.REJECTED
-            self.command.result = CommandResult.COMMAND_BUSY
             return
 
         self.command.last_code = code
         self.command.last_seq = seq
+        self._command_seen = True
         self.command.status = CommandStatus.RECEIVED
         self.command.result = CommandResult.OK
         self.command.message = ""
         self.command.busy_since_ms = now_ms()
 
+        if code not in {
+            CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME, CommandCode.ERROR_RESET
+        }:
+            self.command.status = CommandStatus.REJECTED
+            self.command.result = CommandResult.INVALID_COMMAND
+            return
         if code != CommandCode.ERROR_RESET:
             if self.plc_input.force_stop:
                 self.command.status = CommandStatus.REJECTED
@@ -632,60 +734,151 @@ class CoreApplication:
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.FAULT_ACTIVE
                 return
+            if self._safe_stop_task is not None and not self._safe_stop_task.done():
+                self.command.status = CommandStatus.REJECTED
+                self.command.result = CommandResult.SYSTEM_NOT_READY
+                return
+            if (
+                not self.ptm_service.state.online
+                or not self.ptm_service.state.status.get("connected")
+            ):
+                self.command.status = CommandStatus.REJECTED
+                self.command.result = CommandResult.SYSTEM_NOT_READY
+                return
+            if (
+                code == CommandCode.TARGET_APPLY_MOVE
+                and not self.ptm_service.state.status.get("homed")
+            ):
+                self.command.status = CommandStatus.REJECTED
+                self.command.result = CommandResult.HOMING_REQUIRED
+                return
 
+        entry = self.settings.command_map.get(str(code))
+        expected = {
+            CommandCode.TARGET_APPLY_MOVE: "point.goto",
+            CommandCode.HOME: "home.start",
+            CommandCode.ERROR_RESET: "alarm.reset",
+        }[CommandCode(code)]
+        if (
+            entry is None or entry.get("command") != expected
+            or entry.get("target") != ("core" if code == CommandCode.ERROR_RESET else "motor")
+        ):
+            self.command.status = CommandStatus.REJECTED
+            self.command.result = CommandResult.INVALID_COMMAND
+            return
+        params = self._resolve_params(entry.get("params") or {})
+        if code == CommandCode.TARGET_APPLY_MOVE and (
+            not params.get("recipe_id") or not params.get("point_id")
+        ):
+            self.command.status = CommandStatus.REJECTED
+            self.command.result = (
+                CommandResult.RECIPE_NOT_FOUND if not params.get("recipe_id")
+                else CommandResult.POINT_NOT_FOUND
+            )
+            return
+        self._pending_request = (code, seq, expected, params)
+        if code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME}:
+            self._active_recipe_id = 0
+            self._active_point_id = 0
+
+    async def _dispatch_plc_command(
+        self, code: int, seq: int, command: str, params: dict[str, Any]
+    ) -> None:
         try:
-            await self._execute_command(code)
-            if self.command.status not in {CommandStatus.REJECTED, CommandStatus.ERROR}:
+            if code == CommandCode.ERROR_RESET:
+                self.alarms.reset_latched_faults()
+                self.command.status = CommandStatus.COMPLETE
+                return
+            response = await self.ptm_service.command(command, params)
+            if seq != self.command.last_seq or self.command.status != CommandStatus.BUSY:
+                return
+            motion_id = response.get("motion_id") if isinstance(response, dict) else None
+            if not motion_id:
+                raise ValueError(
+                    "PTM response has no motion_id; movement completion cannot be verified"
+                )
+            self._active_motion = {
+                "id": motion_id,
+                "code": code,
+                "seq": seq,
+                "params": params,
+                "accepted_ms": now_ms(),
+            }
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if seq == self.command.last_seq and self.command.status == CommandStatus.BUSY:
+                LOGGER.warning("PLC command %s/%s failed: %s", code, seq, exc)
+                self.command.status = CommandStatus.ERROR
+                self.command.message = str(exc)
+                if "unknown recipe" in self.command.message.lower():
+                    self.command.result = CommandResult.RECIPE_NOT_FOUND
+                elif "unknown point" in self.command.message.lower():
+                    self.command.result = CommandResult.POINT_NOT_FOUND
+                else:
+                    self.command.result = CommandResult.INTERNAL_ERROR
+                    self.alarms.set_fault_word(
+                        DeviceSummaryBit.PAN_MOTOR, 1 << 0,
+                        self.settings.runtime.fault_latch_enabled,
+                    )
+
+    def _progress_motion_command(self, timestamp_ms: int) -> None:
+        motion = self._active_motion
+        if motion is None or self.command.status != CommandStatus.BUSY:
+            return
+        state = self.ptm_service.state
+        status = state.status
+        raw_motion = status.get("raw", {}).get("motion", {})
+        fresh = state.online and state.last_ok_ms >= motion["accepted_ms"]
+        if fresh and raw_motion.get("completed_id") == motion["id"]:
+            if motion["code"] == CommandCode.HOME and not status.get("homed"):
+                self.command.status = CommandStatus.ERROR
+                self.command.result = CommandResult.HOMING_REQUIRED
+                self._set_motion_fault(2)
+            else:
                 self.command.status = CommandStatus.COMPLETE
                 self.command.result = CommandResult.OK
-        except Exception as exc:
-            LOGGER.debug("command %s/%s failed: %s", code, seq, exc)
+                if motion["code"] == CommandCode.TARGET_APPLY_MOVE:
+                    self._active_recipe_id = int(motion["params"]["recipe_id"])
+                    self._active_point_id = int(motion["params"]["point_id"])
+            self._active_motion = None
+            return
+        if fresh and raw_motion.get("failed_id") == motion["id"]:
             self.command.status = CommandStatus.ERROR
-            self.command.result = CommandResult.INTERNAL_ERROR
-            self.command.message = str(exc)
+            self.command.result = (
+                CommandResult.MOTION_TIMEOUT
+                if raw_motion.get("last_error") == "MOTION_TIMEOUT"
+                else CommandResult.INTERNAL_ERROR
+            )
+            self.command.message = str(raw_motion.get("last_error") or "motion failed")
+            fault_bit = (
+                3 if self.command.result == CommandResult.MOTION_TIMEOUT
+                else 2 if motion["code"] == CommandCode.HOME else 6
+            )
+            self._set_motion_fault(fault_bit)
+            self._active_motion = None
+            return
+        ptm_timeout = (
+            status.get("raw", {}).get("motion", {})
+            .get("completion", {}).get("timeout_s", 0)
+        )
+        timeout_ms = int(
+            max(self.settings.runtime.command_timeout_s, float(ptm_timeout) + 5) * 1000
+        )
+        if timestamp_ms - self.command.busy_since_ms >= timeout_ms:
+            self.command.status = CommandStatus.ERROR
+            self.command.result = CommandResult.MOTION_TIMEOUT
+            self.command.message = "PTM movement completion timed out"
+            self._active_motion = None
+            self._set_motion_fault(2 if motion["code"] == CommandCode.HOME else 3)
+            self._safe_stop_applied = False
 
-    async def _execute_command(self, code: int) -> None:
-        entry = self.settings.command_map.get(str(code))
-        if entry is None:
-            self.command.status = CommandStatus.REJECTED
-            self.command.result = CommandResult.INVALID_COMMAND
-            return
-        target = entry.get("target")
-        command = entry.get("command")
-        params = self._resolve_params(entry.get("params") or {})
-
-        self.command.status = CommandStatus.BUSY
-        if target == "core":
-            await self._execute_core_command(command, params)
-            return
-        if target == "motor":
-            await self.ptm_service.command(str(command), params)
-            return
-        if target == "laser":
-            await self.laser_service.command(str(command), params)
-            return
-        if target == "vision":
-            await self.vision_service.command(str(command), params)
-            return
-        self.command.status = CommandStatus.REJECTED
-        self.command.result = CommandResult.INVALID_COMMAND
-
-    async def _execute_core_command(self, command: str, _params: dict[str, Any]) -> None:
-        if command == "alarm.reset":
-            self.alarms.reset_latched_faults()
-            return
-        if command == "config.reload":
-            settings = load_settings(self.settings_path)
-            ensure_data_directories(settings)
-            await self._replace_settings(settings)
-            return
-        if command == "controller.restart_request":
-            self.command.status = CommandStatus.REJECTED
-            self.command.result = CommandResult.INVALID_COMMAND
-            self.command.message = "restart must be handled by service manager"
-            return
-        self.command.status = CommandStatus.REJECTED
-        self.command.result = CommandResult.INVALID_COMMAND
+    def _set_motion_fault(self, bit_index: int) -> None:
+        for device in (DeviceSummaryBit.PAN_MOTOR, DeviceSummaryBit.TILT_MOTOR):
+            self.alarms.set_fault_word(
+                device, 1 << bit_index,
+                self.settings.runtime.fault_latch_enabled,
+            )
 
     def _resolve_params(self, params: dict[str, Any]) -> dict[str, Any]:
         resolved: dict[str, Any] = {}
@@ -729,19 +922,41 @@ class CoreApplication:
         )
         laser_target_ready = (
             position_stable
+            and self._active_recipe_id > 0
+            and self._active_point_id > 0
+            and self.plc_input.run_enable
+            and not self.plc_input.force_stop
+            and self.vision_snapshot.pan_error_deg is not None
+            and self.vision_snapshot.tilt_error_deg is not None
+            and pan_error_x100 <= laser_tolerance
+            and tilt_error_x100 <= laser_tolerance
             and self.ptm_service.state.online
             and bool(ptm_status.get("connected", True))
             and not ptm_status.get("moving", False)
+            and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
         )
 
         fault_active = self.alarms.fault_summary(
             self.settings.runtime.fault_latch_enabled
         ) != 0
-        system_ready = self.plc_input.run_enable and not fault_active
+        motor_ready = (
+            self.settings.motor.enabled
+            and self.ptm_service.state.online
+            and bool(ptm_status.get("connected"))
+        )
+        system_ready = (
+            self.plc_input.run_enable and not self.plc_input.force_stop
+            and not fault_active and motor_ready
+            and (self._safe_stop_task is None or self._safe_stop_task.done())
+        )
         if fault_active:
             controller_state = ControllerState.FAULT
         elif self.plc_input.force_stop or not self.plc_input.run_enable:
             controller_state = ControllerState.STOPPED
+        elif self.command.status == CommandStatus.BUSY and self.command.last_code == CommandCode.HOME:
+            controller_state = ControllerState.HOMING
+        elif self.command.status == CommandStatus.BUSY and self.command.last_code == CommandCode.TARGET_APPLY_MOVE:
+            controller_state = ControllerState.TARGET_MOVING
         elif self.plc_input.tracking_enable and self.vision_snapshot.tracking_active:
             controller_state = ControllerState.TRACKING
         elif system_ready:
@@ -753,7 +968,7 @@ class CoreApplication:
         if self.plc_input.tracking_enable:
             if fault_active:
                 tracking_state = TrackingState.FAULT
-            elif self.vision_snapshot.tracker_valid:
+            elif self.vision_snapshot.tracking_active and self.vision_snapshot.tracker_valid:
                 tracking_state = TrackingState.TRACKING
             elif self.vision_snapshot.degraded:
                 tracking_state = TrackingState.DEGRADED
@@ -765,6 +980,7 @@ class CoreApplication:
                 controller_online=True,
                 system_ready=system_ready,
                 tracking_active=self.vision_snapshot.tracking_active,
+                homing=controller_state == ControllerState.HOMING,
                 motion_moving=bool(ptm_status.get("moving") and ptm_status.get("connected", True)),
                 laser_on=bool(laser_status.get("on", ptm_status.get("laser_on", False))),
                 homed=bool(ptm_status.get("homed")),
@@ -786,8 +1002,8 @@ class CoreApplication:
             heartbeat_return=self.plc_input.heartbeat,
             active_tracking_tolerance_mm_x100=tracking_tolerance,
             active_laser_tolerance_deg_x100=laser_tolerance,
-            active_recipe_id=self.plc_input.req_recipe_id,
-            active_point_id=self.plc_input.req_point_id,
+            active_recipe_id=self._active_recipe_id,
+            active_point_id=self._active_point_id,
             command=self.command,
             cameras=CameraMasks(
                 required=self.vision_snapshot.camera_required_mask,
@@ -795,6 +1011,9 @@ class CoreApplication:
                 valid=self.vision_snapshot.camera_valid_mask,
             ),
             alarms=self.alarms,
+            admin_status=int(self._admin_status),
+            admin_result=int(self._admin_result),
+            admin_ack_seq=self._admin_ack_seq,
             latch_faults=self.settings.runtime.fault_latch_enabled,
         )
 

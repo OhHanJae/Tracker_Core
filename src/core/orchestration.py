@@ -21,6 +21,7 @@ class CoreOrchestrator:
         self._task: asyncio.Task[None] | None = None
         self.last_error = ""
         self.last_command = ""
+        self._last_attempt_ms = 0
 
     async def run_cycle(self, core: Any) -> None:
         timestamp_ms = now_ms()
@@ -28,20 +29,30 @@ class CoreOrchestrator:
         core._update_plc_heartbeat_alarm(timestamp_ms)
         core._sync_device_snapshots()
         await core._apply_safe_stop_if_needed()
-        self.tick(core.plc_input)
+        self.tick(
+            core.plc_input,
+            bool(core.alarms.fault_summary(core.settings.runtime.fault_latch_enabled)),
+        )
         await core._handle_plc_command()
         core._build_output(timestamp_ms)
         core._write_plc_output()
 
-    def tick(self, plc: PlcInput) -> None:
-        desired = bool(plc.run_enable and plc.tracking_enable and not plc.force_stop)
-        if desired == self._requested_tracking:
+    def tick(self, plc: PlcInput, fault_active: bool = False) -> None:
+        desired = bool(
+            plc.run_enable and plc.tracking_enable
+            and not plc.force_stop and not fault_active
+        )
+        retry = bool(self.last_error) and now_ms() - self._last_attempt_ms >= 1000
+        if desired == self._requested_tracking and not retry:
+            return
+        if self._task is not None and not self._task.done():
             return
         self._requested_tracking = desired
         if not self.vision.state.enabled:
             return
         previous = self._task
         command = "tracking.start" if desired else "tracking.stop"
+        self._last_attempt_ms = now_ms()
 
         async def dispatch() -> None:
             if previous:
