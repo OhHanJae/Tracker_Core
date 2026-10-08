@@ -40,13 +40,16 @@ class XgtGatewayClient:
         area = self.settings.plc_area
         patch = {
             "read": {
+                "enabled": True,
                 "address": area.read_address,
                 "byte_count": shm.read_words * 2,
                 "interval_ms": area.interval_ms,
             },
             "write": {
+                "enabled": True,
                 "address": area.write_address,
                 "byte_count": shm.write_words * 2,
+                "interval_ms": area.interval_ms,
             },
             "shared_memory": {
                 "name": shm.name,

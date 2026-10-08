@@ -104,6 +104,7 @@ class CoreApplication:
                 allow_remote_process_control=self.settings.core.allow_remote_process_control,
             )
         self._run_task: asyncio.Task[None] | None = None
+        self._gateway_config_task: asyncio.Task[None] | None = None
         self._server_task: asyncio.Task[None] | None = None
         self._http_server_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -114,6 +115,7 @@ class CoreApplication:
         self.network_manager = NetworkManager("eth0")
 
         self._rebuild_clients()
+        self._gateway_configured = not self.settings.xgt.shared_memory.configure_gateway_on_start
         self._last_plc_heartbeat = 0
         self._last_plc_heartbeat_change_ms = now_ms()
         self._position_ok_since_ms: int | None = None
@@ -264,6 +266,10 @@ class CoreApplication:
         validate_discovery(settings.discovery)
         self._validate_operator_settings(settings)
         plc_was_enabled = self._plc_enabled()
+        gateway_reconfigure = (
+            settings.xgt != self.settings.xgt
+            or plc_was_enabled != (settings.processes.get("plc_gateway", {}).get("enabled", True) is not False)
+        )
         disabling_plc = plc_was_enabled and settings.processes.get(
             "plc_gateway", {}
         ).get("enabled", True) is False
@@ -293,6 +299,11 @@ class CoreApplication:
             self._safe_stop_task = None
         if had_motion or disabling_plc or disabling_motor or disabling_laser:
             self._safe_stop_applied = await self._perform_safe_stop()
+        if gateway_reconfigure and self._gateway_config_task is not None:
+            self._gateway_config_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._gateway_config_task
+            self._gateway_config_task = None
         restart_discovery = (
             settings.discovery != self.settings.discovery
             or settings.core.port != self.settings.core.port
@@ -323,6 +334,10 @@ class CoreApplication:
                 settings.core.allow_remote_process_control
             )
         self._rebuild_clients()
+        if gateway_reconfigure:
+            self._gateway_configured = not (
+                self._plc_enabled() and settings.xgt.shared_memory.configure_gateway_on_start
+            )
         if plc_was_enabled != self._plc_enabled():
             self._last_plc_heartbeat = 0
             self._last_plc_heartbeat_change_ms = now_ms()
@@ -335,6 +350,8 @@ class CoreApplication:
             # process. Process lifecycle is controlled by the dedicated UI
             # buttons; reconcile here only applies retire/disable changes.
             await self.process_manager.reconcile(start_missing=False)
+            if gateway_reconfigure and self._plc_enabled() and not self._gateway_configured:
+                self._gateway_config_task = asyncio.create_task(self._configure_gateway_on_start())
             await self.devices.start_all()
             if restart_discovery:
                 await self.discovery.start()
@@ -342,10 +359,6 @@ class CoreApplication:
     async def start(self) -> None:
         self._validate_operator_settings(self.settings)
         self._configure_logging()
-        if self._plc_enabled() and self.settings.xgt.shared_memory.configure_gateway_on_start:
-            with contextlib.suppress(Exception):
-                await self.xgt_gateway.configure_gateway()
-
         await self._server.start()
         self._server_task = asyncio.create_task(self._server.serve_forever())
         if self._http_server is not None:
@@ -354,6 +367,8 @@ class CoreApplication:
                 self._http_server.serve_forever()
             )
         await self.process_manager.reconcile()
+        if self._plc_enabled() and self.settings.xgt.shared_memory.configure_gateway_on_start:
+            self._gateway_config_task = asyncio.create_task(self._configure_gateway_on_start())
         self.process_manager.start_watchdog()
         await self.devices.start_all()
         await self.discovery.start()
@@ -375,6 +390,11 @@ class CoreApplication:
         was_started = self._started
         self._started = False
         self._stop_event.set()
+        if self._gateway_config_task is not None:
+            self._gateway_config_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._gateway_config_task
+            self._gateway_config_task = None
         for task in (self._run_task, self._server_task, self._http_server_task):
             if task:
                 task.cancel()
@@ -404,6 +424,26 @@ class CoreApplication:
 
     async def wait_closed(self) -> None:
         await self._stop_event.wait()
+
+    async def _configure_gateway_on_start(self) -> None:
+        for attempt in range(10):
+            if not self._plc_enabled() or self._stop_event.is_set():
+                return
+            try:
+                await self.xgt_gateway.configure_gateway()
+                self._gateway_configured = True
+                self._last_plc_heartbeat_change_ms = now_ms()
+                return
+            except Exception as exc:
+                if attempt == 9:
+                    LOGGER.warning("PLC Gateway configuration failed: %s", exc)
+                    self.alarms.set_fault_word(
+                        DeviceSummaryBit.PLC_COMMUNICATION,
+                        1 << 0,
+                        self.settings.runtime.fault_latch_enabled,
+                    )
+                else:
+                    await asyncio.sleep(1)
 
     async def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -439,6 +479,9 @@ class CoreApplication:
             self.plc_memory.close()
             self.plc_input = PlcInput()
             self.alarms.clear_device(DeviceSummaryBit.PLC_COMMUNICATION)
+            return
+        if not self._gateway_configured:
+            self.plc_input = PlcInput()
             return
         try:
             if not self.plc_memory.connected:
@@ -483,6 +526,8 @@ class CoreApplication:
     def _update_plc_heartbeat_alarm(self, timestamp_ms: int) -> None:
         if not self._plc_enabled():
             self.alarms.clear_device(DeviceSummaryBit.PLC_COMMUNICATION)
+            return
+        if not self._gateway_configured:
             return
         elapsed = timestamp_ms - self._last_plc_heartbeat_change_ms
         warning = 1 << 3 if elapsed >= self.settings.runtime.plc_heartbeat_warn_ms else 0
@@ -549,7 +594,7 @@ class CoreApplication:
         )
         self.alarms.set_fault_word(
             DeviceSummaryBit.TILT_MOTOR,
-            fault,
+            fault & ~(1 << 0),
             self.settings.runtime.fault_latch_enabled,
         )
 
@@ -691,11 +736,6 @@ class CoreApplication:
                 LOGGER.debug("motor stop failed during safe stop: %s", exc)
                 self.alarms.set_fault_word(
                     DeviceSummaryBit.PAN_MOTOR,
-                    1 << 0,
-                    self.settings.runtime.fault_latch_enabled,
-                )
-                self.alarms.set_fault_word(
-                    DeviceSummaryBit.TILT_MOTOR,
                     1 << 0,
                     self.settings.runtime.fault_latch_enabled,
                 )
@@ -1059,7 +1099,7 @@ class CoreApplication:
         )
 
     def _write_plc_output(self) -> None:
-        if not self._plc_enabled():
+        if not self._plc_enabled() or not self._gateway_configured:
             return
         try:
             if not self.plc_memory.connected:
@@ -1177,6 +1217,8 @@ class CoreApplication:
                 if not self._plc_enabled():
                     return JsonTcpResponse(False, error={"code": "PROCESS_DISABLED", "message": "PLC Communication is disabled"})
                 result = await self.xgt_gateway.configure_gateway()
+                self._gateway_configured = True
+                self._last_plc_heartbeat_change_ms = now_ms()
                 return JsonTcpResponse(True, result)
             if command == "xgt.status":
                 if not self._plc_enabled():
@@ -1299,12 +1341,14 @@ class CoreApplication:
             },
             "plc": {
                 "enabled": self._plc_enabled(),
+                "gateway_configured": self._gateway_configured,
                 "shared_memory_connected": self.plc_memory.connected,
                 "shared_memory_name": self.plc_memory.connected_name
                 or self.settings.xgt.shared_memory.name,
                 "input_words_preview": plc_words,
                 "output_words_preview": output_words,
                 "heartbeat": self.plc_input.heartbeat,
+                "heartbeat_age_ms": now_ms() - self._last_plc_heartbeat_change_ms,
             },
             "command": self.command.to_dict(),
             "devices": self.devices.snapshot(),
@@ -1312,6 +1356,7 @@ class CoreApplication:
             "ptm": {
                 "enabled": self.ptm_service.state.enabled,
                 "online": self.ptm_service.state.online,
+                "serial_connected": self.ptm_service.state.status.get("connected"),
                 "moving": bool(self.ptm_service.state.status.get("moving")),
                 "pan_deg": self.ptm_service.state.status.get("pan_deg"),
                 "tilt_deg": self.ptm_service.state.status.get("tilt_deg"),
@@ -1334,6 +1379,14 @@ class CoreApplication:
                 "fault_summary": self.alarms.fault_summary(
                     self.settings.runtime.fault_latch_enabled
                 ),
+                "active_fault_summary": self.alarms.fault_summary(False),
+                "active_fault_words": {
+                    "plc_communication": self.alarms.fault_word(
+                        DeviceSummaryBit.PLC_COMMUNICATION, False
+                    ),
+                    "ptm_pan": self.alarms.fault_word(DeviceSummaryBit.PAN_MOTOR, False),
+                    "ptm_tilt": self.alarms.fault_word(DeviceSummaryBit.TILT_MOTOR, False),
+                },
                 "primary_fault_code": self.alarms.primary_fault_code(
                     self.settings.runtime.fault_latch_enabled
                 ),

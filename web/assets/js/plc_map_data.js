@@ -2126,7 +2126,7 @@ window.TRACK_EYE_PLC_MAP = {
           "D+63",
           "0~F",
           "PAN_FAULT",
-          "Pan Fault",
+          "PTM 공통 통신 고장 및 Pan 축 고장",
           "03_Device_Alarm_Detail 시트 참조",
           "BITMAP",
           "Level",
@@ -2150,7 +2150,7 @@ window.TRACK_EYE_PLC_MAP = {
           "D+65",
           "0~F",
           "TILT_FAULT",
-          "Tilt Fault",
+          "Tilt 축 고장 (bit0 예약, 항상 0)",
           "03_Device_Alarm_Detail 시트 참조",
           "BITMAP",
           "Level",
@@ -2853,15 +2853,15 @@ window.TRACK_EYE_PLC_MAP = {
           "Encoder 값 흔들림"
         ],
         [
-          "Pan/Tilt",
+          "PTM (Pan/Tilt 공통)",
           "Fault",
-          "D+63 / D+65",
+          "D+63",
           "0",
-          "MOTOR_COMM_LOST",
+          "PTM_COMM_LOST",
           "Fault",
           "Latch/Auto",
           "예",
-          "모터/드라이버 통신 끊김"
+          "PTM TCP 또는 공통 RS-485 통신 끊김; D+65 bit0 예약"
         ],
         [
           "Pan/Tilt",
@@ -3912,13 +3912,13 @@ window.TRACK_EYE_PLC_MAP = {
             ],
             [
               "4000~4099",
-              "Pan",
-              "4001 Pan Communication Fault"
+              "PTM (Pan/Tilt 공통)",
+              "4001 PTM Communication Fault"
             ],
             [
               "4100~4199",
-              "Tilt",
-              "4101 Tilt Communication Fault"
+              "Reserved",
+              "4101 미사용; PTM 공통 4001 사용"
             ],
             [
               "5000~5099",

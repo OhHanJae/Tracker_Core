@@ -88,7 +88,7 @@ FAULT_PRIORITY = [
     (DeviceSummaryBit.CAMERA_4, 2401),
     (DeviceSummaryBit.TRACKER, 3001),
     (DeviceSummaryBit.PAN_MOTOR, 4001),
-    (DeviceSummaryBit.TILT_MOTOR, 4101),
+    (DeviceSummaryBit.TILT_MOTOR, 4001),
     (DeviceSummaryBit.LASER, 5001),
     (DeviceSummaryBit.RECIPE, 6001),
     (DeviceSummaryBit.CALIBRATION, 6101),
