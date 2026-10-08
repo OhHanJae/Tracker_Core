@@ -1,6 +1,6 @@
 window.TRACK_EYE_PLC_MAP = {
-  "sourceFile": "트래커 PLC 통신 맵 v2.xlsx",
-  "sourceTitle": "Tracker Project PLC ↔ Controller Communication Map v1.0",
+  "sourceFile": "트래커 PLC 통신 맵 v3.xlsx",
+  "sourceTitle": "Tracker Project PLC ↔ Controller Communication Map v3.0",
   "note": "웹에서는 PLC 기준 주소를 적용하여 Dnnn 형식으로 표시합니다.",
   "sheets": [
     {
@@ -1380,38 +1380,38 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "Camera 상태",
           "D+16",
-          "0~3",
+          "0",
           "CAMERA_REQUIRED_MASK",
-          "현재 Recipe에서 필요한 Camera Mask",
-          "bit0~3 = Camera1~4",
+          "고정 사용 Camera 1 Mask",
+          "bit0 = Camera 1; bit1~3 = 0",
           "BITMAP",
           "Level",
           "자동",
-          "0x0000~0x000F"
+          "0x0001"
         ],
         [
           "Camera 상태",
           "D+17",
-          "0~3",
+          "0",
           "CAMERA_ONLINE_MASK",
           "현재 Online Camera Mask",
-          "bit0~3 = Camera1~4",
+          "bit0 = Camera 1; bit1~3 = 0",
           "BITMAP",
           "Level",
           "전체",
-          "0x0000~0x000F"
+          "0x0000~0x0001"
         ],
         [
           "Camera 상태",
           "D+18",
-          "0~3",
+          "0",
           "CAMERA_VALID_MASK",
           "Vision 계산에 사용 가능한 Camera Mask",
-          "bit0~3 = Camera1~4",
+          "bit0 = Camera 1; bit1~3 = 0",
           "BITMAP",
           "Level",
           "자동",
-          "0x0000~0x000F"
+          "0x0000~0x0001"
         ],
         [
           "명령 응답",
@@ -1992,74 +1992,74 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "상세 진단",
           "D+52",
-          "0~F",
-          "CAMERA_2_WARNING",
-          "Camera 2 Warning",
-          "03_Device_Alarm_Detail 시트 참조",
+          "-",
+          "Reserved",
+          "Camera 2~4 미사용 (항상 0)",
+          "PLC 주소 유지",
           "BITMAP",
-          "Level",
+          "Reserved",
           "전체",
-          "Bit Map"
+          "0"
         ],
         [
           "상세 진단",
           "D+53",
-          "0~F",
-          "CAMERA_2_FAULT",
-          "Camera 2 Fault",
-          "03_Device_Alarm_Detail 시트 참조",
+          "-",
+          "Reserved",
+          "Camera 2~4 미사용 (항상 0)",
+          "PLC 주소 유지",
           "BITMAP",
-          "Level",
+          "Reserved",
           "전체",
-          "Bit Map"
+          "0"
         ],
         [
           "상세 진단",
           "D+54",
-          "0~F",
-          "CAMERA_3_WARNING",
-          "Camera 3 Warning",
-          "03_Device_Alarm_Detail 시트 참조",
+          "-",
+          "Reserved",
+          "Camera 2~4 미사용 (항상 0)",
+          "PLC 주소 유지",
           "BITMAP",
-          "Level",
+          "Reserved",
           "전체",
-          "Bit Map"
+          "0"
         ],
         [
           "상세 진단",
           "D+55",
-          "0~F",
-          "CAMERA_3_FAULT",
-          "Camera 3 Fault",
-          "03_Device_Alarm_Detail 시트 참조",
+          "-",
+          "Reserved",
+          "Camera 2~4 미사용 (항상 0)",
+          "PLC 주소 유지",
           "BITMAP",
-          "Level",
+          "Reserved",
           "전체",
-          "Bit Map"
+          "0"
         ],
         [
           "상세 진단",
           "D+56",
-          "0~F",
-          "CAMERA_4_WARNING",
-          "Camera 4 Warning",
-          "03_Device_Alarm_Detail 시트 참조",
+          "-",
+          "Reserved",
+          "Camera 2~4 미사용 (항상 0)",
+          "PLC 주소 유지",
           "BITMAP",
-          "Level",
+          "Reserved",
           "전체",
-          "Bit Map"
+          "0"
         ],
         [
           "상세 진단",
           "D+57",
-          "0~F",
-          "CAMERA_4_FAULT",
-          "Camera 4 Fault",
-          "03_Device_Alarm_Detail 시트 참조",
+          "-",
+          "Reserved",
+          "Camera 2~4 미사용 (항상 0)",
+          "PLC 주소 유지",
           "BITMAP",
-          "Level",
+          "Reserved",
           "전체",
-          "Bit Map"
+          "0"
         ],
         [
           "상세 진단",
@@ -2347,9 +2347,9 @@ window.TRACK_EYE_PLC_MAP = {
       ],
       "rows": [
         [
-          "Camera 1~4",
+          "Camera 1",
           "Warning",
-          "D+50/52/54/56",
+          "D+50",
           "0",
           "FPS_LOW",
           "Warning",
@@ -2358,9 +2358,9 @@ window.TRACK_EYE_PLC_MAP = {
           "설정 FPS 대비 지속 저하"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Warning",
-          "D+50/52/54/56",
+          "D+50",
           "1",
           "FRAME_DROP_HIGH",
           "Warning",
@@ -2369,9 +2369,9 @@ window.TRACK_EYE_PLC_MAP = {
           "Frame Drop 비율 증가"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Warning",
-          "D+50/52/54/56",
+          "D+50",
           "2",
           "FRAME_LATENCY_HIGH",
           "Warning",
@@ -2380,9 +2380,9 @@ window.TRACK_EYE_PLC_MAP = {
           "Frame 처리/수신 지연 증가"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Warning",
-          "D+50/52/54/56",
+          "D+50",
           "3",
           "EXPOSURE_BAD",
           "Warning",
@@ -2391,9 +2391,9 @@ window.TRACK_EYE_PLC_MAP = {
           "과노출/저노출 등 영상 상태 불량"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Warning",
-          "D+50/52/54/56",
+          "D+50",
           "4",
           "IMAGE_QUALITY_LOW",
           "Warning",
@@ -2402,9 +2402,9 @@ window.TRACK_EYE_PLC_MAP = {
           "Blur/Contrast 등 영상 품질 저하"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Warning",
-          "D+50/52/54/56",
+          "D+50",
           "5",
           "CAMERA_TEMP_HIGH",
           "Warning",
@@ -2413,9 +2413,9 @@ window.TRACK_EYE_PLC_MAP = {
           "온도 정보 지원 시 사용"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Warning",
-          "D+50/52/54/56",
+          "D+50",
           "6",
           "VISION_CONFIDENCE_LOW",
           "Warning",
@@ -2424,9 +2424,9 @@ window.TRACK_EYE_PLC_MAP = {
           "Vision Confidence 기준 미달"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Warning",
-          "D+50/52/54/56",
+          "D+50",
           "7",
           "FRAME_TIMEOUT_TRANSIENT",
           "Warning",
@@ -2435,9 +2435,9 @@ window.TRACK_EYE_PLC_MAP = {
           "순간적 Frame Timeout"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Fault",
-          "D+51/53/55/57",
+          "D+51",
           "0",
           "CAMERA_DISCONNECTED",
           "Fault",
@@ -2446,9 +2446,9 @@ window.TRACK_EYE_PLC_MAP = {
           "Camera 연결 끊김"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Fault",
-          "D+51/53/55/57",
+          "D+51",
           "1",
           "FRAME_TIMEOUT",
           "Fault",
@@ -2457,9 +2457,9 @@ window.TRACK_EYE_PLC_MAP = {
           "설정 시간 이상 Frame 미수신"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Fault",
-          "D+51/53/55/57",
+          "D+51",
           "2",
           "CAMERA_INIT_FAIL",
           "Fault",
@@ -2468,9 +2468,9 @@ window.TRACK_EYE_PLC_MAP = {
           "Camera 초기화 실패"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Fault",
-          "D+51/53/55/57",
+          "D+51",
           "3",
           "CALIBRATION_DATA_MISSING",
           "Fault",
@@ -2479,9 +2479,9 @@ window.TRACK_EYE_PLC_MAP = {
           "해당 Camera Calibration 없음"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Fault",
-          "D+51/53/55/57",
+          "D+51",
           "4",
           "CALIBRATION_DATA_INVALID",
           "Fault",
@@ -2490,9 +2490,9 @@ window.TRACK_EYE_PLC_MAP = {
           "Calibration 데이터 오류"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Fault",
-          "D+51/53/55/57",
+          "D+51",
           "5",
           "FORMAT_INVALID",
           "Fault",
@@ -2501,9 +2501,9 @@ window.TRACK_EYE_PLC_MAP = {
           "해상도/Pixel Format 불일치"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Fault",
-          "D+51/53/55/57",
+          "D+51",
           "6",
           "TIMESTAMP_INVALID",
           "Fault",
@@ -2512,9 +2512,9 @@ window.TRACK_EYE_PLC_MAP = {
           "Timestamp 비정상"
         ],
         [
-          "Camera 1~4",
+          "Camera 1",
           "Fault",
-          "D+51/53/55/57",
+          "D+51",
           "7",
           "CAMERA_DRIVER_FAULT",
           "Fault",
@@ -2527,11 +2527,11 @@ window.TRACK_EYE_PLC_MAP = {
           "Warning",
           "D+58",
           "0",
-          "CAMERA_SYNC_WARN",
-          "Warning",
+          "Reserved",
+          "Reserved",
           "Auto",
           "아니오",
-          "카메라 간 동기 오차 증가"
+          "Camera 1대 고정; 항상 0"
         ],
         [
           "Vision Common",
@@ -2549,22 +2549,22 @@ window.TRACK_EYE_PLC_MAP = {
           "Warning",
           "D+58",
           "2",
-          "CAMERA_PARTIAL_DEGRADED",
+          "VISION_DEGRADED",
           "Warning",
           "Auto",
           "아니오",
-          "일부 Camera 성능 저하"
+          "Camera 1 처리 품질 저하"
         ],
         [
           "Vision Common",
           "Warning",
           "D+58",
           "3",
-          "FUSION_CONFIDENCE_LOW",
-          "Warning",
+          "Reserved",
+          "Reserved",
           "Auto",
           "아니오",
-          "멀티카메라 Fusion 신뢰도 저하"
+          "Camera 1대 고정; 항상 0"
         ],
         [
           "Vision Common",
@@ -2582,22 +2582,22 @@ window.TRACK_EYE_PLC_MAP = {
           "Fault",
           "D+59",
           "0",
-          "REQUIRED_CAMERA_INSUFFICIENT",
+          "CAMERA_1_UNAVAILABLE",
           "Fault",
           "Auto/Latch",
           "예",
-          "현재 Recipe 필요 Camera 수 부족"
+          "Camera 1 영상 사용 불가"
         ],
         [
           "Vision Common",
           "Fault",
           "D+59",
           "1",
-          "CAMERA_SYNC_FAIL",
-          "Fault",
+          "Reserved",
+          "Reserved",
           "Latch",
           "예",
-          "Camera 동기화 실패"
+          "Camera 1대 고정; 항상 0"
         ],
         [
           "Vision Common",
@@ -3803,7 +3803,7 @@ window.TRACK_EYE_PLC_MAP = {
             [
               "2",
               "Vision Common",
-              "멀티카메라/Vision 공통"
+              "Vision 공통 (Camera 1)"
             ],
             [
               "3",
@@ -3812,18 +3812,18 @@ window.TRACK_EYE_PLC_MAP = {
             ],
             [
               "4",
-              "Camera 2",
-              "Camera 2"
+              "Reserved",
+              "Camera 2~4 미사용"
             ],
             [
               "5",
-              "Camera 3",
-              "Camera 3"
+              "Reserved",
+              "Camera 2~4 미사용"
             ],
             [
               "6",
-              "Camera 4",
-              "Camera 4"
+              "Reserved",
+              "Camera 2~4 미사용"
             ],
             [
               "7",
@@ -3883,7 +3883,7 @@ window.TRACK_EYE_PLC_MAP = {
             [
               "2000~2099",
               "Vision Common",
-              "2001 Required Camera Insufficient"
+              "2001 Camera 1 Unavailable"
             ],
             [
               "2100~2199",
@@ -3892,18 +3892,18 @@ window.TRACK_EYE_PLC_MAP = {
             ],
             [
               "2200~2299",
-              "Camera 2",
-              "2201 Camera 2 Disconnected"
+              "Reserved",
+              "미사용"
             ],
             [
               "2300~2399",
-              "Camera 3",
-              "2301 Camera 3 Disconnected"
+              "Reserved",
+              "미사용"
             ],
             [
               "2400~2499",
-              "Camera 4",
-              "2401 Camera 4 Disconnected"
+              "Reserved",
+              "미사용"
             ],
             [
               "3000~3099",

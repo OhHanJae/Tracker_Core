@@ -614,22 +614,21 @@ class CoreApplication:
             self.settings.runtime.fault_latch_enabled,
         )
 
-        camera_devices = (
+        self.alarms.set_warning_word(
             DeviceSummaryBit.CAMERA_1,
+            snapshot.camera_warning_words.get(1, 0),
+        )
+        self.alarms.set_fault_word(
+            DeviceSummaryBit.CAMERA_1,
+            snapshot.camera_fault_words.get(1, 0),
+            self.settings.runtime.fault_latch_enabled,
+        )
+        for device in (
             DeviceSummaryBit.CAMERA_2,
             DeviceSummaryBit.CAMERA_3,
             DeviceSummaryBit.CAMERA_4,
-        )
-        for index, device in enumerate(camera_devices, start=1):
-            self.alarms.set_warning_word(
-                device,
-                snapshot.camera_warning_words.get(index, 0),
-            )
-            self.alarms.set_fault_word(
-                device,
-                snapshot.camera_fault_words.get(index, 0),
-                self.settings.runtime.fault_latch_enabled,
-            )
+        ):
+            self.alarms.clear_device(device)
 
     async def _apply_safe_stop_if_needed(self) -> None:
         safe_stop_requested = (

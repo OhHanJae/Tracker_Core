@@ -2584,12 +2584,6 @@ window.TRACK_EYE_DATA = {
       "표시 방식": "LED/Badge"
     },
     {
-      "상태 항목": "Camera 2",
-      "표시 예시": "ONLINE/OFFLINE",
-      "의미": "Basler Camera #2 상태",
-      "표시 방식": "LED/Badge"
-    },
-    {
       "상태 항목": "PTM",
       "표시 예시": "CONNECTED/DISCONNECTED",
       "의미": "Pan/Tilt 서비스 상태",

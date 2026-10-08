@@ -79,23 +79,18 @@ def normalize_vision_snapshot(data: dict[str, Any], camera_count: int) -> Vision
     if not isinstance(cameras, list):
         cameras = []
 
-    required_mask = _int(data.get("camera_required_mask"), 0)
-    online_mask = _int(data.get("camera_online_mask"), 0)
-    valid_mask = _int(data.get("camera_valid_mask"), 0)
+    required_mask = 1
+    online_mask = _int(data.get("camera_online_mask"), 0) & 1
+    valid_mask = _int(data.get("camera_valid_mask"), 0) & 1
     camera_warning_words: dict[int, int] = {}
     camera_fault_words: dict[int, int] = {}
 
-    for index, camera in enumerate(cameras[:camera_count]):
-        camera_data = _dict(camera)
-        bit = 1 << index
-        if camera_data.get("required", True):
-            required_mask |= bit
-        if camera_data.get("online") or camera_data.get("connected"):
-            online_mask |= bit
-        if camera_data.get("valid") or camera_data.get("ready"):
-            valid_mask |= bit
-        camera_warning_words[index + 1] = _int(camera_data.get("warning_word"), 0)
-        camera_fault_words[index + 1] = _int(camera_data.get("fault_word"), 0)
+    if cameras:
+        camera_data = _dict(cameras[0])
+        online_mask = int(bool(camera_data.get("online") or camera_data.get("connected")))
+        valid_mask = int(bool(camera_data.get("valid") or camera_data.get("ready")))
+        camera_warning_words[1] = _int(camera_data.get("warning_word"), 0)
+        camera_fault_words[1] = _int(camera_data.get("fault_word"), 0)
 
     position_error = _first_number(
         data,
@@ -131,8 +126,8 @@ def normalize_vision_snapshot(data: dict[str, Any], camera_count: int) -> Vision
         camera_valid_mask=valid_mask,
         camera_warning_words=camera_warning_words,
         camera_fault_words=camera_fault_words,
-        vision_warning_word=_int(data.get("vision_warning_word"), 0),
-        vision_fault_word=_int(data.get("vision_fault_word"), 0),
+        vision_warning_word=_int(data.get("vision_warning_word"), 0) & ~((1 << 0) | (1 << 3)),
+        vision_fault_word=_int(data.get("vision_fault_word"), 0) & ~(1 << 1),
         tracker_warning_word=_int(data.get("tracker_warning_word"), 0),
         tracker_fault_word=_int(data.get("tracker_fault_word"), 0),
         raw=data,

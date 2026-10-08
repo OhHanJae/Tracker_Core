@@ -108,7 +108,7 @@ class VisionSettings:
     web_enabled: bool = False
     timeout_s: float = 1.0
     enabled: bool = False
-    camera_count: int = 4
+    camera_count: int = 1
     status_command: str = "vision.status"
     result_command: str = "vision.result"
 
@@ -290,6 +290,7 @@ def _coerce_dataclass(cls: type[Any], data: dict[str, Any]) -> Any:
 def settings_from_dict(data: dict[str, Any]) -> AppSettings:
     default_data = AppSettings().to_dict()
     merged = _deep_merge(default_data, data)
+    merged["vision"]["camera_count"] = 1
     return AppSettings(
         core=_coerce_dataclass(CoreServerSettings, merged["core"]),
         discovery=_coerce_dataclass(DiscoverySettings, merged["discovery"]),
