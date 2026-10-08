@@ -24,6 +24,7 @@ from src.core.orchestration import CoreOrchestrator
 from src.common.system_resources import SystemResourceMonitor
 from src.common.status import (
     AlarmBook,
+    CommandCode,
     CommandResult,
     CommandRuntime,
     CommandStatus,
@@ -34,6 +35,7 @@ from src.common.status import (
 )
 from src.communication.json_tcp import JsonTcpResponse, JsonLineServer
 from src.communication.plc_memory_mapping import (
+    BYTE_COUNT,
     CameraMasks,
     PlcInput,
     PlcOutput,
@@ -178,7 +180,7 @@ class CoreApplication:
     def _process_communication_endpoints(self) -> dict[str, dict[str, Any]]:
         endpoints: dict[str, dict[str, Any]] = {}
 
-        def add(config_key: str, host: str, port: int, timeout_s: float, command: str) -> None:
+        def add(config_key: str, host: str, port: int, timeout_s: float, command: str, params: dict[str, Any] | None = None) -> None:
             process_name = str(
                 self.settings.processes.get(config_key, {}).get("process_name") or ""
             ).strip()
@@ -189,6 +191,8 @@ class CoreApplication:
                     "timeout_s": timeout_s,
                     "command": command,
                 }
+                if params is not None:
+                    endpoints[process_name]["params"] = params
 
         add(
             "plc_gateway",
@@ -210,6 +214,7 @@ class CoreApplication:
             self.settings.vision.port,
             self.settings.vision.timeout_s,
             self.settings.vision.status_command,
+            {},
         )
         add(
             "laser",
@@ -295,6 +300,7 @@ class CoreApplication:
             )
 
     async def stop(self) -> None:
+        was_started = self._started
         self._started = False
         self._stop_event.set()
         for task in (self._run_task, self._server_task, self._http_server_task):
@@ -302,6 +308,10 @@ class CoreApplication:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+        if was_started:
+            self.plc_input = PlcInput()
+            self._safe_stop_applied = False
+            await self._apply_safe_stop_if_needed()
         await self.devices.stop_all()
         await self.orchestrator.stop()
         await self.discovery.stop()
@@ -354,10 +364,16 @@ class CoreApplication:
             if not self.plc_memory.connected:
                 self.plc_memory.connect()
             payload = self.plc_memory.read_plc_data()
+            if len(payload) != BYTE_COUNT:
+                raise ValueError(
+                    f"PLC input length {len(payload)} != {BYTE_COUNT}"
+                )
             self.plc_input = PlcInput.from_bytes(payload)
             self.alarms.set_fault_word(
                 DeviceSummaryBit.PLC_COMMUNICATION,
-                0,
+                self.alarms.fault_word(
+                    DeviceSummaryBit.PLC_COMMUNICATION, latch_enabled=False
+                ) & (1 << 4),
                 self.settings.runtime.fault_latch_enabled,
             )
             if self.plc_input.heartbeat != self._last_plc_heartbeat:
@@ -365,16 +381,22 @@ class CoreApplication:
                 self._last_plc_heartbeat_change_ms = timestamp_ms
         except SharedMemoryError as exc:
             LOGGER.debug("PLC shared memory read failed: %s", exc)
+            self.plc_input = PlcInput()
             self.alarms.set_fault_word(
                 DeviceSummaryBit.PLC_COMMUNICATION,
-                1 << 0,
+                self.alarms.fault_word(
+                    DeviceSummaryBit.PLC_COMMUNICATION, latch_enabled=False
+                ) | (1 << 0),
                 self.settings.runtime.fault_latch_enabled,
             )
         except Exception as exc:
             LOGGER.debug("PLC read failed: %s", exc)
+            self.plc_input = PlcInput()
             self.alarms.set_fault_word(
                 DeviceSummaryBit.PLC_COMMUNICATION,
-                1 << 3,
+                self.alarms.fault_word(
+                    DeviceSummaryBit.PLC_COMMUNICATION, latch_enabled=False
+                ) | (1 << 3),
                 self.settings.runtime.fault_latch_enabled,
             )
 
@@ -388,13 +410,15 @@ class CoreApplication:
             DeviceSummaryBit.PLC_COMMUNICATION,
             latch_enabled=False,
         )
-        disconnected_or_read_fault = current_fault & ~((1 << 1) | (1 << 3))
+        disconnected_or_read_fault = current_fault & ~(1 << 1)
         self.alarms.set_warning_word(DeviceSummaryBit.PLC_COMMUNICATION, warning)
         self.alarms.set_fault_word(
             DeviceSummaryBit.PLC_COMMUNICATION,
             disconnected_or_read_fault | heartbeat_fault,
             self.settings.runtime.fault_latch_enabled,
         )
+        if heartbeat_fault:
+            self.plc_input = PlcInput()
 
     def _sync_device_snapshots(self) -> None:
         self._apply_ptm_alarms()
@@ -441,7 +465,7 @@ class CoreApplication:
         fault = _safe_int(status.get("fault_word"))
         if status.get("fault"):
             fault |= 1 << 1
-        if state.poll_count and not state.online:
+        if state.poll_count and (not state.online or status.get("connected") is False):
             fault |= 1 << 0
         self.alarms.set_warning_word(DeviceSummaryBit.PAN_MOTOR, warning)
         self.alarms.set_warning_word(DeviceSummaryBit.TILT_MOTOR, warning)
@@ -595,6 +619,20 @@ class CoreApplication:
         self.command.message = ""
         self.command.busy_since_ms = now_ms()
 
+        if code != CommandCode.ERROR_RESET:
+            if self.plc_input.force_stop:
+                self.command.status = CommandStatus.REJECTED
+                self.command.result = CommandResult.FORCE_STOP_ACTIVE
+                return
+            if not self.plc_input.run_enable:
+                self.command.status = CommandStatus.REJECTED
+                self.command.result = CommandResult.SYSTEM_NOT_READY
+                return
+            if self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled):
+                self.command.status = CommandStatus.REJECTED
+                self.command.result = CommandResult.FAULT_ACTIVE
+                return
+
         try:
             await self._execute_command(code)
             if self.command.status not in {CommandStatus.REJECTED, CommandStatus.ERROR}:
@@ -664,6 +702,8 @@ class CoreApplication:
         tracking_tolerance = self.plc_input.applied_tracking_tolerance(
             self.settings.runtime.tracking_tolerance_default_mm_x100
         )
+        ptm_status = self.ptm_service.state.status if self.ptm_service.state.online else {}
+        laser_status = self.laser_service.state.status if self.laser_service.state.online else {}
         laser_tolerance = self.plc_input.applied_laser_tolerance(
             self.settings.runtime.laser_tolerance_default_deg_x100
         )
@@ -686,6 +726,12 @@ class CoreApplication:
             self._position_ok_since_ms is not None
             and timestamp_ms - self._position_ok_since_ms
             >= self.settings.runtime.position_stable_ms
+        )
+        laser_target_ready = (
+            position_stable
+            and self.ptm_service.state.online
+            and bool(ptm_status.get("connected", True))
+            and not ptm_status.get("moving", False)
         )
 
         fault_active = self.alarms.fault_summary(
@@ -719,15 +765,16 @@ class CoreApplication:
                 controller_online=True,
                 system_ready=system_ready,
                 tracking_active=self.vision_snapshot.tracking_active,
-                motion_moving=False,
-                laser_on=False,
+                motion_moving=bool(ptm_status.get("moving") and ptm_status.get("connected", True)),
+                laser_on=bool(laser_status.get("on", ptm_status.get("laser_on", False))),
+                homed=bool(ptm_status.get("homed")),
                 stop_active=self.plc_input.force_stop or not self.plc_input.run_enable,
                 force_stop_active=self.plc_input.force_stop,
                 camera_ready=_mask_ready(
                     self.vision_snapshot.camera_required_mask,
                     self.vision_snapshot.camera_valid_mask,
                 ),
-                laser_target_ready=position_stable,
+                laser_target_ready=laser_target_ready,
                 position_ok=position_ok,
                 position_stable=position_stable,
             ),
@@ -757,9 +804,20 @@ class CoreApplication:
                 return
             payload = self.output.to_bytes()
             header = self.plc_memory.header()
-            if len(payload) != header.write_length:
-                payload = payload[: header.write_length].ljust(header.write_length, b"\x00")
+            if header.write_length != BYTE_COUNT:
+                raise SharedMemoryError(
+                    f"PLC output length {header.write_length} != {BYTE_COUNT}"
+                )
             self.plc_memory.write_plc_data(payload)
+            current_fault = self.alarms.fault_word(
+                DeviceSummaryBit.PLC_COMMUNICATION, latch_enabled=False
+            )
+            if current_fault & (1 << 4):
+                self.alarms.set_fault_word(
+                    DeviceSummaryBit.PLC_COMMUNICATION,
+                    current_fault & ~(1 << 4),
+                    self.settings.runtime.fault_latch_enabled,
+                )
         except Exception as exc:
             LOGGER.debug("PLC shared memory write failed: %s", exc)
             self.alarms.set_fault_word(

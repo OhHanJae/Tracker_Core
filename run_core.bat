@@ -25,6 +25,12 @@ if not exist "%VENV_PYTHON%" (
   if errorlevel 1 exit /b 1
 )
 
+"%VENV_PYTHON%" -c "import sys; raise SystemExit(sys.version_info < (3, 10))"
+if errorlevel 1 (
+  echo [ERROR] .venv must use Python 3.10 or later.
+  exit /b 1
+)
+
 "%VENV_PYTHON%" main.py %*
 exit /b %ERRORLEVEL%
 
@@ -32,9 +38,9 @@ exit /b %ERRORLEVEL%
 set "CANDIDATE=%~1"
 set "CANDIDATE_ARG=%~2"
 if "%CANDIDATE_ARG%"=="" (
-  "%CANDIDATE%" -c "import sys" >nul 2>nul
+  "%CANDIDATE%" -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
 ) else (
-  "%CANDIDATE%" "%CANDIDATE_ARG%" -c "import sys" >nul 2>nul
+  "%CANDIDATE%" "%CANDIDATE_ARG%" -c "import sys; raise SystemExit(sys.version_info < (3, 10))" >nul 2>nul
 )
 if not errorlevel 1 (
   set "BOOTSTRAP_PYTHON=%CANDIDATE%"

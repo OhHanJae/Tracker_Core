@@ -41,19 +41,25 @@ class PtmService(DeviceService):
 
 def normalize_ptm_status(data: dict[str, Any]) -> dict[str, Any]:
     motor = _dict(data.get("motor"))
+    serial = _dict(data.get("serial"))
+    motion = _dict(data.get("motion"))
+    position = _dict(data.get("position"))
     pan = _dict(data.get("pan"))
     tilt = _dict(data.get("tilt"))
     laser = _dict(data.get("laser"))
+    motion_state = str(motion.get("state") or "").lower()
 
     return {
-        "online": _bool_first(True, data, motor, "online", "connected", "ready"),
-        "moving": _bool_first(False, data, motor, "moving", "motion_moving", "busy"),
+        "online": _bool_first(True, data, motor, "online", "ready"),
+        "connected": _bool_first(True, serial, data, motor, "connected"),
+        "moving": _bool_first(motion_state in {"tracking", "jog"}, data, motor, "moving", "motion_moving", "busy"),
         "homed": _bool_first(False, data, motor, "homed", "home_complete"),
-        "pan_deg": _first_number(data, motor, pan, "pan_deg", "pan", "position_deg"),
-        "tilt_deg": _first_number(data, motor, tilt, "tilt_deg", "tilt", "position_deg"),
+        "pan_deg": _first_number(data, motor, pan, position, "pan_deg", "pan", "position_deg"),
+        "tilt_deg": _first_number(data, motor, tilt, position, "tilt_deg", "tilt", "position_deg"),
         "pan_speed_deg_s": _first_number(data, motor, pan, "pan_speed_deg_s", "speed"),
         "tilt_speed_deg_s": _first_number(data, motor, tilt, "tilt_speed_deg_s", "speed"),
         "laser_on": _bool_first(False, data, motor, laser, "laser_on", "on", "emission"),
+        "laser_connected": _bool_first(False, laser, "connected") if "connected" in laser else None,
         "warning_word": _first_int(0, data, motor, "warning_word", "warnings"),
         "fault_word": _first_int(0, data, motor, "fault_word", "faults"),
         "fault": _bool_first(False, data, motor, "fault", "error"),

@@ -751,6 +751,7 @@ class ProcessManager:
         sequence = self._ping_sequences.get(process_name, 0) + 1
         self._ping_sequences[process_name] = sequence
         request_id = f"ping-{process_name}-{sequence}-{uuid.uuid4().hex[:8]}"
+        params = endpoint.get("params", {"request_id": request_id, "sequence": sequence})
         started = now_ms()
         previous = self._communication_state.get(process_name, {})
         self._communication_state[process_name] = {
@@ -776,7 +777,7 @@ class ProcessManager:
                 host,
                 port,
                 command,
-                {"request_id": request_id, "sequence": sequence},
+                params,
                 timeout_s=timeout_s,
                 request_id=request_id,
             )

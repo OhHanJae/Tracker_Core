@@ -12,6 +12,10 @@ if [[ ! -x "$venv_python" ]]; then
     echo "[ERROR] Python 3 was not found. Install python3 and python3-venv first."
     exit 1
   fi
+  if ! "$python_bin" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+    echo "[ERROR] Python 3.10 or later is required."
+    exit 1
+  fi
 
   echo "[1/2] Creating virtual environment: $venv_dir"
   if ! "$python_bin" -m venv "$venv_dir"; then
@@ -24,6 +28,11 @@ if [[ ! -x "$venv_python" ]]; then
     echo "[ERROR] Failed to install requirements.txt"
     exit 1
   fi
+fi
+
+if ! "$venv_python" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+  echo "[ERROR] $venv_dir must use Python 3.10 or later."
+  exit 1
 fi
 
 exec "$venv_python" main.py "$@"

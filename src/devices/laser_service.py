@@ -34,7 +34,10 @@ class LaserService(DeviceService):
             ptm = self.ptm_service.state
             if not ptm.online:
                 raise JsonTcpError(ptm.last_error or "PTM status is offline")
-            return normalize_laser_status(ptm.status, mode="ptm")
+            status = normalize_laser_status(ptm.status, mode="ptm")
+            if ptm.status.get("laser_connected") is not None:
+                status["online"] = bool(ptm.status["laser_connected"])
+            return status
         if mode == "tcp":
             response = await send_json_request(
                 self.settings.host,
