@@ -49,6 +49,10 @@ def validate_discovery(settings: DiscoverySettings) -> None:
     ipaddress.IPv4Address(settings.broadcast_address)
     if not settings.interface or len(settings.interface) > 15:
         raise ValueError("Discovery interface must name a network interface")
+    if len(settings.name.strip()) > 80 or not settings.name.strip():
+        raise ValueError("Discovery name must contain 1-80 characters")
+    if len(settings.controller_id) > 80:
+        raise ValueError("Controller ID must be at most 80 characters")
 
 
 class _Responder(asyncio.DatagramProtocol):
@@ -80,7 +84,9 @@ class DiscoveryService:
 
     def packet(self, kind: str) -> bytes:
         ip = interface_ipv4(self.settings.interface)
-        device_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"tracker-core:{socket.gethostname()}:{self.settings.interface}"))
+        device_id = self.settings.controller_id or str(uuid.uuid5(
+            uuid.NAMESPACE_DNS, f"tracker-core:{socket.gethostname()}:{self.settings.interface}"
+        ))
         return json.dumps({
             "protocol": PROTOCOL,
             "version": VERSION,

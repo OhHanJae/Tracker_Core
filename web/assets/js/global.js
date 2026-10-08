@@ -33,9 +33,9 @@ const titles = {
   vision: ['Vision', 'Vision Web 화면과 연결 상태를 표시합니다.'],
   services: ['Process Manager', '프로세스 설정과 실행·중지·재시작을 관리합니다.'],
   process: ['Watchdog', '프로세스별 자동 재시작과 Watchdog 상태를 관리합니다.'],
-  logging: ['Logging', '운영 로그, 패킷 로그, 설정 변경 이력을 관리합니다.'],
-  alarm: ['Alarm / Fault', '통신 단절과 프로세스 장애 판정 기준을 설정합니다.'],
-  system: ['System', '시간 동기화, 자동 시작, 리소스 경고 등 OS 운영 설정입니다.'],
+  logging: ['Logging', 'Core 로그 레벨과 파일 보관을 설정합니다.'],
+  alarm: ['Alarm / Fault', 'PLC 및 Vision 장애 판정 기준을 설정합니다.'],
+  system: ['System', '메모리와 디스크 사용률 경고 기준을 설정합니다.'],
   settings: ['전체 설정 목록', '현재 Configurator에서 노출하는 설정 항목을 검색·필터링해서 확인합니다.'],
   scope: ['설정 책임 범위', '메인 컨트롤 앱과 각 Setup / Calibration 화면의 책임 범위를 구분합니다.'],
 };

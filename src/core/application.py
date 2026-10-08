@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,7 @@ class CoreApplication:
         self.settings = load_settings(settings_path)
         ensure_data_directories(self.settings)
         save_settings(self.settings, settings_path)
+        self._log_handler: RotatingFileHandler | None = None
 
         self.alarms = AlarmBook()
         self.command = CommandRuntime()
@@ -109,6 +111,45 @@ class CoreApplication:
         self._position_ok_since_ms: int | None = None
         self._safe_stop_applied = False
         self._last_status: dict[str, Any] = {}
+
+    @staticmethod
+    def _validate_operator_settings(settings: AppSettings) -> None:
+        if settings.logging.level not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+            raise ValueError("Invalid logging level")
+        if not 1 <= settings.logging.max_file_mb <= 100:
+            raise ValueError("Log file size must be between 1 and 100 MB")
+        if not 1 <= settings.logging.backup_count <= 30:
+            raise ValueError("Log backup count must be between 1 and 30")
+        if not 1 <= settings.system.memory_warn_percent <= 100:
+            raise ValueError("Memory warning threshold must be between 1 and 100")
+        if not 1 <= settings.system.disk_warn_percent <= 100:
+            raise ValueError("Disk warning threshold must be between 1 and 100")
+        if not 100 <= settings.runtime.plc_heartbeat_warn_ms < settings.runtime.plc_heartbeat_fault_ms <= 60000:
+            raise ValueError("PLC fault timeout must exceed warning timeout (100-60000 ms)")
+        if not 100 <= settings.runtime.vision_status_max_age_ms <= 60000:
+            raise ValueError("Vision status timeout must be between 100 and 60000 ms")
+
+    def _configure_logging(self) -> None:
+        root_logger = logging.getLogger()
+        settings = self.settings.logging
+        new_handler = None
+        if settings.file_enabled:
+            log_path = resolve_app_path(self.settings.paths.logs_dir) / "core.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            new_handler = RotatingFileHandler(
+                log_path, maxBytes=settings.max_file_mb * 1024 * 1024,
+                backupCount=settings.backup_count, encoding="utf-8",
+            )
+            new_handler.setFormatter(logging.Formatter(
+                "%(asctime)s %(levelname)s %(name)s: %(message)s"
+            ))
+        if self._log_handler is not None:
+            root_logger.removeHandler(self._log_handler)
+            self._log_handler.close()
+        self._log_handler = new_handler
+        if new_handler is not None:
+            root_logger.addHandler(new_handler)
+        root_logger.setLevel(getattr(logging, settings.level))
 
     def _rebuild_clients(self) -> None:
         self.xgt_gateway = XgtGatewayClient(self.settings.xgt)
@@ -181,6 +222,7 @@ class CoreApplication:
 
     async def _replace_settings(self, settings: AppSettings) -> None:
         validate_discovery(settings.discovery)
+        self._validate_operator_settings(settings)
         restart_discovery = (
             settings.discovery != self.settings.discovery
             or settings.core.port != self.settings.core.port
@@ -198,6 +240,8 @@ class CoreApplication:
             await self.discovery.stop()
 
         self.settings = settings
+        if self._started:
+            self._configure_logging()
         if restart_discovery:
             self.discovery = DiscoveryService(settings.discovery, settings.core.port,
                                               settings.core.http_port or settings.core.port)
@@ -219,6 +263,8 @@ class CoreApplication:
                 await self.discovery.start()
 
     async def start(self) -> None:
+        self._validate_operator_settings(self.settings)
+        self._configure_logging()
         if self.settings.xgt.shared_memory.configure_gateway_on_start:
             with contextlib.suppress(Exception):
                 await self.xgt_gateway.configure_gateway()
@@ -266,6 +312,10 @@ class CoreApplication:
         if self._http_server is not None:
             await self._http_server.stop()
         self.plc_memory.close()
+        if self._log_handler is not None:
+            logging.getLogger().removeHandler(self._log_handler)
+            self._log_handler.close()
+            self._log_handler = None
 
     async def wait_closed(self) -> None:
         await self._stop_event.wait()
@@ -788,9 +838,15 @@ class CoreApplication:
                 patch = params.get("patch")
                 new_settings = apply_settings_patch(self.settings, patch)
                 validate_discovery(new_settings.discovery)
+                self._validate_operator_settings(new_settings)
                 ensure_data_directories(new_settings)
-                save_settings(new_settings, self.settings_path)
-                await self._replace_settings(new_settings)
+                old_settings = self.settings
+                try:
+                    await self._replace_settings(new_settings)
+                    save_settings(new_settings, self.settings_path)
+                except Exception:
+                    await self._replace_settings(old_settings)
+                    raise
                 return JsonTcpResponse(True, self.settings.to_dict())
             if command == "reload_config":
                 new_settings = load_settings(self.settings_path)
@@ -902,7 +958,10 @@ class CoreApplication:
                     "host": self.settings.core.host,
                     "port": self.settings.core.port,
                 },
-                "resources": self.system_resources.snapshot(),
+                "resources": self.system_resources.snapshot(
+                    self.settings.system.memory_warn_percent,
+                    self.settings.system.disk_warn_percent,
+                ),
             },
             "plc": {
                 "shared_memory_connected": self.plc_memory.connected,

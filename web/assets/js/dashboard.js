@@ -29,10 +29,10 @@ function resourceCard(name, metric, detail = '') {
   const percent = hasValue && metric.unit === '%' ? Math.max(0, Math.min(100, Number(metric.value))) : 0;
   const suffix = hasValue && metric.unit === '%' ? '%' : '';
   const meta = failed ? metric?.error || 'Value unavailable' : detail || metric.message || '';
-  return `<div class="resource">
+  return `<div class="resource ${metric?.warning ? 'resource-warning' : ''}">
     <div class="resource-head"><span>${esc(name)}</span><strong>${esc(value)}${suffix}</strong></div>
     <div class="progress"><i style="width:${percent}%"></i></div>
-    <div class="resource-meta"><span>${esc(meta)}</span><span>${failed ? 'Error' : hasValue ? 'Measured' : 'N/A'}</span></div>
+    <div class="resource-meta"><span>${esc(meta)}</span><span>${failed ? 'Error' : metric?.warning ? `Warning ≥ ${esc(metric.warning_threshold_percent)}%` : hasValue ? 'Measured' : 'N/A'}</span></div>
   </div>`;
 }
 

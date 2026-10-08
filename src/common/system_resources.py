@@ -14,8 +14,8 @@ class SystemResourceMonitor:
         self.disk_path = disk_path.resolve()
         self._last_cpu: tuple[int, int] | None = None
 
-    def snapshot(self) -> dict[str, Any]:
-        return {
+    def snapshot(self, memory_warn_percent: int = 90, disk_warn_percent: int = 90) -> dict[str, Any]:
+        result = {
             "cpu": self._metric(self._cpu),
             "memory": self._metric(self._memory),
             "disk": self._metric(self._disk),
@@ -23,6 +23,12 @@ class SystemResourceMonitor:
             "platform": self._metric(self._platform),
             "collected_ms": int(time.time() * 1000),
         }
+        for key, threshold in (("memory", memory_warn_percent), ("disk", disk_warn_percent)):
+            metric = result[key]
+            metric["warning_threshold_percent"] = threshold
+            metric["warning"] = bool(metric.get("available") and metric.get("value") is not None
+                                     and metric["value"] >= threshold)
+        return result
 
     @staticmethod
     def _metric(reader: Any) -> dict[str, Any]:

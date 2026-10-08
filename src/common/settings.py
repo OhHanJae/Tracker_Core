@@ -32,6 +32,21 @@ class DiscoverySettings:
     timeout_ms: int = 1000
     retries: int = 2
     name: str = "Tracker Core"
+    controller_id: str = ""
+
+
+@dataclass
+class LoggingSettings:
+    level: str = "INFO"
+    file_enabled: bool = True
+    max_file_mb: int = 20
+    backup_count: int = 5
+
+
+@dataclass
+class SystemSettings:
+    memory_warn_percent: int = 90
+    disk_warn_percent: int = 90
 
 
 @dataclass
@@ -230,6 +245,8 @@ def _default_command_map() -> dict[str, dict[str, Any]]:
 class AppSettings:
     core: CoreServerSettings = field(default_factory=CoreServerSettings)
     discovery: DiscoverySettings = field(default_factory=DiscoverySettings)
+    logging: LoggingSettings = field(default_factory=LoggingSettings)
+    system: SystemSettings = field(default_factory=SystemSettings)
     xgt: XgtSettings = field(default_factory=XgtSettings)
     motor: MotorSettings = field(default_factory=MotorSettings)
     laser: LaserSettings = field(default_factory=LaserSettings)
@@ -282,6 +299,8 @@ def settings_from_dict(data: dict[str, Any]) -> AppSettings:
     return AppSettings(
         core=_coerce_dataclass(CoreServerSettings, merged["core"]),
         discovery=_coerce_dataclass(DiscoverySettings, merged["discovery"]),
+        logging=_coerce_dataclass(LoggingSettings, merged["logging"]),
+        system=_coerce_dataclass(SystemSettings, merged["system"]),
         xgt=XgtSettings(
             control=_coerce_dataclass(TcpEndpointSettings, merged["xgt"]["control"]),
             web=_coerce_dataclass(TcpEndpointSettings, merged["xgt"]["web"]),
