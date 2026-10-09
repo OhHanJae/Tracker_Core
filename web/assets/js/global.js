@@ -27,6 +27,7 @@ const toast = document.getElementById('toast');
 
 const titles = {
   dashboard: ['Dashboard', '컨트롤러, 서비스, 프로세스 상태를 한 화면에서 확인합니다.'],
+  monitor: ['운전 모니터', 'Core 처리 상태, PLC 쓰기 확인과 장치 상태를 모니터링합니다.'],
   controller: ['Controller', '검색, 기본 정보, 네트워크 등 컨트롤러 전역 설정입니다.'],
   plc: ['PLC', 'XGT 전용 통신, D 디바이스 주소, PLC Data Map, 공유 메모리를 관리합니다.'],
   ptm: ['PTM', 'PTM Web 화면을 표시합니다.'],
@@ -36,8 +37,6 @@ const titles = {
   logging: ['Logging', 'Core 로그 레벨과 파일 보관을 설정합니다.'],
   alarm: ['Alarm / Fault', 'PLC 및 Vision 장애 판정 기준을 설정합니다.'],
   system: ['System', '메모리와 디스크 사용률 경고 기준을 설정합니다.'],
-  settings: ['전체 설정 목록', '현재 Configurator에서 노출하는 설정 항목을 검색·필터링해서 확인합니다.'],
-  scope: ['설정 책임 범위', '메인 컨트롤 앱과 각 Setup / Calibration 화면의 책임 범위를 구분합니다.'],
 };
 
 const categoryMap = {
@@ -74,8 +73,8 @@ function priorityClass(p) {
   return p === '필수' ? 'required' : p === '권장' ? 'recommended' : p === '고급' ? 'advanced' : 'optional';
 }
 
-function statusBadge(text) {
-  const t = String(text).toUpperCase();
+function statusBadge(text, stateText = text) {
+  const t = String(stateText).toUpperCase();
   const cls = t === 'DISABLED' ? 'blue' : /^(ONLINE|CONNECTED|RUNNING|ALIVE|ON|OK|LISTEN|HEALTHY)$/.test(t) ? 'green' : /WARN|DEGRADED|IDLE/.test(t) ? 'orange' : 'red';
   const dot = cls === 'blue' ? '' : cls === 'green' ? 'online' : cls === 'orange' ? 'warn' : 'offline';
   return `<span class="badge ${cls}"><span class="status-dot ${dot}"></span>${esc(text)}</span>`;
@@ -466,7 +465,7 @@ function isEditingControl() {
 }
 
 function shouldAutoRefreshView() {
-  return state.view === 'dashboard' && !isEditingControl();
+  return ['dashboard', 'monitor'].includes(state.view) && !isEditingControl();
 }
 
 async function loadCoreState({ silent = false, force = false } = {}) {

@@ -13,6 +13,7 @@ HEADER_SIZE = 64
 MAGIC = b"XGSM"
 FLAG_PLC_CONNECTED = 1 << 0
 FLAG_LAST_READ_OK = 1 << 1
+FLAG_LAST_WRITE_OK = 1 << 2
 
 
 class SharedMemoryError(RuntimeError):
@@ -78,7 +79,15 @@ class PlcSharedMemoryClient:
         errors: list[str] = []
         for candidate in shared_memory_name_candidates(self.name):
             try:
-                self._shm = shared_memory.SharedMemory(name=candidate)
+                try:
+                    self._shm = shared_memory.SharedMemory(name=candidate, track=False)
+                except TypeError:
+                    self._shm = shared_memory.SharedMemory(name=candidate)
+                    if os.name != "nt":
+                        # The Gateway owns the segment; a Core restart must not unlink it.
+                        from multiprocessing import resource_tracker
+
+                        resource_tracker.unregister(self._shm._name, "shared_memory")
                 self.connected_name = candidate
                 return
             except FileNotFoundError as exc:

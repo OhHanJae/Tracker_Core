@@ -45,9 +45,11 @@ from src.communication.plc_memory_mapping import (
 )
 from src.communication.plc_shared_memory import (
     FLAG_LAST_READ_OK,
+    FLAG_LAST_WRITE_OK,
     FLAG_PLC_CONNECTED,
     PlcSharedMemoryClient,
     SharedMemoryError,
+    SharedMemoryHeader,
 )
 from src.communication.xgt_gateway_client import XgtGatewayClient
 from src.devices import DeviceRegistry, LaserService, PtmService, VisionDeviceService
@@ -130,6 +132,10 @@ class CoreApplication:
         self._active_recipe_id = 0
         self._active_point_id = 0
         self._last_status: dict[str, Any] = {}
+        self._cycle_count = 0
+        self._last_cycle_ms = 0
+        self._last_cycle_duration_ms = 0
+        self._last_cycle_error = ""
 
     @staticmethod
     def _validate_operator_settings(settings: AppSettings) -> None:
@@ -176,6 +182,7 @@ class CoreApplication:
         vision_settings = replace(self.settings.vision, enabled=self._vision_enabled())
         self.xgt_gateway = XgtGatewayClient(self.settings.xgt)
         self.plc_memory = PlcSharedMemoryClient(self.settings.xgt.shared_memory.name)
+        self._reset_plc_write_tracking()
         self.motor_api = MotorApiClient(motor_settings)
         self.vision_api = VisionTcpClient(vision_settings)
         self.ptm_service = PtmService(motor_settings, self.motor_api)
@@ -453,7 +460,9 @@ class CoreApplication:
             started = now_ms()
             try:
                 await self._cycle()
-            except Exception:
+                self._last_cycle_error = ""
+            except Exception as exc:
+                self._last_cycle_error = str(exc) or type(exc).__name__
                 LOGGER.exception("core cycle failed")
                 self.alarms.set_fault_word(
                     DeviceSummaryBit.CONTROLLER,
@@ -461,6 +470,9 @@ class CoreApplication:
                     self.settings.runtime.fault_latch_enabled,
                 )
             elapsed = now_ms() - started
+            self._cycle_count += 1
+            self._last_cycle_ms = now_ms()
+            self._last_cycle_duration_ms = elapsed
             delay_ms = max(1, self.settings.core.cycle_interval_ms - elapsed)
             await asyncio.sleep(delay_ms / 1000)
 
@@ -1109,6 +1121,17 @@ class CoreApplication:
             latch_faults=self.settings.runtime.fault_latch_enabled,
         )
 
+    def _reset_plc_write_tracking(self) -> None:
+        self._plc_write_sequence: int | None = None
+        self._plc_write_ack_sequence: int | None = None
+        self._plc_write_last_ack_ms = 0
+        self._plc_write_ack_seen = False
+        self._plc_write_last_reconnect_ms = 0
+        self._plc_write_last_commit_ms = 0
+        self._plc_write_commit_count = 0
+        self._plc_write_error = ""
+        self._plc_write_payload = b""
+
     def _write_plc_output(self) -> None:
         if not self._plc_enabled() or not self._gateway_configured:
             return
@@ -1117,21 +1140,46 @@ class CoreApplication:
                 return
             payload = self.output.to_bytes()
             header = self.plc_memory.header()
+            timestamp = now_ms()
             if header.write_length != BYTE_COUNT:
                 raise SharedMemoryError(
                     f"PLC output length {header.write_length} != {BYTE_COUNT}"
                 )
-            self.plc_memory.write_plc_data(payload)
+            if self._plc_write_ack_sequence is None:
+                self._plc_write_ack_sequence = header.write_ack_sequence
+                self._plc_write_last_ack_ms = timestamp
+            elif header.last_write_time_ns and header.status_flags & FLAG_LAST_WRITE_OK and (
+                header.write_ack_sequence != self._plc_write_ack_sequence
+                or header.write_ack_sequence == self._plc_write_sequence
+            ):
+                self._plc_write_ack_sequence = header.write_ack_sequence
+                self._plc_write_last_ack_ms = timestamp
+                self._plc_write_error = ""
+                self._plc_write_ack_seen = bool(header.last_write_time_ns)
+            self._plc_write_sequence = self.plc_memory.write_plc_data(payload)
+            self._plc_write_payload = payload
+            self._plc_write_last_commit_ms = timestamp
+            self._plc_write_commit_count += 1
+            timeout_ms = max(
+                self.settings.runtime.plc_heartbeat_fault_ms,
+                self.settings.xgt.plc_area.interval_ms * 6,
+            )
+            if timestamp - self._plc_write_last_ack_ms >= timeout_ms:
+                self._plc_write_error = f"PLC write acknowledgement stopped for {timeout_ms} ms"
+                if timestamp - self._plc_write_last_reconnect_ms >= 1000:
+                    self._plc_write_last_reconnect_ms = timestamp
+                    # A restarted Gateway may own a new segment with the same name.
+                    self.plc_memory.reconnect()
             current_fault = self.alarms.fault_word(
                 DeviceSummaryBit.PLC_COMMUNICATION, latch_enabled=False
             )
-            if current_fault & (1 << 4):
-                self.alarms.set_fault_word(
-                    DeviceSummaryBit.PLC_COMMUNICATION,
-                    current_fault & ~(1 << 4),
-                    self.settings.runtime.fault_latch_enabled,
-                )
+            self.alarms.set_fault_word(
+                DeviceSummaryBit.PLC_COMMUNICATION,
+                (current_fault & ~(1 << 4)) | (1 << 4 if self._plc_write_error else 0),
+                self.settings.runtime.fault_latch_enabled,
+            )
         except Exception as exc:
+            self._plc_write_error = str(exc) or type(exc).__name__
             LOGGER.debug("PLC shared memory write failed: %s", exc)
             self.alarms.set_fault_word(
                 DeviceSummaryBit.PLC_COMMUNICATION,
@@ -1294,6 +1342,7 @@ class CoreApplication:
                     # stopped or recreated.  On Windows an open client handle
                     # keeps a stale mapping alive after the owner exits.
                     self.plc_memory.close()
+                    self._reset_plc_write_tracking()
                 result = await self.process_manager.command(action, process_name)
                 return JsonTcpResponse(True, result)
             if command in {"ptm.status", "motor.status"}:
@@ -1330,13 +1379,59 @@ class CoreApplication:
                 error={"code": "INTERNAL_ERROR", "message": str(exc)},
             )
 
+    def _plc_write_snapshot(self, header: SharedMemoryHeader | None) -> dict[str, Any]:
+        timestamp = now_ms()
+        timeout_ms = max(
+            self.settings.runtime.plc_heartbeat_fault_ms,
+            self.settings.xgt.plc_area.interval_ms * 6,
+        )
+        if not self._plc_enabled():
+            delivery_state = "disabled"
+        elif not self._gateway_configured:
+            delivery_state = "waiting_gateway"
+        elif header is None:
+            delivery_state = "disconnected"
+        elif self._plc_write_error:
+            delivery_state = "error"
+        elif self._plc_write_sequence is None:
+            delivery_state = "waiting_commit"
+        elif (
+            header.write_ack_sequence == self._plc_write_sequence
+            and header.status_flags & FLAG_LAST_WRITE_OK
+            and header.last_write_time_ns
+        ):
+            delivery_state = "confirmed"
+        elif self._plc_write_ack_seen and header.status_flags & FLAG_LAST_WRITE_OK:
+            delivery_state = "transmitting"
+        else:
+            delivery_state = "pending"
+        return {
+            "state": delivery_state,
+            "base_address": self.settings.xgt.plc_area.write_address,
+            "commit_count": self._plc_write_commit_count,
+            "committed_sequence": self._plc_write_sequence,
+            "acknowledged_sequence": header.write_ack_sequence if header else None,
+            "pending": bool(header and self._plc_write_sequence is not None
+                            and self._plc_write_sequence != header.write_ack_sequence),
+            "last_commit_age_ms": timestamp - self._plc_write_last_commit_ms
+            if self._plc_write_last_commit_ms else None,
+            "last_ack_age_ms": timestamp - self._plc_write_last_ack_ms
+            if self._plc_write_ack_seen else None,
+            "ack_timeout_ms": timeout_ms,
+            "last_error": self._plc_write_error,
+            "last_committed_words_preview": words_from_bytes(self._plc_write_payload)[:80]
+            if self._plc_write_payload else [],
+        }
+
     def status_snapshot(
         self,
         processes: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        memory_header = None
         if self._plc_enabled():
             with contextlib.suppress(Exception):
-                header = self.plc_memory.header().to_dict()
+                memory_header = self.plc_memory.header()
+                header = memory_header.to_dict()
         plc_words = self.plc_input.raw_words[:20]
         output_words = self.output.to_words()[:80]
         self._last_status = {
@@ -1361,6 +1456,25 @@ class CoreApplication:
                 "output_words_preview": output_words,
                 "heartbeat": self.plc_input.heartbeat,
                 "heartbeat_age_ms": now_ms() - self._last_plc_heartbeat_change_ms,
+                "write": self._plc_write_snapshot(memory_header),
+            },
+            "runtime": {
+                "sampled_ms": now_ms(),
+                "loop_running": self._run_task is not None and not self._run_task.done(),
+                "cycle_count": self._cycle_count,
+                "cycle_interval_ms": self.settings.core.cycle_interval_ms,
+                "last_cycle_duration_ms": self._last_cycle_duration_ms,
+                "last_cycle_age_ms": now_ms() - self._last_cycle_ms if self._last_cycle_ms else None,
+                "last_cycle_error": self._last_cycle_error,
+                "controller_state": self.output.controller_state.name,
+                "tracking_state": self.output.tracking_state.name,
+                "run_enable": self.plc_input.run_enable,
+                "force_stop": self.plc_input.force_stop,
+                "tracking_enable": self.plc_input.tracking_enable,
+                "system_ready": self.output.flags.system_ready,
+                "safe_stop_pending": self._safe_stop_task is not None and not self._safe_stop_task.done(),
+                "active_recipe_id": self._active_recipe_id,
+                "active_point_id": self._active_point_id,
             },
             "command": self.command.to_dict(),
             "devices": self.devices.snapshot(),

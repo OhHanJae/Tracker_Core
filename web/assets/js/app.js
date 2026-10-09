@@ -1,4 +1,5 @@
 import { renderDashboard } from './dashboard.js';
+import { renderRuntimeMonitor } from './runtime_monitor.js';
 import { renderPLC, startPlcRuntime, stopPlcRuntime } from './plc/connection.js';
 import { renderPTM, startPtmRuntime, stopPtmRuntime } from './ptm/connection.js';
 import { renderVision, startVisionRuntime, stopVisionRuntime } from './vision/connection.js';
@@ -19,7 +20,6 @@ import {
   categoryMap,
   esc,
   showToast,
-  priorityClass,
   statusBadge,
   apiRequest,
   coreCommand,
@@ -36,36 +36,6 @@ import {
   renderSettingsCategory,
 } from './global.js';
 
-function renderAllSettings() {
-  const cats = [...new Set(state.settings.map(x => x['대분류']))];
-  return `<div class="searchbar">
-    <input id="settingsSearch" placeholder="설정 항목, 설명, 기본값 검색...">
-    <select id="categoryFilter"><option value="">전체 대분류</option>${cats.map(c => `<option>${esc(c)}</option>`).join('')}</select>
-    <select id="priorityFilter"><option value="">전체 중요도</option><option>필수</option><option>권장</option><option>선택</option><option>고급</option></select>
-    <span class="count-pill" id="settingsCount">${state.settings.length} items</span>
-  </div>
-  <div class="card table-wrap"><table id="settingsTable">
-    <thead><tr><th>대분류</th><th>중분류</th><th>설정 항목</th><th>예시/기본값</th><th>중요도</th><th>UI 형태</th><th>설명</th><th>적용 범위</th></tr></thead>
-    <tbody>${state.settings.map(settingRow).join('')}</tbody>
-  </table></div>`;
-}
-
-function settingRow(s) {
-  const search = Object.values(s).join(' ').toLowerCase();
-  return `<tr data-cat="${esc(s['대분류'])}" data-priority="${esc(s['중요도'])}" data-search="${esc(search)}"><td>${esc(s['대분류'])}</td><td>${esc(s['중분류'])}</td><td><strong>${esc(s['설정 항목'])}</strong></td><td class="${/^D\d+$/i.test(String(s['예시/기본값'])) ? 'mono-cell' : ''}">${esc(s['예시/기본값'])}</td><td><span class="priority ${priorityClass(s['중요도'])}">${esc(s['중요도'])}</span></td><td>${esc(s['UI 형태'])}</td><td>${esc(s['설명'])}</td><td>${esc(s['적용 범위'])}</td></tr>`;
-}
-
-function renderScope() {
-  const blocks = [
-    ['메인 컨트롤 앱', 'Controller / PLC / Endpoint / Process / Watchdog / Log / System'],
-    ['Vision Setup', 'Exposure / Gain / ROI / Trigger / ArUco'],
-    ['PTM / Laser Setup', 'Serial / Baud / Pelco Address / Limit / Preset'],
-    ['Calibration / Teaching', 'Camera Intrinsic/Extrinsic / Marker / Laser-PTM / Product Point'],
-  ];
-  return `<div class="scope-grid">${blocks.map(([h, b]) => `<div class="card scope-card"><h3>${h}</h3><ul>${b.split(' / ').map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`).join('')}</div>
-    <div class="card section-gap table-wrap"><table><thead><tr><th>구분</th><th>메인 컨트롤 앱</th><th>Vision Setup</th><th>PTM/Laser Setup</th><th>Calibration/Teaching</th><th>비고</th></tr></thead><tbody>${DATA.scope.map(r => `<tr><td><strong>${esc(r['구분'])}</strong></td><td>${esc(r['메인 컨트롤 앱'])}</td><td>${esc(r['Vision Setup'])}</td><td>${esc(r['PTM/Laser Setup'])}</td><td>${esc(r['Calibration/Teaching'])}</td><td>${esc(r['비고'])}</td></tr>`).join('')}</tbody></table></div>`;
-}
-
 function render() {
   stopPlcRuntime();
   stopPtmRuntime();
@@ -78,13 +48,12 @@ function render() {
   pageActions.innerHTML = state.view === 'services' ? `<button class="secondary" data-action="restart-all">전체 재시작</button>` : '';
 
   if (state.view === 'dashboard') viewRoot.innerHTML = renderDashboard();
+  else if (state.view === 'monitor') viewRoot.innerHTML = renderRuntimeMonitor();
   else if (state.view === 'plc') viewRoot.innerHTML = renderPLC();
   else if (state.view === 'ptm') viewRoot.innerHTML = renderPTM();
   else if (state.view === 'vision') viewRoot.innerHTML = renderVision();
   else if (state.view === 'process') viewRoot.innerHTML = renderProcess();
   else if (state.view === 'services') viewRoot.innerHTML = renderServices();
-  else if (state.view === 'settings') viewRoot.innerHTML = renderAllSettings();
-  else if (state.view === 'scope') viewRoot.innerHTML = renderScope();
   else if (state.view === 'controller') viewRoot.innerHTML = renderControllerSettings();
   else if (['logging', 'alarm', 'system'].includes(state.view)) viewRoot.innerHTML = renderOperationalSettings();
   else viewRoot.innerHTML = renderSettingsCategory(categoryMap[state.view]);
@@ -273,23 +242,6 @@ function bindDynamicEvents() {
     }
   });
 
-  const search = document.getElementById('settingsSearch');
-  const cat = document.getElementById('categoryFilter');
-  const pri = document.getElementById('priorityFilter');
-  if (search) {
-    const filter = () => {
-      let count = 0;
-      document.querySelectorAll('#settingsTable tbody tr').forEach(tr => {
-        const ok = (!search.value || tr.dataset.search.includes(search.value.toLowerCase())) && (!cat.value || tr.dataset.cat === cat.value) && (!pri.value || tr.dataset.priority === pri.value);
-        tr.style.display = ok ? '' : 'none';
-        if (ok) count++;
-      });
-      document.getElementById('settingsCount').textContent = `${count} items`;
-    };
-    search.addEventListener('input', filter);
-    cat.addEventListener('change', filter);
-    pri.addEventListener('change', filter);
-  }
 }
 
 document.getElementById('sidebarNav').addEventListener('click', e => {
@@ -686,9 +638,9 @@ loadCoreState({ silent: true }).finally(() => {
   if (state.view === 'controller' && state.activeSubgroup.controller === 'network') refreshNetworkSettings();
 });
 setInterval(() => {
-  if (!state.apiOnline && !state.connected) return;
+  if (!state.apiOnline && !state.connected && state.view !== 'monitor') return;
   if (!shouldAutoRefreshView()) return;
   loadCoreState({ silent: true }).then(updated => {
-    if (updated && shouldAutoRefreshView()) render();
+    if ((updated || state.view === 'monitor') && shouldAutoRefreshView()) render();
   });
 }, 1500);
