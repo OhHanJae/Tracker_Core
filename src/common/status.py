@@ -78,6 +78,21 @@ class DeviceSummaryBit(IntEnum):
     CALIBRATION = 12
 
 
+# Status faults recover from current data; motion, configuration and calibration
+# faults still require an explicit reset.
+AUTO_RESET_FAULT_MASKS = {
+    DeviceSummaryBit.PLC_COMMUNICATION: 0x003F,
+    DeviceSummaryBit.VISION_COMMON: (1 << 0) | (1 << 5),
+    DeviceSummaryBit.CAMERA_1: (1 << 0) | (1 << 1) | (1 << 6),
+    DeviceSummaryBit.CAMERA_2: (1 << 0) | (1 << 1) | (1 << 6),
+    DeviceSummaryBit.CAMERA_3: (1 << 0) | (1 << 1) | (1 << 6),
+    DeviceSummaryBit.CAMERA_4: (1 << 0) | (1 << 1) | (1 << 6),
+    DeviceSummaryBit.TRACKER: (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 6),
+    DeviceSummaryBit.PAN_MOTOR: 1 << 0,
+    DeviceSummaryBit.LASER: (1 << 0) | (1 << 3),
+}
+
+
 FAULT_PRIORITY = [
     (DeviceSummaryBit.CONTROLLER, 1001),
     (DeviceSummaryBit.PLC_COMMUNICATION, 1101),
@@ -144,10 +159,12 @@ class AlarmBook:
     ) -> None:
         word &= 0xFFFF
         self.faults[int(device)] = word
-        if word:
+        if latch_enabled:
             previous = self.latched_faults.get(int(device), 0)
-            if latch_enabled:
-                self.latched_faults[int(device)] = previous | word
+            self.latched_faults[int(device)] = (
+                (previous | word) & ~AUTO_RESET_FAULT_MASKS.get(device, 0)
+            )
+        if word:
             code = self.primary_fault_code()
             if code and code != self.last_fault_code:
                 self.last_fault_code = code
@@ -157,9 +174,11 @@ class AlarmBook:
         self.latched_faults.clear()
 
     def fault_word(self, device: DeviceSummaryBit, latch_enabled: bool = True) -> int:
+        active = self.faults.get(int(device), 0)
         if latch_enabled:
-            return self.latched_faults.get(int(device), 0) & 0xFFFF
-        return self.faults.get(int(device), 0) & 0xFFFF
+            retained = self.latched_faults.get(int(device), 0)
+            return (active | (retained & ~AUTO_RESET_FAULT_MASKS.get(device, 0))) & 0xFFFF
+        return active & 0xFFFF
 
     def warning_word(self, device: DeviceSummaryBit) -> int:
         return self.warnings.get(int(device), 0) & 0xFFFF

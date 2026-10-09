@@ -44,6 +44,8 @@ from src.communication.plc_memory_mapping import (
     words_from_bytes,
 )
 from src.communication.plc_shared_memory import (
+    FLAG_LAST_READ_OK,
+    FLAG_PLC_CONNECTED,
     PlcSharedMemoryClient,
     SharedMemoryError,
 )
@@ -116,7 +118,7 @@ class CoreApplication:
 
         self._rebuild_clients()
         self._gateway_configured = not self.settings.xgt.shared_memory.configure_gateway_on_start
-        self._last_plc_heartbeat = 0
+        self._last_plc_heartbeat: int | None = None
         self._last_plc_heartbeat_change_ms = now_ms()
         self._position_ok_since_ms: int | None = None
         self._safe_stop_applied = False
@@ -339,7 +341,7 @@ class CoreApplication:
                 self._plc_enabled() and settings.xgt.shared_memory.configure_gateway_on_start
             )
         if plc_was_enabled != self._plc_enabled():
-            self._last_plc_heartbeat = 0
+            self._last_plc_heartbeat = None
             self._last_plc_heartbeat_change_ms = now_ms()
         if not self._plc_enabled():
             self.plc_input = PlcInput()
@@ -432,6 +434,7 @@ class CoreApplication:
             try:
                 await self.xgt_gateway.configure_gateway()
                 self._gateway_configured = True
+                self._last_plc_heartbeat = None
                 self._last_plc_heartbeat_change_ms = now_ms()
                 return
             except Exception as exc:
@@ -486,6 +489,11 @@ class CoreApplication:
         try:
             if not self.plc_memory.connected:
                 self.plc_memory.connect()
+            header = self.plc_memory.header()
+            if not header.status_flags & FLAG_PLC_CONNECTED:
+                raise SharedMemoryError("Gateway reports PLC disconnected")
+            if not header.status_flags & FLAG_LAST_READ_OK or not header.last_read_time_ns:
+                raise ValueError("Gateway has no successful live PLC read")
             payload = self.plc_memory.read_plc_data()
             if len(payload) != BYTE_COUNT:
                 raise ValueError(
@@ -529,6 +537,9 @@ class CoreApplication:
             return
         if not self._gateway_configured:
             return
+        if self._last_plc_heartbeat is None:
+            self.alarms.set_warning_word(DeviceSummaryBit.PLC_COMMUNICATION, 0)
+            return
         elapsed = timestamp_ms - self._last_plc_heartbeat_change_ms
         warning = 1 << 3 if elapsed >= self.settings.runtime.plc_heartbeat_warn_ms else 0
         heartbeat_fault = (
@@ -561,11 +572,11 @@ class CoreApplication:
         self.vision_snapshot = self.vision_service.snapshot_value
         stale = bool(vision_state.last_ok_ms and now_ms() - vision_state.last_ok_ms >
                      self.settings.runtime.vision_status_max_age_ms)
-        if vision_state.poll_count and (not vision_state.online or stale):
+        if (vision_state.ok_count or vision_state.error_count) and (not vision_state.online or stale):
             self.vision_snapshot = VisionSnapshot(online=False)
             self.alarms.set_fault_word(
                 DeviceSummaryBit.VISION_COMMON,
-                1 << 2,
+                1 << 5,
                 self.settings.runtime.fault_latch_enabled,
             )
             return
@@ -583,7 +594,7 @@ class CoreApplication:
         fault = _safe_int(status.get("fault_word"))
         if status.get("fault"):
             fault |= 1 << 1
-        if state.poll_count and (not state.online or status.get("connected") is False):
+        if (state.ok_count or state.error_count) and (not state.online or status.get("connected") is False):
             fault |= 1 << 0
         self.alarms.set_warning_word(DeviceSummaryBit.PAN_MOTOR, warning)
         self.alarms.set_warning_word(DeviceSummaryBit.TILT_MOTOR, warning)
@@ -609,7 +620,7 @@ class CoreApplication:
         fault = _safe_int(status.get("fault_word"))
         if status.get("fault"):
             fault |= 1 << 1
-        if state.poll_count and not state.online:
+        if (state.ok_count or state.error_count) and not state.online:
             fault |= 1 << 0
         self.alarms.set_warning_word(DeviceSummaryBit.LASER, warning)
         self.alarms.set_fault_word(
@@ -1218,6 +1229,7 @@ class CoreApplication:
                     return JsonTcpResponse(False, error={"code": "PROCESS_DISABLED", "message": "PLC Communication is disabled"})
                 result = await self.xgt_gateway.configure_gateway()
                 self._gateway_configured = True
+                self._last_plc_heartbeat = None
                 self._last_plc_heartbeat_change_ms = now_ms()
                 return JsonTcpResponse(True, result)
             if command == "xgt.status":

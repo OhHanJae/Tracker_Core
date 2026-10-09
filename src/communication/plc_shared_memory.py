@@ -11,6 +11,8 @@ from typing import Any
 HEADER_FORMAT = "<4sHH9IiQQ"
 HEADER_SIZE = 64
 MAGIC = b"XGSM"
+FLAG_PLC_CONNECTED = 1 << 0
+FLAG_LAST_READ_OK = 1 << 1
 
 
 class SharedMemoryError(RuntimeError):
