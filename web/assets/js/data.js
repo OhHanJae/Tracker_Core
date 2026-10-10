@@ -2821,31 +2821,16 @@ window.TRACK_EYE_DATA = {
       "workingDir": "/opt/trackeye/services/ptm"
     },
     {
-      "id": "laser",
-      "name": "Laser Server",
-      "process": "laser_server",
-      "endpoint": "127.0.0.1:5302",
-      "health": "HTTP /health",
-      "scriptPath": "/opt/trackeye/services/laser/start.sh",
-      "workingDir": "/opt/trackeye/services/laser"
-    },
-    {
-      "id": "main",
-      "name": "Tracker Main Process",
-      "process": "tracker_main",
-      "endpoint": "Internal",
-      "health": "Internal / TCP",
-      "scriptPath": "/opt/trackeye/core/start.sh",
-      "workingDir": "/opt/trackeye/core"
-    },
-    {
-      "id": "config",
-      "name": "Config Server",
-      "process": "config_server",
-      "endpoint": "0.0.0.0:5400",
-      "health": "TCP LISTEN",
-      "scriptPath": "/opt/trackeye/config_server/start.sh",
-      "workingDir": "/opt/trackeye/config_server"
+      "id": "core",
+      "name": "Main Core Process",
+      "process": "core_runtime",
+      "endpoint": "127.0.0.1:8770",
+      "health": "TCP",
+      "healthType": "tcp",
+      "tcpHost": "127.0.0.1",
+      "tcpPort": 8770,
+      "scriptPath": "main.py",
+      "workingDir": "."
     }
   ]
 };

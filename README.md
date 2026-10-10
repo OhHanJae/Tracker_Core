@@ -1,8 +1,10 @@
 ﻿# Tracker Process Control Core
 
-LastModified: 2026-10-09
+LastModified: 2026-10-10
 
 비전, PTM/PT503/PT510 모터 API, 레이저, XGT Shared Memory Gateway, 글로벌 설정, 외부 모듈 실행 관리를 한 곳에서 묶는 Python 기반 코어 서버입니다.
+
+일반 `main.py` 실행은 웹/프로세스 관리 서버를 시작하고, Process Manager가 `main.py --worker` 메인 Core를 별도 OS 프로세스로 실행합니다. 메인 Core는 PLC 운전 주기와 장치 통신을 담당하며, 정지해도 웹 관리 화면은 계속 사용할 수 있습니다. 메인 Core 시작/종료/재시작과 자동 재시작 설정은 다른 프로세스와 같은 화면에서 관리합니다. 독립 레이저 서버 항목은 제거했고 PTM의 레이저 기능은 유지합니다.
 
 ## 역할
 
@@ -20,15 +22,17 @@ LastModified: 2026-10-09
 |---|---:|---|
 | Core TCP/HTTP/Web | 8000 | 글로벌 설정/상태/수동 명령/웹 관리 화면 |
 | Core Web 선택 HTTP | 80 | `core.http_port`를 설정한 경우 |
+| 메인 Core TCP | 8770 | 웹 관리 서버와 운전 Core 사이의 JSON Lines 통신 |
 | XGT Gateway TCP | 15150 | Gateway 설정/상태 서버 |
 | XGT Gateway Web | 5051 | PLC 주소·영역·통신 설정 |
 | PTM API TCP | 8765 | `system.status`, `motion.stop`, `point.goto` 등 |
 | PTM Web | 8080 | 레시피·모터·레이저 설정 |
 | Vision TCP | 8768 | `vision.status` 기준 |
 | Vision Web | 8767 | Vision 실행 환경에 따라 설정 |
-| Laser TCP | 8768 | `laser.mode=tcp`일 때 사용, 기본은 `ptm` 모드 |
 
-연결 주소와 포트는 `datas/global.json`에서 수정합니다. PLC 주소·영역 크기·주기는 Gateway 설정이 기준입니다. Core는 시작/설정 적용/운전 중 Gateway의 `get_config`를 읽으며 자동으로 덮어쓰지 않습니다. 예전 `configure_gateway_on_start=true` 값이 남아 있어도 자동 쓰기는 수행하지 않습니다. 명시적인 `xgt.configure` 명령만 Core의 PLC 설정을 Gateway에 전송합니다.
+Vision을 제외한 관리 프로세스의 리스닝 주소/포트는 Process Manager의 `processes.<key>.health_host/health_port/http_host/http_port`가 기준입니다. 기존 `xgt`/`motor` endpoint 필드는 호환 별칭으로 동기화합니다. Core가 시작한 Gateway/PTM에 `CORE_*` 환경변수로 전달하며 새 주소는 프로세스 재시작 시 적용됩니다. Vision은 자체 설정과 Core 접속 설정을 맞추고 후속 구현 지침을 따릅니다. PLC 주소·영역 크기·주기는 Gateway 설정이 기준입니다. Core는 시작/설정 적용/운전 중 Gateway의 `get_config`를 읽으며 자동으로 덮어쓰지 않습니다. 예전 `configure_gateway_on_start=true` 값이 남아 있어도 자동 쓰기는 수행하지 않습니다. 명시적인 `xgt.configure` 명령만 Core의 PLC 설정을 Gateway에 전송합니다.
+
+Logging 화면에서 시간대가 포함된 프로세스 오류 이력을 조회·필터·JSON 저장/불러오기 할 수 있습니다. 이력은 `logs/events.jsonl`에 자동 저장하며 최근 5000건을 조회합니다. Working Directory는 실행 스크립트의 작업 기준 경로이므로 유지합니다. 비어 있으면 실행 스크립트 폴더를 사용합니다.
 
 Core PLC 맵은 방향별 100 WORD(200 BYTE)입니다. Gateway의 크기가 다르거나 방향이 비활성화돼 있으면 설정 오류를 표시하고 PLC 운전을 차단합니다. Gateway Web에서 올바른 영역을 지정하세요.
 

@@ -5,6 +5,7 @@ import { renderPTM, startPtmRuntime, stopPtmRuntime } from './ptm/connection.js'
 import { renderVision, startVisionRuntime, stopVisionRuntime } from './vision/connection.js';
 import { renderServices } from './service.js';
 import { renderProcess } from './process_manager.js';
+import { renderLogHistory, bindLogHistoryEvents } from './log_history.js';
 import {
   ensureProjectFilename,
   parseProject,
@@ -25,6 +26,7 @@ import {
   coreCommand,
   moduleProcessName,
   isConfiguredProcessName,
+  isManagedModule,
   buildModulePatch,
   buildProcessesPatch,
   mergeModulePatchIntoLocal,
@@ -40,7 +42,8 @@ function render() {
   stopPlcRuntime();
   stopPtmRuntime();
   stopVisionRuntime();
-  const externalFrameView = ['plc', 'ptm', 'vision'].includes(state.view);
+  const externalFrameView = ['ptm', 'vision'].includes(state.view)
+    || (state.view === 'plc' && (state.activeSubgroup.plc || '연결/통신') === '연결/통신');
   document.documentElement.classList.toggle('external-frame-view', externalFrameView);
   document.body.classList.toggle('external-frame-view', externalFrameView);
   const [title, desc] = titles[state.view];
@@ -59,6 +62,7 @@ function render() {
   else viewRoot.innerHTML = renderSettingsCategory(categoryMap[state.view]);
 
   bindDynamicEvents();
+  if (state.view === 'logging') bindLogHistoryEvents(saveTextFile);
   if (state.view === 'plc') startPlcRuntime();
   if (state.view === 'ptm') startPtmRuntime();
   if (state.view === 'vision') startVisionRuntime();
@@ -232,7 +236,7 @@ function bindDynamicEvents() {
 
   document.querySelector('[data-action="restart-all"]')?.addEventListener('click', async () => {
     const targets = state.modules
-      .filter(module => !['config', 'main'].includes(module.id))
+      .filter(isManagedModule)
       .map(moduleProcessName)
       .filter(Boolean)
       .filter(isConfiguredProcessName);
@@ -315,12 +319,12 @@ function renderOperationalSettings() {
   if (state.view === 'logging') {
     const log = c.logging || {};
     return configCard('Core Logging', [
-      configField('로그 레벨', `<select id="logLevel">${['DEBUG', 'INFO', 'WARNING', 'ERROR'].map(v => `<option ${log.level === v ? 'selected' : ''}>${v}</option>`).join('')}</select>`),
+      configField('로그 레벨', `<select id="logLevel">${['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'].map(v => `<option ${log.level === v ? 'selected' : ''}>${v}</option>`).join('')}</select>`),
       configField('파일 저장', `<label class="switch"><input id="logFileEnabled" type="checkbox" ${log.file_enabled ? 'checked' : ''}><span class="slider"></span></label>`),
       configField('로그 폴더', `<input value="${esc(c.paths?.logs_dir || 'logs')}" readonly>`, 'Core 설정의 logs_dir 경로'),
       configField('최대 파일 크기 (MB)', `<input id="logMaxMb" type="number" min="1" max="100" required value="${esc(log.max_file_mb ?? 20)}">`),
       configField('보관 파일 수', `<input id="logBackupCount" type="number" min="1" max="30" required value="${esc(log.backup_count ?? 5)}">`),
-    ], '<button class="primary" id="saveOperationalSettings">Logging 적용</button>');
+    ], '<button class="primary" id="saveOperationalSettings">Logging 적용</button>') + renderLogHistory();
   }
   if (state.view === 'alarm') {
     const runtime = c.runtime || {};

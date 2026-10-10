@@ -5,16 +5,17 @@ import {
   processForModule,
   endpointForProcess,
   statusTextForProcess,
+  isManagedModule,
 } from './global.js';
 
 function communicationFields(module) {
-  if (!['plc', 'ptm', 'vision'].includes(module.id)) {
+  if (!['plc', 'ptm', 'vision', 'core'].includes(module.id)) {
     return `<label><span>Health Endpoint</span><input class="mono" data-module-id="${esc(module.id)}" data-module-field="endpoint" value="${esc(module.endpoint || '')}" placeholder="127.0.0.1:8766"></label>`;
   }
   return `
     <label><span>Server IP (TCP / Web)</span><input class="mono" data-module-id="${esc(module.id)}" data-module-field="tcpHost" value="${esc(module.tcpHost || module.webHost || '')}" placeholder="127.0.0.1"></label>
     <label><span>TCP Server Port</span><input class="mono" type="number" min="1" max="65535" data-module-id="${esc(module.id)}" data-module-field="tcpPort" value="${esc(module.tcpPort || '')}"></label>
-    <label><span>Web Server Port</span><input class="mono" type="number" min="0" max="65535" data-module-id="${esc(module.id)}" data-module-field="webPort" value="${esc(module.webPort || '')}" placeholder="${module.id === 'vision' ? '미정 (0=비활성)' : ''}"></label>`;
+    ${module.id === 'core' ? '' : `<label><span>Web Server Port</span><input class="mono" type="number" min="0" max="65535" data-module-id="${esc(module.id)}" data-module-field="webPort" value="${esc(module.webPort || '')}" placeholder="${module.id === 'vision' ? '미정 (0=비활성)' : ''}"></label>`}`;
 }
 
 export function renderServices() {
@@ -24,7 +25,7 @@ export function renderServices() {
     : '{\n  "message": "아직 실행한 명령 없음"\n}';
 
   return `<div class="module-grid">
-    ${state.modules.filter(m => !['config', 'main'].includes(m.id)).map(m => {
+    ${state.modules.filter(isManagedModule).map(m => {
     const proc = processForModule(m);
     const status = statusTextForProcess(proc);
     const endpoint = m.endpoint || endpointForProcess(proc, m);
@@ -38,6 +39,8 @@ export function renderServices() {
           ${communicationFields(m)}
           <label><span>Start Script</span><input class="mono" data-module-id="${esc(m.id)}" data-module-field="scriptPath" value="${esc(m.scriptPath)}" placeholder="run_core.bat 또는 scripts/start.sh"></label>
           <label><span>Working Directory</span><input class="mono" data-module-id="${esc(m.id)}" data-module-field="workingDir" value="${esc(m.workingDir)}" placeholder="비우면 Start Script 폴더"></label>
+          <small class="module-note">실행 중 상대 경로로 여는 설정·파일의 기준 폴더입니다. 비워두면 Start Script가 있는 폴더를 사용합니다.</small>
+          ${m.id === 'vision' ? '<small class="module-note">Vision은 접속 주소만 설정합니다. 서버 바인딩·카메라 IP는 Vision Web에서 설정해야 합니다.</small>' : '<small class="module-note">서버 IP·포트 변경은 설정 저장 후 해당 프로세스를 다시 시작해야 적용됩니다.</small>'}
         </div>
         <div class="module-actions">
           <button class="mini-btn primary-lite" data-module-action="apply" data-module-id="${esc(m.id)}">설정 저장</button>

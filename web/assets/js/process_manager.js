@@ -4,10 +4,11 @@ import {
   statusBadge,
   moduleProcessName,
   processForModule,
+  isManagedModule,
 } from './global.js';
 
 export function renderProcess() {
-  const modules = state.modules.filter(module => !['config', 'main'].includes(module.id));
+  const modules = state.modules.filter(isManagedModule);
   return `<div class="module-grid watchdog-grid">
     ${modules.map(module => {
     const processName = moduleProcessName(module);

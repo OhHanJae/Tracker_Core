@@ -34,7 +34,7 @@ const titles = {
   vision: ['Vision', 'Vision Web 화면과 연결 상태를 표시합니다.'],
   services: ['Process Manager', '프로세스 설정과 실행·중지·재시작을 관리합니다.'],
   process: ['Watchdog', '프로세스별 자동 재시작과 Watchdog 상태를 관리합니다.'],
-  logging: ['Logging', 'Core 로그 레벨과 파일 보관을 설정합니다.'],
+  logging: ['Logging', '프로세스 오류 이력을 조회·저장·불러오고 Core 파일 로그를 설정합니다.'],
   alarm: ['Alarm / Fault', 'PLC 및 Vision 장애 판정 기준을 설정합니다.'],
   system: ['System', '메모리와 디스크 사용률 경고 기준을 설정합니다.'],
 };
@@ -89,7 +89,7 @@ const PROCESS_CONFIG_KEY_MAP = {
   plc_gateway: 'plc_gateway',
   ptm: 'ptm',
   vision: 'vision',
-  laser: 'laser',
+  core: 'core',
   config: 'config',
   main: 'main',
 };
@@ -220,7 +220,7 @@ function moduleForProcessName(name) {
   if (text.includes('plc')) preferredId = 'plc';
   else if (text.includes('ptm')) preferredId = 'ptm';
   else if (text.includes('vision')) preferredId = 'vision';
-  else if (text.includes('laser')) preferredId = 'laser';
+  else if (text.includes('core')) preferredId = 'core';
   else if (text.includes('config')) preferredId = 'config';
   else if (text.includes('tracker main')) preferredId = 'main';
 
@@ -285,6 +285,11 @@ function normalizeConnectHost(host) {
   return value === '0.0.0.0' || value === '::' ? '127.0.0.1' : value;
 }
 
+function isManagedModule(module) {
+  return !['config', 'main', 'laser'].includes(module.id)
+    && !['config', 'main', 'laser'].includes(moduleConfigKey(module));
+}
+
 function buildModulePatch(module) {
   const configKey = moduleConfigKey(module);
   if (!configKey) throw new Error('module config key is missing.');
@@ -294,7 +299,8 @@ function buildModulePatch(module) {
   if (!processName) throw new Error('process_name is required.');
 
   const endpoint = splitEndpoint(module.endpoint);
-  const tcpHost = normalizeConnectHost(module.tcpHost || endpoint.host || module.healthHost || current.health_host || '127.0.0.1');
+  const serverHost = String(module.tcpHost || endpoint.host || module.healthHost || current.health_host || '127.0.0.1').trim();
+  const tcpHost = normalizeConnectHost(serverHost);
   const tcpPort = Number(module.tcpPort || endpoint.port || module.healthPort || current.health_port || 0);
   const patch = {
     processes: {
@@ -306,7 +312,7 @@ function buildModulePatch(module) {
         stop_script: module.stopScript || '',
         working_dir: module.workingDir || '',
         health_type: module.healthType || current.health_type || normalizeHealthType(module.health),
-        health_host: tcpHost,
+        health_host: serverHost,
         health_port: tcpPort,
         auto_restart: module.autoRestart ?? current.auto_restart ?? false,
       },
@@ -314,6 +320,8 @@ function buildModulePatch(module) {
   };
 
   if (configKey === 'plc_gateway') {
+    patch.processes[configKey].http_host = serverHost;
+    patch.processes[configKey].http_port = Number(module.webPort || state.coreConfig?.xgt?.web?.port || 5051);
     patch.xgt = {
       control: { host: tcpHost, port: tcpPort },
       web: {
@@ -322,6 +330,8 @@ function buildModulePatch(module) {
       },
     };
   } else if (configKey === 'ptm') {
+    patch.processes[configKey].http_host = serverHost;
+    patch.processes[configKey].http_port = Number(module.webPort || state.coreConfig?.motor?.web_port || 8080);
     patch.motor = {
       host: tcpHost,
       port: tcpPort,
@@ -347,6 +357,7 @@ function buildProcessesPatch() {
   const hasCoreConfig = Object.keys(configured).length > 0;
 
   return state.modules.reduce((patch, module) => {
+    if (!isManagedModule(module)) return patch;
     const configKey = moduleConfigKey(module);
     if (!configKey) return patch;
     if (hasCoreConfig && !Object.prototype.hasOwnProperty.call(configured, configKey)) return patch;
@@ -382,9 +393,12 @@ function syncModulesFromCore() {
       .filter(([processName]) => processName)
   );
 
-  const consumedProcessNames = new Set();
+  const consumedProcessNames = new Set(Object.entries(configs)
+    .filter(([configKey]) => ['config', 'main', 'laser'].includes(configKey))
+    .map(([, config]) => String(config?.process_name || '').trim())
+    .filter(Boolean));
   const configuredModules = Object.entries(configs)
-    .filter(([configKey]) => !['config', 'main'].includes(configKey))
+    .filter(([configKey]) => !['config', 'main', 'laser'].includes(configKey))
     .map(([configKey, config]) => {
     const processName = String(config?.process_name || '').trim();
     const proc = processName ? processState[processName] || {} : {};
@@ -418,15 +432,16 @@ function syncModulesFromCore() {
       workingDir: config.working_dir ?? proc.working_dir ?? old.workingDir ?? '',
       enabled: config.enabled ?? proc.enabled ?? old.enabled ?? true,
       autoRestart: config.auto_restart ?? proc.auto_restart ?? old.autoRestart ?? false,
-      tcpHost: tcpConfig?.host || config.health_host || old.tcpHost || '',
-      tcpPort: tcpConfig?.port || config.health_port || old.tcpPort || 0,
-      webHost: webConfig?.web_host || (configKey === 'plc_gateway' ? webConfig?.host : '') || old.webHost || '',
-      webPort: webConfig?.web_port || (configKey === 'plc_gateway' ? webConfig?.port : 0) || old.webPort || 0,
+      tcpHost: config.health_host || tcpConfig?.host || old.tcpHost || '',
+      tcpPort: config.health_port || tcpConfig?.port || old.tcpPort || 0,
+      webHost: config.http_host || webConfig?.web_host || (configKey === 'plc_gateway' ? webConfig?.host : '') || old.webHost || '',
+      webPort: config.http_port ?? webConfig?.web_port ?? (configKey === 'plc_gateway' ? webConfig?.port : 0) ?? old.webPort ?? 0,
     };
   });
 
   const runtimeOnlyModules = Object.entries(processState)
-    .filter(([processName]) => !consumedProcessNames.has(processName))
+    .filter(([processName]) => !consumedProcessNames.has(processName)
+      && !['laser_server', 'config_server', 'tracker_main'].includes(processName))
     .map(([processName, proc]) => {
       const old = previousByProcessName.get(processName) || {};
       const endpoint = endpointForProcess(proc, old);
@@ -638,6 +653,7 @@ export {
   normalizeHealthType,
   splitEndpoint,
   normalizeConnectHost,
+  isManagedModule,
   buildModulePatch,
   buildProcessesPatch,
   mergeModulePatchIntoLocal,

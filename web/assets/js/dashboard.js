@@ -5,6 +5,7 @@ import {
   processForModule,
   endpointForProcess,
   statusTextForProcess,
+  isManagedModule,
 } from './global.js';
 
 function formatBytes(value) {
@@ -43,17 +44,15 @@ function processHealthText(proc) {
 }
 
 export function renderDashboard() {
-  const tcp = state.coreStatus?.core?.tcp;
-  const coreEndpoint = tcp ? `${tcp.host}:${tcp.port}` : 'N/A';
-  const managedModules = state.modules.filter(module => !['config', 'main'].includes(module.id));
+  const web = state.coreStatus?.core?.http;
+  const webEndpoint = web ? `${web.host}:${web.port}` : window.location.host || 'N/A';
+  const managedModules = state.modules.filter(isManagedModule);
   const topStatuses = [
-    ['Controller', state.apiOnline && state.coreStatus?.core?.running !== false ? 'Online' : 'Offline', coreEndpoint],
+    ['Core Web Server', state.apiOnline ? 'Online' : 'Offline', webEndpoint],
     ...managedModules.map(module => {
       const proc = processForModule(module);
       return [module.name, statusTextForProcess(proc), endpointForProcess(proc, module)];
     }),
-    ['Main Process', state.apiOnline && state.coreStatus?.core?.running !== false ? 'Online' : 'Offline', 'Core loop'],
-    ['Config Server', state.apiOnline ? 'Online' : 'Offline', coreEndpoint],
   ];
   const resources = state.coreStatus?.core?.resources || {};
 

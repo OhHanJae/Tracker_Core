@@ -63,11 +63,14 @@ LOGGER = logging.getLogger("tracker_core")
 
 
 class CoreApplication:
-    def __init__(self, settings_path: Path = DEFAULT_CONFIG_PATH) -> None:
+    def __init__(self, settings_path: Path = DEFAULT_CONFIG_PATH, *, managed_worker: bool = False) -> None:
+        self._managed_worker = managed_worker
+        self._suspended_processes: set[str] = set()
         self.settings_path = settings_path
         self.settings = load_settings(settings_path)
         ensure_data_directories(self.settings)
-        save_settings(self.settings, settings_path)
+        if not managed_worker:
+            save_settings(self.settings, settings_path)
         self._log_handler: RotatingFileHandler | None = None
 
         self.alarms = AlarmBook()
@@ -143,10 +146,26 @@ class CoreApplication:
         self._last_cycle_ms = 0
         self._last_cycle_duration_ms = 0
         self._last_cycle_error = ""
+        self._plc_read_error = ""
+        self._diagnostic_states: dict[str, str] = {}
+        if managed_worker:
+            endpoint = self.settings.processes["core"]
+            self._server.host = str(endpoint["health_host"])
+            self._server.port = int(endpoint["health_port"])
+            self._server.static_root = None
+            self._http_server = None
 
     @staticmethod
     def _validate_operator_settings(settings: AppSettings) -> None:
-        if settings.logging.level not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+        for key in ("core", "plc_gateway", "ptm", "vision"):
+            module = settings.processes.get(key, {})
+            if not 1 <= int(module.get("health_port", 1)) <= 65535:
+                raise ValueError(f"{key} TCP port must be between 1 and 65535")
+            if "http_port" in module:
+                minimum = 1 if key in {"plc_gateway", "ptm"} else 0
+                if not minimum <= int(module["http_port"]) <= 65535:
+                    raise ValueError(f"{key} HTTP port must be between {minimum} and 65535")
+        if settings.logging.level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError("Invalid logging level")
         if not 1 <= settings.logging.max_file_mb <= 100:
             raise ValueError("Log file size must be between 1 and 100 MB")
@@ -165,7 +184,7 @@ class CoreApplication:
         root_logger = logging.getLogger()
         settings = self.settings.logging
         new_handler = None
-        if settings.file_enabled:
+        if settings.file_enabled and not self._managed_worker:
             log_path = resolve_app_path(self.settings.paths.logs_dir) / "core.log"
             log_path.parent.mkdir(parents=True, exist_ok=True)
             new_handler = RotatingFileHandler(
@@ -206,16 +225,20 @@ class CoreApplication:
         self.devices = DeviceRegistry(
             [self.ptm_service, self.laser_service, self.vision_service]
         )
+        modules = {} if self._managed_worker else {
+            key: value for key, value in self.settings.processes.items()
+            if key != "core" or getattr(self, "_web_host", False)
+        }
         if hasattr(self, "process_manager"):
-            self.process_manager.update_modules(self.settings.processes)
+            self.process_manager.update_modules(modules)
         else:
-            self.process_manager = ProcessManager(self.settings.processes)
+            self.process_manager = ProcessManager(modules, manage_persisted_processes=not self._managed_worker)
         self.process_manager.update_communication_endpoints(
             self._process_communication_endpoints()
         )
 
     def _process_enabled(self, key: str) -> bool:
-        return self.settings.processes.get(key, {}).get("enabled", True) is not False
+        return key not in self._suspended_processes and self.settings.processes.get(key, {}).get("enabled", True) is not False
 
     def _plc_enabled(self) -> bool:
         return self._process_enabled("plc_gateway")
@@ -226,7 +249,6 @@ class CoreApplication:
     def _laser_enabled(self) -> bool:
         return (
             self.settings.laser.enabled
-            and self._process_enabled("laser")
             and (self.settings.laser.mode.lower() != "ptm" or self._motor_enabled())
         )
 
@@ -272,13 +294,9 @@ class CoreApplication:
             self.settings.vision.status_command,
             {},
         )
-        add(
-            "laser",
-            self.settings.laser.host,
-            self.settings.laser.port,
-            self.settings.laser.timeout_s,
-            "ping",
-        )
+        core = self.settings.processes.get("core", {})
+        if core:
+            add("core", str(core["health_host"]), int(core["health_port"]), 2.0, "ping")
         return endpoints
 
     async def _replace_settings(self, settings: AppSettings) -> None:
@@ -308,7 +326,6 @@ class CoreApplication:
         )
         disabling_laser = self.laser_service.state.enabled and not (
             settings.laser.enabled
-            and settings.processes.get("laser", {}).get("enabled", True)
             and (
                 settings.laser.mode.lower() != "ptm"
                 or (
@@ -358,7 +375,7 @@ class CoreApplication:
         if restart_discovery:
             self.discovery = DiscoveryService(settings.discovery, settings.core.port,
                                               settings.core.http_port or settings.core.port)
-        self._server.static_root = resolve_app_path(self.settings.paths.web_dir)
+        self._server.static_root = None if self._managed_worker else resolve_app_path(self.settings.paths.web_dir)
         self._server.allow_remote_process_control = settings.core.allow_remote_process_control
         if self._http_server is not None:
             self._http_server.static_root = self._server.static_root
@@ -381,7 +398,7 @@ class CoreApplication:
             # buttons; reconcile here only applies retire/disable changes.
             await self.process_manager.reconcile(start_missing=False)
             await self.devices.start_all()
-            if restart_discovery:
+            if restart_discovery and not self._managed_worker:
                 await self.discovery.start()
 
     async def start(self) -> None:
@@ -399,7 +416,8 @@ class CoreApplication:
             self._gateway_config_task = asyncio.create_task(self._configure_gateway_on_start())
         self.process_manager.start_watchdog()
         await self.devices.start_all()
-        await self.discovery.start()
+        if not self._managed_worker:
+            await self.discovery.start()
         self._run_task = asyncio.create_task(self._run_loop())
         self._started = True
         LOGGER.info(
@@ -519,21 +537,45 @@ class CoreApplication:
             started = now_ms()
             try:
                 await self._cycle()
+                if self._last_cycle_error:
+                    LOGGER.warning("Core cycle recovered: %s", self._last_cycle_error)
                 self._last_cycle_error = ""
             except Exception as exc:
-                self._last_cycle_error = str(exc) or type(exc).__name__
-                LOGGER.exception("core cycle failed")
+                error = str(exc) or type(exc).__name__
+                if error != self._last_cycle_error:
+                    LOGGER.exception("core cycle failed")
+                self._last_cycle_error = error
                 self.alarms.set_fault_word(
                     DeviceSummaryBit.CONTROLLER,
                     1 << 0,
                     self.settings.runtime.fault_latch_enabled,
                 )
+            self._report_diagnostics()
             elapsed = now_ms() - started
             self._cycle_count += 1
             self._last_cycle_ms = now_ms()
             self._last_cycle_duration_ms = elapsed
             delay_ms = max(1, self.settings.core.cycle_interval_ms - elapsed)
             await asyncio.sleep(delay_ms / 1000)
+
+    def _report_diagnostics(self) -> None:
+        errors = {"plc.config": self._gateway_config_error,
+                  "plc.read": self._plc_read_error, "plc.write": self._plc_write_error}
+        for key, service in self.devices.services.items():
+            state = service.state
+            fault = state.status.get("fault_word") or state.status.get("fault")
+            errors[key] = (state.last_error or (f"device fault: {fault}" if fault else "")) if state.enabled else ""
+        summary = self.alarms.fault_summary(False)
+        errors["alarms"] = f"active fault summary={summary}, code={self.alarms.primary_fault_code(False)}" if summary else ""
+        for source, error in errors.items():
+            previous = self._diagnostic_states.get(source, "")
+            if error != previous:
+                logger = logging.getLogger(f"core.{source}")
+                if error:
+                    logger.error("%s", error)
+                elif previous:
+                    logger.warning("Recovered: %s", previous)
+                self._diagnostic_states[source] = error
 
     async def _cycle(self) -> None:
         if (
@@ -558,10 +600,12 @@ class CoreApplication:
     def _read_plc_input(self, timestamp_ms: int) -> None:
         if not self._plc_enabled():
             self.plc_memory.close()
+            self._plc_read_error = ""
             self.plc_input = PlcInput()
             self.alarms.clear_device(DeviceSummaryBit.PLC_COMMUNICATION)
             return
         if not self._gateway_configured:
+            self._plc_read_error = ""
             self.plc_input = PlcInput()
             return
         try:
@@ -578,6 +622,7 @@ class CoreApplication:
                     f"PLC input length {len(payload)} != {BYTE_COUNT}"
                 )
             self.plc_input = PlcInput.from_bytes(payload)
+            self._plc_read_error = ""
             self.alarms.set_fault_word(
                 DeviceSummaryBit.PLC_COMMUNICATION,
                 self.alarms.fault_word(
@@ -589,6 +634,7 @@ class CoreApplication:
                 self._last_plc_heartbeat = self.plc_input.heartbeat
                 self._last_plc_heartbeat_change_ms = timestamp_ms
         except SharedMemoryError as exc:
+            self._plc_read_error = str(exc) or type(exc).__name__
             LOGGER.debug("PLC shared memory read failed: %s", exc)
             self.plc_memory.close()
             self.plc_input = PlcInput()
@@ -601,6 +647,7 @@ class CoreApplication:
             )
         except Exception as exc:
             LOGGER.debug("PLC read failed: %s", exc)
+            self._plc_read_error = str(exc) or type(exc).__name__
             self.plc_input = PlcInput()
             self.alarms.set_fault_word(
                 DeviceSummaryBit.PLC_COMMUNICATION,
@@ -823,7 +870,7 @@ class CoreApplication:
                 await self.ptm_service.command("motion.stop")
             except Exception as exc:
                 success = False
-                LOGGER.debug("motor stop failed during safe stop: %s", exc)
+                LOGGER.error("motor stop failed during safe stop: %s", exc)
                 self.alarms.set_fault_word(
                     DeviceSummaryBit.PAN_MOTOR,
                     1 << 0,
@@ -844,7 +891,7 @@ class CoreApplication:
                     await self.ptm_service.command("laser.off")
             except Exception as exc:
                 success = False
-                LOGGER.debug("laser off failed during safe stop: %s", exc)
+                LOGGER.error("laser off failed during safe stop: %s", exc)
                 self.alarms.set_fault_word(
                     DeviceSummaryBit.LASER,
                     1 << 0,
@@ -1268,6 +1315,25 @@ class CoreApplication:
     ) -> JsonTcpResponse:
         try:
             command = _normalize_command(command)
+            if command == "runtime.snapshot":
+                return JsonTcpResponse(True, self.status_snapshot())
+            if command == "worker.shutdown" and self._managed_worker:
+                asyncio.get_running_loop().call_later(0.1, self._stop_event.set)
+                return JsonTcpResponse(True, {"accepted": True})
+            if command == "runtime.prepare_stop" and self._managed_worker:
+                self._abort_active_command(CommandResult.SYSTEM_NOT_READY)
+                safe = await self._perform_safe_stop()
+                if not safe:
+                    LOGGER.error("Safe stop could not be confirmed before dependent process lifecycle")
+                if params.get("process_name") == self.settings.processes["plc_gateway"]["process_name"]:
+                    self._suspended_processes.add("plc_gateway")
+                    self.plc_memory.close()
+                    self._gateway_configured = False
+                return JsonTcpResponse(True, {"accepted": True, "safe_stop_confirmed": safe})
+            if command == "runtime.resume_process" and self._managed_worker:
+                self._suspended_processes.discard("plc_gateway")
+                self._gateway_refresh_ms = 0
+                return JsonTcpResponse(True, {"accepted": True})
             if command == "ping":
                 return JsonTcpResponse(
                     True,
@@ -1457,6 +1523,7 @@ class CoreApplication:
                 error={"code": "UNKNOWN_COMMAND", "message": command},
             )
         except Exception as exc:
+            LOGGER.error("Command %s failed: %s", command, exc)
             return JsonTcpResponse(
                 False,
                 error={"code": "INTERNAL_ERROR", "message": str(exc)},
@@ -1509,9 +1576,10 @@ class CoreApplication:
     def status_snapshot(
         self,
         processes: dict[str, Any] | None = None,
+        *, include_shared_memory: bool = True,
     ) -> dict[str, Any]:
         memory_header = None
-        if self._plc_enabled():
+        if include_shared_memory and self._plc_enabled():
             with contextlib.suppress(Exception):
                 memory_header = self.plc_memory.header()
                 header = memory_header.to_dict()
@@ -1521,8 +1589,8 @@ class CoreApplication:
             "core": {
                 "running": not self._stop_event.is_set(),
                 "tcp": {
-                    "host": self.settings.core.host,
-                    "port": self.settings.core.port,
+                    "host": self._server.host,
+                    "port": self._server.port,
                 },
                 "resources": self.system_resources.snapshot(
                     self.settings.system.memory_warn_percent,
@@ -1584,6 +1652,9 @@ class CoreApplication:
                 "tracking_active": self.vision_snapshot.tracking_active,
                 "tracker_valid": self.vision_snapshot.tracker_valid,
                 "position_error_mm": self.vision_snapshot.position_error_mm,
+                "camera_ip": self.vision_snapshot.camera_ip,
+                "tracking_bypass": self.vision_snapshot.tracking_bypass,
+                "tracking_bypass_reason": self.vision_snapshot.tracking_bypass_reason,
             },
             "alarms": {
                 "warning_summary": self.alarms.warning_summary(),

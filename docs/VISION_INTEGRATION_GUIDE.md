@@ -1,6 +1,6 @@
 # Vision 연동 점검 및 수정 지침
 
-점검일: 2026-10-09. 대상: Windows 11 x64 / RDK X5 3.5 이미지.
+점검일: 2026-10-09. Core 연동 추가: 2026-10-10. 대상: Windows 11 x64 / RDK X5 3.5 이미지.
 
 사용자 요청에 따라 Vision 저장소의 코드·설정·런처는 변경하지 않았다. 아래 항목은 실제 소스에서 확인한 제약과 수정 방향이다. 카메라, RDK, PLC 실장비 성능 검증은 이 Windows 작업 공간에서 수행하지 않았다.
 
@@ -15,8 +15,19 @@ Core와 Vision의 통신 계약은 서로 맞는다. Core는 `src/vision/vision_
 - 지원 운전 명령: `vision.status`, `tracking.start`, `tracking.stop`.
 - Core 설정에 있는 `vision.result`는 현재 Vision이 지원하지 않는다. 현 Core 상태 폴링에서는 호출하지 않지만 별도 호출하면 `UNKNOWN_COMMAND`가 정상 응답이다. 불필요한 명령을 추가하기 전에 소비 경로부터 확정한다.
 - 현재 단일 카메라 계약이다. Core도 첫 카메라와 마스크 bit 0만 처리한다. 복수 카메라를 추가하려면 양쪽 명세와 PLC 맵을 함께 검토해야 한다.
+- Core는 추가 상태 필드 `cameras[0].ip`(또는 `camera_ip`), `tracking_bypass`, `tracking_bypass_reason`을 읽도록 준비했다. 현재 Vision 브리지에는 해당 필드가 없으므로 아래 후속 업데이트를 적용해야 표시된다.
 
 TCP 요청 성공, 카메라 연결, 프레임 유효, 검사 결과 유효는 별개다. 웹이 열리거나 `ok=true`라는 이유만으로 운전 준비 완료로 표시하면 안 된다.
+
+### 1.1 카메라 IP 및 추적 바이패스 후속 계약
+
+Vision 코드는 이번에도 수정하지 않았다. 다음 Vision 업데이트에서는 카메라 IP와 추적 바이패스 설정을 **Vision 웹 서비스**에 추가한다. 상세 계약은 `../../1. 계획,설계/Vision_앱_Core_TCP_HTTP_구현_매뉴얼.md`의 8절이다.
+
+카메라 IP는 Vision 서버의 IP와 다르다. Vision 웹에서 실제 카메라 연결 설정을 적용하고, 실제 적용 주소를 `vision.status.cameras[0].ip`에 반환한다. Core는 이를 `camera_ip`로 노출한다. IP가 없는 카메라는 `null`을 반환한다. 재연결·설정 변경 시 이전 검사 결과는 무효화한다.
+
+추적 바이패스는 `tracking_bypass: true/false`, 사유는 `tracking_bypass_reason: string`으로 반환한다. Core는 바이패스 중 추적 시작을 요청하지 않고 실행 중인 추적에 stop을 요청한다. 해제 시 PLC 운전 허가·추적 요청·고장/정지 조건에 따라 다시 시작한다. 바이패스로 결과 유효, 위치 OK, 생산 승인, 모터/레이저 인터록을 우회하지 않는다. 오래된 Vision은 필드를 생략해도 `false`/빈 사유/`null` 기본값으로 호환된다.
+
+Vision이 업데이트되면 Process Manager의 서버 IP/TCP 8768/실제 웹 포트를 저장하고 Vision 통신 및 프로세스를 활성화한다. `get_devices`의 Vision `status`에서 새 값이 보이는지 확인한 뒤 웹에서 바이패스 적용·해제와 실제 추적 정지·복귀를 검증한다.
 
 ## 2. 우선 수정하거나 확정할 항목
 

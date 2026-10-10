@@ -45,12 +45,14 @@ class CoreOrchestrator:
         core._write_plc_output()
 
     def tick(self, plc: PlcInput, fault_active: bool = False) -> None:
+        status = getattr(self.vision.state, "status", {})
         desired = bool(
             plc.run_enable and plc.tracking_enable
             and not plc.force_stop and not fault_active
+            and status.get("tracking_bypass") is not True
         )
         timestamp_ms = now_ms()
-        actual = getattr(self.vision.state, "status", {}).get("tracking_active")
+        actual = status.get("tracking_active")
         mismatch = actual is not None and bool(actual) != desired
         retry = bool(self.last_error or mismatch) and timestamp_ms - self._last_attempt_ms >= 1000
         if desired == self._requested_tracking and not retry:
@@ -91,5 +93,6 @@ class CoreOrchestrator:
 
     def snapshot(self) -> dict[str, Any]:
         return {"requested_tracking": self._requested_tracking,
+                "tracking_bypass": getattr(self.vision.state, "status", {}).get("tracking_bypass") is True,
                 "last_command": self.last_command, "last_error": self.last_error,
                 "busy": self._task is not None and not self._task.done()}

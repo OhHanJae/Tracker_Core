@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +40,9 @@ class ProcessManager:
     _WATCHDOG_INTERVAL_S = 1.0
     _WATCHDOG_FAILURE_LIMIT = 3
 
-    def __init__(self, modules: dict[str, dict[str, Any]]) -> None:
+    def __init__(
+        self, modules: dict[str, dict[str, Any]], *, manage_persisted_processes: bool = True,
+    ) -> None:
         # Configurations are always indexed by the logical process_name.
         self.modules: dict[str, dict[str, Any]] = {}
 
@@ -59,6 +62,14 @@ class ProcessManager:
         self._watchdog_state: dict[str, dict[str, Any]] = {}
         self._watchdog_task: asyncio.Task[None] | None = None
         self._communication_configs: dict[str, dict[str, Any]] = {}
+        self._launch_endpoints: dict[str, dict[str, Any]] = {}
+        self._diagnostic_callback: Callable[[dict[str, Any]], None] | None = None
+        self._before_stop: Callable[[str], Awaitable[None]] | None = None
+        self._after_start: Callable[[str], Awaitable[None]] | None = None
+        self._output_tasks: dict[str, list[asyncio.Task[None]]] = {}
+        self._expected_stops: set[str] = set()
+        self._manually_stopped: set[str] = set()
+        self._manage_persisted_processes = manage_persisted_processes
         self._communication_state: dict[str, dict[str, Any]] = {}
         self._ping_sequences: dict[str, int] = {}
         self._shutting_down = False
@@ -80,6 +91,7 @@ class ProcessManager:
         self._retired_process_names.update(set(self.modules) - set(updated))
         self._retired_process_names.difference_update(updated)
         self.modules = updated
+        self._manually_stopped.intersection_update(updated)
         for process_name, config in updated.items():
             if not config.get("enabled", True):
                 self._communication_state.pop(process_name, None)
@@ -95,6 +107,139 @@ class ProcessManager:
             for process_name, config in endpoints.items()
             if process_name in self.modules and isinstance(config, dict)
         }
+
+    def update_launch_endpoints(self, endpoints: dict[str, dict[str, Any]]) -> None:
+        self._launch_endpoints = {
+            str(name): dict(endpoint)
+            for name, endpoint in endpoints.items()
+            if name in self.modules and isinstance(endpoint, dict)
+        }
+
+    def set_diagnostic_callback(
+        self, callback: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        self._diagnostic_callback = callback
+
+    def set_lifecycle_callbacks(
+        self, before_stop: Callable[[str], Awaitable[None]] | None,
+        after_start: Callable[[str], Awaitable[None]] | None,
+    ) -> None:
+        self._before_stop, self._after_start = before_stop, after_start
+
+    async def _lifecycle_callback(
+        self, callback: Callable[[str], Awaitable[None]] | None,
+        process_name: str, event: str,
+    ) -> None:
+        if callback is not None:
+            try:
+                await asyncio.wait_for(callback(process_name), timeout=10.0)
+            except Exception as exc:
+                self._diagnostic(process_name, "ERROR", event, str(exc) or type(exc).__name__)
+
+    def _diagnostic(
+        self, process_name: str, level: str, event: str, message: str,
+        **details: Any,
+    ) -> None:
+        if self._diagnostic_callback is not None:
+            with contextlib.suppress(Exception):
+                self._diagnostic_callback({
+                    "process_name": process_name, "level": level, "event": event,
+                    "message": message, "timestamp_ms": now_ms(), "details": details,
+                })
+
+    def _launch_environment(self, process_name: str, script: Path) -> dict[str, str]:
+        environment = {
+            **os.environ, "PYTHON": sys.executable,
+            "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
+            "CORE_PROCESS_SCRIPT": f'"{script}"',
+        }
+        # Never leak a parent's managed listener settings to an independent
+        # process such as Vision or an ordinary helper script.
+        for key in list(environment):
+            if key.startswith(("CORE_TCP_", "CORE_HTTP_")) or key in {
+                "CORE_MANAGED_PROCESS", "CORE_PROCESS_NAME",
+            }:
+                environment.pop(key)
+        endpoint = self._launch_endpoints.get(process_name)
+        if endpoint is not None:
+            environment.update(CORE_MANAGED_PROCESS="1", CORE_PROCESS_NAME=process_name)
+            for key in ("tcp_host", "tcp_port", "http_host", "http_port", "http_enabled"):
+                if key in endpoint:
+                    value = endpoint[key]
+                    environment[f"CORE_{key.upper()}"] = (
+                        "1" if value is True else "0" if value is False else str(value)
+                    )
+        return environment
+
+    def _capture_process_output(
+        self, process_name: str, wrapper: asyncio.subprocess.Process,
+    ) -> None:
+        self._expected_stops.discard(process_name)
+        tasks = [
+            asyncio.create_task(self._read_process_output(process_name, stream, source))
+            for stream, source in ((wrapper.stdout, "stdout"), (wrapper.stderr, "stderr"))
+            if stream is not None
+        ]
+        tasks.append(asyncio.create_task(self._record_process_exit(process_name, wrapper)))
+        self._output_tasks[process_name] = tasks
+
+    async def _read_process_output(
+        self, process_name: str, stream: asyncio.StreamReader, source: str,
+    ) -> None:
+        pending = bytearray()
+
+        def record(line: bytes) -> None:
+            message = line.decode("utf-8", errors="replace").strip()
+            if not message:
+                return
+            match = re.search(r"\b(CRITICAL|FATAL|ERROR|WARNING|WARN|INFO|DEBUG)\b", message)
+            level = "WARNING" if source == "stderr" else "INFO"
+            if match:
+                level = {"FATAL": "CRITICAL", "WARN": "WARNING"}.get(match[1], match[1])
+            elif message.startswith("Traceback ") or re.search(r"\b\w*(?:Error|Exception):", message):
+                level = "ERROR"
+            self._diagnostic(process_name, level, "process_output", message, stream=source)
+
+        try:
+            while chunk := await stream.read(4096):
+                pending.extend(chunk)
+                while b"\n" in pending:
+                    line, _, remainder = pending.partition(b"\n")
+                    record(bytes(line[:16_384]))
+                    pending = bytearray(remainder)
+                if len(pending) > 16_384:
+                    record(bytes(pending[:16_384]))
+                    pending.clear()
+            if pending:
+                record(bytes(pending))
+        except asyncio.CancelledError:
+            if pending:
+                record(bytes(pending[:16_384]))
+            raise
+        except Exception as exc:
+            self._diagnostic(process_name, "ERROR", "output_read_failed", str(exc), stream=source)
+
+    async def _record_process_exit(
+        self, process_name: str, wrapper: asyncio.subprocess.Process,
+    ) -> None:
+        returncode = await wrapper.wait()
+        if (
+            returncode != 0 and process_name not in self._expected_stops
+            and self._processes.get(process_name) is wrapper
+        ):
+            self._diagnostic(
+                process_name, "ERROR", "process_exit",
+                f"process exited with code {returncode}", returncode=returncode, pid=wrapper.pid,
+            )
+
+    async def _finish_process_output(self, process_name: str) -> None:
+        tasks = self._output_tasks.pop(process_name, [])
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=0.25)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._expected_stops.discard(process_name)
 
     async def status_all(self) -> dict[str, Any]:
         process_names = list(self.modules)
@@ -183,7 +328,12 @@ class ProcessManager:
 
     async def start(self, process_name: str) -> dict[str, Any]:
         async with self._operation_lock:
-            return await self._start(process_name)
+            self._manually_stopped.discard(process_name)
+            try:
+                return await self._start(process_name)
+            except Exception as exc:
+                self._diagnostic(process_name, "ERROR", "start_failed", str(exc))
+                raise
 
     async def _start(self, process_name: str) -> dict[str, Any]:
         config = self._module(process_name)
@@ -220,16 +370,13 @@ class ProcessManager:
         self._validate_script(script)
         working_dir = self._working_dir(config, script)
         args = self._start_command(script)
+        args.extend(str(arg) for arg in config.get("launch_args", []))
 
         kwargs: dict[str, Any] = {
             "cwd": str(working_dir),
-            "stdout": asyncio.subprocess.DEVNULL,
-            "stderr": asyncio.subprocess.DEVNULL,
-            "env": {
-                **os.environ,
-                "PYTHON": sys.executable,
-                "CORE_PROCESS_SCRIPT": f'"{script}"',
-            },
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+            "env": self._launch_environment(process_name, script),
         }
 
         if os.name == "nt":
@@ -252,6 +399,7 @@ class ProcessManager:
                     await self._terminate_process(wrapper)
                 raise
         self._processes[process_name] = wrapper
+        self._capture_process_output(process_name, wrapper)
 
         try:
             runtime = await self._discover_runtime_process(
@@ -266,6 +414,7 @@ class ProcessManager:
             with contextlib.suppress(Exception):
                 await self._terminate_process(wrapper)
             self._processes.pop(process_name, None)
+            await self._finish_process_output(process_name)
             raise
 
         if runtime is None:
@@ -276,6 +425,7 @@ class ProcessManager:
                 if wrapper.returncode is None:
                     await self._terminate_process(wrapper)
             self._processes.pop(process_name, None)
+            await self._finish_process_output(process_name)
             raise RuntimeError(
                 f"could not identify the actual service PID for {process_name}; "
                 "configure health_port or avoid detached start commands"
@@ -293,14 +443,34 @@ class ProcessManager:
             ),
         }
 
+        await self._lifecycle_callback(self._after_start, process_name, "after_start_failed")
+
         return await self.status(process_name)
 
     async def stop(self, process_name: str) -> dict[str, Any]:
         async with self._operation_lock:
-            return await self._stop(process_name)
+            self._manually_stopped.add(process_name)
+            self._watchdog_failures.pop(process_name, None)
+            self._watchdog_state[process_name] = {"state": "manually_stopped", "consecutive_failures": 0}
+            try:
+                return await self._stop(process_name)
+            except Exception as exc:
+                self._expected_stops.discard(process_name)
+                self._diagnostic(process_name, "ERROR", "stop_failed", str(exc))
+                raise
 
     async def _stop(self, process_name: str) -> dict[str, Any]:
         config = self._module(process_name)
+
+        runtime = await asyncio.to_thread(
+            self._valid_runtime_record_sync,
+            process_name,
+            True,  # force re-validation before destructive control
+        )
+        wrapper = self._processes.get(process_name)
+        if runtime is not None or (wrapper is not None and wrapper.returncode is None):
+            self._expected_stops.add(process_name)
+            await self._lifecycle_callback(self._before_stop, process_name, "before_stop_failed")
 
         # Preserve existing behavior: if a configured stop_script exists, give
         # it the first chance to stop the service gracefully.
@@ -312,16 +482,18 @@ class ProcessManager:
                 self._working_dir(config, stop_script),
             )
 
-        runtime = await asyncio.to_thread(
-            self._valid_runtime_record_sync,
-            process_name,
-            True,  # force re-validation before destructive control
-        )
-
         if runtime is not None:
             # The PID fingerprint was validated immediately before this call.
             # Terminate only that exact process tree.
-            await self._terminate_runtime_pid(runtime)
+            self._expected_stops.add(process_name)
+            stopped_gracefully = False
+            if (
+                process_name == "core_runtime" or "--worker" in config.get("launch_args", [])
+                or config.get("graceful_stop_command")
+            ):
+                stopped_gracefully = await self._request_graceful_stop(process_name, config, runtime)
+            if not stopped_gracefully:
+                await self._terminate_runtime_pid(runtime)
 
         await self._cleanup_session_wrapper(process_name)
 
@@ -355,8 +527,31 @@ class ProcessManager:
 
     async def restart(self, process_name: str) -> dict[str, Any]:
         async with self._operation_lock:
-            await self._stop(process_name)
-            return await self._start(process_name)
+            self._manually_stopped.discard(process_name)
+            try:
+                await self._stop(process_name)
+                return await self._start(process_name)
+            except Exception as exc:
+                self._expected_stops.discard(process_name)
+                self._diagnostic(process_name, "ERROR", "restart_failed", str(exc))
+                raise
+
+    async def _request_graceful_stop(
+        self, process_name: str, config: dict[str, Any], runtime: dict[str, Any],
+    ) -> bool:
+        try:
+            response = await send_json_request(
+                str(runtime.get("health_host") or config.get("health_host") or "127.0.0.1"),
+                int(runtime.get("health_port") or config.get("health_port") or 0),
+                str(config.get("graceful_stop_command") or "worker.shutdown"),
+                timeout_s=2.0,
+            )
+            if not response.ok:
+                raise RuntimeError(str(response.error))
+            return await self._wait_pid_exit(int(runtime["pid"]), timeout_s=5.0)
+        except Exception as exc:
+            self._diagnostic(process_name, "WARNING", "graceful_stop_failed", str(exc))
+            return False
 
     async def start_enabled(self) -> dict[str, Any]:
         results: dict[str, Any] = {}
@@ -410,6 +605,7 @@ class ProcessManager:
                     continue
                 if (
                     start_missing
+                    and process_name not in self._manually_stopped
                     and runtime is None
                     and str(self._script_setting(config, "start") or "").strip()
                 ):
@@ -440,6 +636,8 @@ class ProcessManager:
             for process_name, config in list(self.modules.items()):
                 if self._shutting_down:
                     return
+                if process_name in self._manually_stopped:
+                    continue
                 if not config.get("enabled", True) or not config.get("auto_restart", False):
                     self._watchdog_failures.pop(process_name, None)
                     self._watchdog_state.pop(process_name, None)
@@ -480,17 +678,21 @@ class ProcessManager:
 
                 self._watchdog_failures[process_name] = 0
                 try:
-                    if runtime is None:
-                        await self.start(process_name)
-                    else:
-                        await self.restart(process_name)
+                    async with self._operation_lock:
+                        if process_name in self._manually_stopped:
+                            continue
+                        if runtime is not None:
+                            await self._stop(process_name)
+                        await self._start(process_name)
                 except Exception as exc:
+                    self._expected_stops.discard(process_name)
                     self._last_actions[process_name] = {
                         "action": "watchdog_restart",
                         "ok": False,
                         "timestamp_ms": now_ms(),
                         "message": str(exc),
                     }
+                    self._diagnostic(process_name, "ERROR", "watchdog_restart_failed", str(exc))
 
     async def stop_all(self) -> dict[str, Any]:
         results: dict[str, Any] = {}
@@ -500,9 +702,15 @@ class ProcessManager:
         # was still alive.
         process_names = set(self.modules.keys())
         process_names.update(self._processes.keys())
-        process_names.update(self._persisted_process_names())
+        if self._manage_persisted_processes:
+            process_names.update(self._persisted_process_names())
 
-        for process_name in sorted(process_names):
+        def shutdown_order(process_name: str) -> tuple[bool, str]:
+            config = self.modules.get(process_name, {})
+            worker = process_name == "core_runtime" or "--worker" in config.get("launch_args", [])
+            return not worker, process_name
+
+        for process_name in sorted(process_names, key=shutdown_order):
             try:
                 if process_name in self.modules:
                     runtime = await asyncio.to_thread(
@@ -595,9 +803,8 @@ class ProcessManager:
         indexed: dict[str, dict[str, Any]] = {}
 
         for config_key, config in modules.items():
-            # Config Server is the Core's own JsonLineServer.  Main/Core and
-            # its embedded server are never child-process management targets.
-            if config_key in {"config", "main"}:
+            # The web supervisor itself is not a child-process target.
+            if config_key == "config":
                 continue
             if not isinstance(config, dict):
                 raise ValueError(
@@ -615,7 +822,7 @@ class ProcessManager:
             if process_name in indexed:
                 raise ValueError(f"duplicate process_name: {process_name}")
 
-            indexed[process_name] = config
+            indexed[process_name] = dict(config)
 
         return indexed
 
@@ -638,6 +845,10 @@ class ProcessManager:
             "health_type": config.get("health_type", "none"),
             "health_host": config.get("health_host", ""),
             "health_port": config.get("health_port", 0),
+            "runtime_endpoint": {
+                "host": runtime.get("health_host") or config.get("health_host", ""),
+                "port": int(runtime.get("health_port") or config.get("health_port") or 0),
+            } if runtime is not None else None,
             "auto_restart": bool(config.get("auto_restart", False)),
             "running": running,
             "online": running,
@@ -742,6 +953,13 @@ class ProcessManager:
             "error": error,
         }
         self._communication_state[process_name] = result
+        if update_failure and failures == self._WATCHDOG_FAILURE_LIMIT:
+            self._diagnostic(
+                process_name, "ERROR", "communication_failed",
+                error or "process communication failed", consecutive_failures=failures,
+            )
+        elif success and int(previous.get("consecutive_failures") or 0) >= self._WATCHDOG_FAILURE_LIMIT:
+            self._diagnostic(process_name, "INFO", "communication_recovered", "process communication recovered")
         return result
 
     async def _probe_communication(
@@ -1113,6 +1331,7 @@ class ProcessManager:
             "executable": str(info.get("executable") or ""),
             "command_line": str(info.get("command_line") or ""),
             "health_port": int(config.get("health_port") or 0),
+            "health_host": str(config.get("health_host") or "127.0.0.1"),
             "start_scripts": str(script),
         }
 
@@ -1370,16 +1589,15 @@ class ProcessManager:
 
     async def _cleanup_session_wrapper(self, process_name: str) -> None:
         wrapper = self._processes.pop(process_name, None)
-        if wrapper is None:
-            return
-
-        if wrapper.returncode is not None:
-            return
-
+        self._expected_stops.add(process_name)
         try:
-            await asyncio.wait_for(wrapper.wait(), timeout=1.0)
-        except asyncio.TimeoutError:
-            await self._terminate_process(wrapper)
+            if wrapper is not None and wrapper.returncode is None:
+                try:
+                    await asyncio.wait_for(wrapper.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    await self._terminate_process(wrapper)
+        finally:
+            await self._finish_process_output(process_name)
 
     async def _terminate_process(
         self,
@@ -2061,6 +2279,9 @@ class ProcessManager:
 
         suffix = script.suffix.lower()
 
+        if suffix == ".py":
+            return
+
         if os.name == "nt" and suffix not in {".bat", ".cmd", ".ps1", ".exe"}:
             raise ValueError(
                 "Windows module scripts must be .bat, .cmd, .ps1, or .exe"
@@ -2071,6 +2292,9 @@ class ProcessManager:
 
     def _start_command(self, script: Path) -> list[str]:
         suffix = script.suffix.lower()
+
+        if suffix == ".py":
+            return [sys.executable, "-u", str(script)]
 
         if os.name == "nt" and suffix in {".bat", ".cmd"}:
             # BAT files are UTF-8. Expand the quoted path once so shell

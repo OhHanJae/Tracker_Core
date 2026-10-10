@@ -8,6 +8,7 @@ from pathlib import Path
 
 from src.common.settings import DEFAULT_CONFIG_PATH
 from src.core.application import CoreApplication
+from src.core.web_application import CoreWebApplication
 
 
 def _windows_connection_reset_handler(
@@ -28,6 +29,10 @@ def _windows_connection_reset_handler(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Tracker Process Control Core")
     parser.add_argument(
+        "--worker", action="store_true",
+        help="Run the managed control worker without the management web server",
+    )
+    parser.add_argument(
         "--config",
         default=str(DEFAULT_CONFIG_PATH),
         help="Path to global core settings JSON",
@@ -35,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--log-level",
         default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Console log level",
     )
     return parser.parse_args()
@@ -47,7 +52,8 @@ async def main_async() -> None:
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    app = CoreApplication(Path(args.config).expanduser())
+    settings_path = Path(args.config).expanduser()
+    app = CoreApplication(settings_path, managed_worker=True) if args.worker else CoreWebApplication(settings_path)
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(_windows_connection_reset_handler)
@@ -62,7 +68,13 @@ async def main_async() -> None:
 
     try:
         await app.start()
-        await stop_event.wait()
+        signal_wait = asyncio.create_task(stop_event.wait())
+        app_wait = asyncio.create_task(app.wait_closed())
+        try:
+            await asyncio.wait((signal_wait, app_wait), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in (signal_wait, app_wait):
+                task.cancel()
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:

@@ -11,6 +11,9 @@ from src.communication.json_tcp import JsonTcpError, send_json_request
 class VisionSnapshot:
     online: bool = False
     tracking_active: bool = False
+    tracking_bypass: bool = False
+    tracking_bypass_reason: str = ""
+    camera_ip: str | None = None
     tracker_valid: bool = False
     degraded: bool = False
     fault: bool = False
@@ -33,6 +36,9 @@ class VisionSnapshot:
         return {
             "online": self.online,
             "tracking_active": self.tracking_active,
+            "tracking_bypass": self.tracking_bypass,
+            "tracking_bypass_reason": self.tracking_bypass_reason,
+            "camera_ip": self.camera_ip,
             "tracker_valid": self.tracker_valid,
             "degraded": self.degraded,
             "fault": self.fault,
@@ -84,6 +90,7 @@ def normalize_vision_snapshot(data: dict[str, Any], camera_count: int) -> Vision
     valid_mask = _int(data.get("camera_valid_mask"), 0) & 1
     camera_warning_words: dict[int, int] = {}
     camera_fault_words: dict[int, int] = {}
+    camera_ip = data.get("camera_ip")
 
     if cameras:
         camera_data = _dict(cameras[0])
@@ -91,6 +98,7 @@ def normalize_vision_snapshot(data: dict[str, Any], camera_count: int) -> Vision
         valid_mask = int(bool(camera_data.get("valid") or camera_data.get("ready")))
         camera_warning_words[1] = _int(camera_data.get("warning_word"), 0)
         camera_fault_words[1] = _int(camera_data.get("fault_word"), 0)
+        camera_ip = camera_data.get("ip", camera_ip)
 
     position_error = _first_number(
         data,
@@ -114,6 +122,10 @@ def normalize_vision_snapshot(data: dict[str, Any], camera_count: int) -> Vision
     return VisionSnapshot(
         online=bool(data.get("online", True)),
         tracking_active=tracking_active,
+        tracking_bypass=data.get("tracking_bypass") is True,
+        tracking_bypass_reason=(data.get("tracking_bypass_reason")
+                                if isinstance(data.get("tracking_bypass_reason"), str) else ""),
+        camera_ip=camera_ip.strip() or None if isinstance(camera_ip, str) else None,
         tracker_valid=tracker_valid,
         degraded=bool(data.get("degraded") or data.get("vision_degraded")),
         fault=bool(data.get("fault") or data.get("vision_fault")),

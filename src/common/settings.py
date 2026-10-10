@@ -152,6 +152,13 @@ class DataPathSettings:
 
 def _default_process_modules() -> dict[str, dict[str, Any]]:
     return {
+        "core": {
+            "name": "Main Core", "enabled": True,
+            "process_name": "core_runtime", "start_scripts": "main.py",
+            "stop_script": "", "working_dir": ".",
+            "health_type": "tcp", "health_host": "127.0.0.1",
+            "health_port": 8770, "auto_restart": False,
+        },
         "plc_gateway": {
             "name": "PLC Communication",
             "enabled": True,
@@ -180,18 +187,6 @@ def _default_process_modules() -> dict[str, dict[str, Any]]:
             "name": "Vision Server",
             "enabled": False,
             "process_name": "vision_server",
-            "start_scripts": "",
-            "stop_script": "",
-            "working_dir": "",
-            "health_type": "tcp",
-            "health_host": "127.0.0.1",
-            "health_port": 8768,
-            "auto_restart": False,
-        },
-        "laser": {
-            "name": "Laser Server",
-            "enabled": False,
-            "process_name": "laser_server",
             "start_scripts": "",
             "stop_script": "",
             "working_dir": "",
@@ -290,6 +285,20 @@ def _coerce_dataclass(cls: type[Any], data: dict[str, Any]) -> Any:
 def settings_from_dict(data: dict[str, Any]) -> AppSettings:
     default_data = AppSettings().to_dict()
     merged = _deep_merge(default_data, data)
+    merged["processes"].pop("laser", None)
+    # Process Manager owns managed listeners; retain the existing client aliases.
+    for key, tcp, web, host_key, port_key in (
+        ("plc_gateway", merged["xgt"]["control"], merged["xgt"]["web"], "host", "port"),
+        ("ptm", merged["motor"], merged["motor"], "web_host", "web_port"),
+    ):
+        process = merged["processes"][key]
+        supplied = data.get("processes", {}).get(key, {})
+        process["health_host"] = supplied.get("health_host", tcp["host"])
+        process["health_port"] = supplied.get("health_port", tcp["port"])
+        process["http_host"] = supplied.get("http_host", web[host_key])
+        process["http_port"] = supplied.get("http_port", web[port_key])
+        tcp["host"], tcp["port"] = process["health_host"], int(process["health_port"])
+        web[host_key], web[port_key] = process["http_host"], int(process["http_port"])
     merged["vision"]["camera_count"] = 1
     return AppSettings(
         core=_coerce_dataclass(CoreServerSettings, merged["core"]),
@@ -339,6 +348,17 @@ def apply_settings_patch(settings: AppSettings, patch: dict[str, Any]) -> AppSet
     if not isinstance(patch, dict):
         raise ValueError("patch must be an object")
     merged = _deep_merge(settings.to_dict(), patch)
+    # Older clients can still patch endpoint aliases; explicit process fields win.
+    mappings = (
+        ("plc_gateway", patch.get("xgt", {}).get("control", {}), {"host": "health_host", "port": "health_port"}),
+        ("plc_gateway", patch.get("xgt", {}).get("web", {}), {"host": "http_host", "port": "http_port"}),
+        ("ptm", patch.get("motor", {}), {"host": "health_host", "port": "health_port", "web_host": "http_host", "web_port": "http_port"}),
+    )
+    for key, values, fields in mappings:
+        explicit = patch.get("processes", {}).get(key, {})
+        for alias, field_name in fields.items():
+            if alias in values and field_name not in explicit:
+                merged["processes"][key][field_name] = values[alias]
     return settings_from_dict(merged)
 
 

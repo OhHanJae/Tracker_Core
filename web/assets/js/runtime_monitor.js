@@ -42,6 +42,7 @@ export function renderRuntimeMonitor() {
   const header = plc.shared_memory_header || {};
   const command = status.command || {};
   const ptm = status.ptm || {};
+  const vision = status.vision || {};
   const alarms = status.alarms || {};
   const fresh = state.apiOnline;
   const loopHealthy = fresh && runtime.loop_running && runtime.last_cycle_age_ms !== null
@@ -107,9 +108,16 @@ export function renderRuntimeMonitor() {
         ]),
       ], '계산값과 마지막 공유메모리 기록값 비교')}
     </div>
+    <div class="section-gap">${details('Vision 연동 상태', [
+      ['카메라 IP', vision.camera_ip || '미보고 · Vision Web에서 설정'],
+      ['트래킹 바이패스', vision.tracking_bypass === true ? '켜짐' : vision.tracking_bypass === false ? '꺼짐' : '미보고'],
+      ['바이패스 사유', vision.tracking_bypass_reason || '없음'],
+      ['트래킹 / 결과 유효', `${vision.tracking_active ? '동작' : '대기'} / ${vision.tracker_valid ? '유효' : '무효'}`],
+      ['위치 오차 (mm)', vision.position_error_mm],
+    ], '설정 변경은 Vision Web · Core는 Vision 상태 응답을 표시')}</div>
     <div class="card section-gap"><div class="card-head"><h3>장치 상태</h3><small>상태 응답 기준 · 1.5초 갱신</small></div>
       <div class="table-wrap"><table><thead><tr><th>장치</th><th>연결</th><th>상태</th><th>응답 시간</th><th>성공 / 오류</th><th>최근 오류</th></tr></thead>
-      <tbody>${Object.values(status.devices || {}).map(device => `<tr><td>${esc(device.name)}</td><td>${esc(device.endpoint)}</td>
+      <tbody>${Object.values(status.devices || {}).filter(device => device.id !== 'laser').map(device => `<tr><td>${esc(device.name)}</td><td>${esc(device.endpoint)}</td>
         <td>${statusBadge(device.enabled === false ? 'Disabled' : fresh && device.online ? 'Online' : 'Offline')}</td>
         <td>${esc(age(device.response_ms))}</td><td>${esc(device.ok_count)} / ${esc(device.error_count)}</td>
         <td>${esc(device.last_error || '없음')}</td></tr>`).join('')}</tbody></table></div></div>`;

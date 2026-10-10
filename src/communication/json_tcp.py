@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from src.common.network import client_connect_host
 
@@ -260,6 +260,15 @@ class JsonLineServer:
             return
         if route == "/api/processes":
             response = await self.handler("get_processes", {})
+            await self._write_json_response(writer, response, method)
+            return
+        if route in {"/api/logs", "/api/logs/export"} and method == "GET":
+            query = {key: values[-1] for key, values in parse_qs(urlparse(target).query).items()}
+            response = await self.handler("logs.export" if route.endswith("export") else "logs.history", query)
+            await self._write_json_response(writer, response, method)
+            return
+        if route == "/api/logs/import" and method == "POST":
+            response = await self.handler("logs.import", _decode_json_body(body_bytes))
             await self._write_json_response(writer, response, method)
             return
         if route in {"/api/config", "/config.json"} and method == "GET":
