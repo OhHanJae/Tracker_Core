@@ -60,6 +60,7 @@ def normalize_ptm_status(data: dict[str, Any]) -> dict[str, Any]:
         "tilt_speed_deg_s": _first_number(data, motor, tilt, "tilt_speed_deg_s", "speed"),
         "laser_on": _bool_first(False, data, motor, laser, "laser_on", "on", "emission"),
         "laser_connected": _bool_first(False, laser, "connected") if "connected" in laser else None,
+        "laser_bypass": _bool_first(False, laser, "bypass"),
         "warning_word": _first_int(0, data, motor, "warning_word", "warnings"),
         "fault_word": _first_int(0, data, motor, "fault_word", "faults"),
         "fault": _bool_first(False, data, motor, "fault", "error"),

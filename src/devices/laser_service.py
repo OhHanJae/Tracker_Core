@@ -95,6 +95,7 @@ def normalize_laser_status(data: dict[str, Any], mode: str) -> dict[str, Any]:
     return {
         "online": _bool_first(True, data, laser, "online", "connected", "ready"),
         "mode": mode,
+        "bypass": _bool_first(False, data, laser, "laser_bypass", "bypass"),
         "on": on,
         "power_percent": _first_number(data, laser, "power_percent", "power"),
         "temperature_c": _first_number(data, laser, "temperature_c", "temperature"),

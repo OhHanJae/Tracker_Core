@@ -746,7 +746,14 @@ class CoreApplication:
         fault = _safe_int(status.get("fault_word"))
         if status.get("fault"):
             fault |= 1 << 1
-        if (state.ok_count or state.error_count) and not state.online:
+        bypass = (
+            self.settings.laser.mode.lower() == "ptm"
+            and self.ptm_service.state.online
+            and self.ptm_service.state.status.get("laser_bypass") is True
+        )
+        if bypass:
+            fault &= ~(1 << 0)
+        elif (state.ok_count or state.error_count) and not state.online:
             fault |= 1 << 0
         self.alarms.set_warning_word(DeviceSummaryBit.LASER, warning)
         self.alarms.set_fault_word(
