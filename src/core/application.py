@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 from dataclasses import replace
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -118,8 +119,14 @@ class CoreApplication:
                                           self.settings.core.http_port or self.settings.core.port)
         self.network_manager = NetworkManager("eth0")
 
+        self._gateway_config: dict[str, Any] = {}
+        self._gateway_config_error = ""
+        self._gateway_refresh_ms = 0
+        self._gateway_update_in_progress = False
+        self._settings_lock = asyncio.Lock()
+        self._config_request_lock = asyncio.Lock()
         self._rebuild_clients()
-        self._gateway_configured = not self.settings.xgt.shared_memory.configure_gateway_on_start
+        self._gateway_configured = not self._plc_enabled()
         self._last_plc_heartbeat: int | None = None
         self._last_plc_heartbeat_change_ms = now_ms()
         self._position_ok_since_ms: int | None = None
@@ -181,7 +188,10 @@ class CoreApplication:
         laser_settings = replace(self.settings.laser, enabled=self._laser_enabled())
         vision_settings = replace(self.settings.vision, enabled=self._vision_enabled())
         self.xgt_gateway = XgtGatewayClient(self.settings.xgt)
-        self.plc_memory = PlcSharedMemoryClient(self.settings.xgt.shared_memory.name)
+        self.plc_memory = PlcSharedMemoryClient(
+            self._gateway_config.get("shared_memory", {}).get("name")
+            or self.settings.xgt.shared_memory.name
+        )
         self._reset_plc_write_tracking()
         self.motor_api = MotorApiClient(motor_settings)
         self.vision_api = VisionTcpClient(vision_settings)
@@ -272,11 +282,21 @@ class CoreApplication:
         return endpoints
 
     async def _replace_settings(self, settings: AppSettings) -> None:
+        async with self._settings_lock:
+            self._gateway_update_in_progress = True
+            try:
+                await self._replace_settings_locked(settings)
+            finally:
+                self._gateway_update_in_progress = False
+            if self._started and self._plc_enabled():
+                self._gateway_config_task = asyncio.create_task(self._configure_gateway_on_start())
+
+    async def _replace_settings_locked(self, settings: AppSettings) -> None:
         validate_discovery(settings.discovery)
         self._validate_operator_settings(settings)
         plc_was_enabled = self._plc_enabled()
         gateway_reconfigure = (
-            settings.xgt != self.settings.xgt
+            settings.xgt.control != self.settings.xgt.control
             or plc_was_enabled != (settings.processes.get("plc_gateway", {}).get("enabled", True) is not False)
         )
         disabling_plc = plc_was_enabled and settings.processes.get(
@@ -308,7 +328,7 @@ class CoreApplication:
             self._safe_stop_task = None
         if had_motion or disabling_plc or disabling_motor or disabling_laser:
             self._safe_stop_applied = await self._perform_safe_stop()
-        if gateway_reconfigure and self._gateway_config_task is not None:
+        if self._gateway_config_task is not None:
             self._gateway_config_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._gateway_config_task
@@ -330,6 +350,9 @@ class CoreApplication:
             await self.discovery.stop()
 
         self.settings = settings
+        if gateway_reconfigure:
+            self._gateway_config = {}
+            self._gateway_config_error = ""
         if self._started:
             self._configure_logging()
         if restart_discovery:
@@ -344,9 +367,7 @@ class CoreApplication:
             )
         self._rebuild_clients()
         if gateway_reconfigure:
-            self._gateway_configured = not (
-                self._plc_enabled() and settings.xgt.shared_memory.configure_gateway_on_start
-            )
+            self._gateway_configured = not self._plc_enabled()
         if plc_was_enabled != self._plc_enabled():
             self._last_plc_heartbeat = None
             self._last_plc_heartbeat_change_ms = now_ms()
@@ -359,8 +380,6 @@ class CoreApplication:
             # process. Process lifecycle is controlled by the dedicated UI
             # buttons; reconcile here only applies retire/disable changes.
             await self.process_manager.reconcile(start_missing=False)
-            if gateway_reconfigure and self._plc_enabled() and not self._gateway_configured:
-                self._gateway_config_task = asyncio.create_task(self._configure_gateway_on_start())
             await self.devices.start_all()
             if restart_discovery:
                 await self.discovery.start()
@@ -376,7 +395,7 @@ class CoreApplication:
                 self._http_server.serve_forever()
             )
         await self.process_manager.reconcile()
-        if self._plc_enabled() and self.settings.xgt.shared_memory.configure_gateway_on_start:
+        if self._plc_enabled():
             self._gateway_config_task = asyncio.create_task(self._configure_gateway_on_start())
         self.process_manager.start_watchdog()
         await self.devices.start_all()
@@ -435,18 +454,26 @@ class CoreApplication:
         await self._stop_event.wait()
 
     async def _configure_gateway_on_start(self) -> None:
+        client = self.xgt_gateway
         for attempt in range(10):
-            if not self._plc_enabled() or self._stop_event.is_set():
+            if (
+                not self._plc_enabled() or self._stop_event.is_set()
+                or self._gateway_update_in_progress or client is not self.xgt_gateway
+            ):
                 return
             try:
-                await self.xgt_gateway.configure_gateway()
-                self._gateway_configured = True
-                self._last_plc_heartbeat = None
-                self._last_plc_heartbeat_change_ms = now_ms()
+                config = await client.get_config()
+                if client is not self.xgt_gateway or self._gateway_update_in_progress:
+                    return
+                self._apply_gateway_config(config)
                 return
             except Exception as exc:
+                self._gateway_config_error = str(exc) or type(exc).__name__
+                if isinstance(exc, ValueError):
+                    self._gateway_configured = False
+                    self.plc_memory.close()
                 if attempt == 9:
-                    LOGGER.warning("PLC Gateway configuration failed: %s", exc)
+                    LOGGER.warning("PLC Gateway configuration read failed: %s", exc)
                     self.alarms.set_fault_word(
                         DeviceSummaryBit.PLC_COMMUNICATION,
                         1 << 0,
@@ -454,6 +481,38 @@ class CoreApplication:
                     )
                 else:
                     await asyncio.sleep(1)
+        self._gateway_refresh_ms = now_ms() + 2000
+
+    def _apply_gateway_config(self, config: dict[str, Any]) -> None:
+        read = config.get("read") or {}
+        write = config.get("write") or {}
+        shm = config.get("shared_memory") or {}
+        for name, area in (("read", read), ("write", write)):
+            if not area.get("enabled") or area.get("byte_count") != BYTE_COUNT:
+                raise ValueError(f"Gateway {name} area must be enabled with {BYTE_COUNT} bytes")
+            if not isinstance(area.get("address"), str) or not area["address"].strip():
+                raise ValueError(f"Gateway {name} address is missing")
+        if not isinstance(shm.get("name"), str) or not shm["name"].strip():
+            raise ValueError("Gateway shared memory name is missing")
+        current = {"read": dict(read), "write": dict(write), "shared_memory": dict(shm)}
+        if current != self._gateway_config:
+            self.plc_memory.close()
+            self.plc_memory = PlcSharedMemoryClient(shm["name"])
+            self._reset_plc_write_tracking()
+            self._last_plc_heartbeat = None
+            self._last_plc_heartbeat_change_ms = now_ms()
+            self.plc_input = PlcInput()
+            self._gateway_config = current
+        self._gateway_config_error = ""
+        self._gateway_configured = True
+        self._gateway_refresh_ms = now_ms() + 2000
+
+    def _plc_area_value(self, area: str, key: str) -> Any:
+        values = self._gateway_config.get(area, {})
+        if key in values:
+            return values[key]
+        settings = self.settings.xgt.plc_area
+        return getattr(settings, f"{area}_address") if key == "address" else settings.interval_ms
 
     async def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -477,6 +536,13 @@ class CoreApplication:
             await asyncio.sleep(delay_ms / 1000)
 
     async def _cycle(self) -> None:
+        if (
+            self._plc_enabled() and now_ms() >= self._gateway_refresh_ms
+            and not self._gateway_update_in_progress
+            and (self._gateway_config_task is None or self._gateway_config_task.done())
+        ):
+            self._gateway_config_task = asyncio.create_task(self._configure_gateway_on_start())
+            self._gateway_refresh_ms = now_ms() + 2000
         if self.settings.runtime.orchestration_enabled:
             await self.orchestrator.run_cycle(self)
             return
@@ -524,6 +590,7 @@ class CoreApplication:
                 self._last_plc_heartbeat_change_ms = timestamp_ms
         except SharedMemoryError as exc:
             LOGGER.debug("PLC shared memory read failed: %s", exc)
+            self.plc_memory.close()
             self.plc_input = PlcInput()
             self.alarms.set_fault_word(
                 DeviceSummaryBit.PLC_COMMUNICATION,
@@ -1010,6 +1077,7 @@ class CoreApplication:
             self.plc_input.tracking_enable
             and self.vision_snapshot.tracker_valid
             and self.vision_snapshot.position_error_mm is not None
+            and math.isfinite(self.vision_snapshot.position_error_mm)
             and position_error_x100 <= tracking_tolerance
         )
         if position_ok:
@@ -1032,6 +1100,8 @@ class CoreApplication:
             and not self.plc_input.force_stop
             and self.vision_snapshot.pan_error_deg is not None
             and self.vision_snapshot.tilt_error_deg is not None
+            and math.isfinite(self.vision_snapshot.pan_error_deg)
+            and math.isfinite(self.vision_snapshot.tilt_error_deg)
             and pan_error_x100 <= laser_tolerance
             and tilt_error_x100 <= laser_tolerance
             and self.ptm_service.state.online
@@ -1162,7 +1232,7 @@ class CoreApplication:
             self._plc_write_commit_count += 1
             timeout_ms = max(
                 self.settings.runtime.plc_heartbeat_fault_ms,
-                self.settings.xgt.plc_area.interval_ms * 6,
+                int(self._plc_area_value("write", "interval_ms")) * 6,
             )
             if timestamp - self._plc_write_last_ack_ms >= timeout_ms:
                 self._plc_write_error = f"PLC write acknowledgement stopped for {timeout_ms} ms"
@@ -1254,31 +1324,44 @@ class CoreApplication:
                 await self.network_manager.cancel()
                 return JsonTcpResponse(True, {"cancelled": True})
             if command == "update_config":
-                patch = params.get("patch")
-                new_settings = apply_settings_patch(self.settings, patch)
-                validate_discovery(new_settings.discovery)
-                self._validate_operator_settings(new_settings)
-                ensure_data_directories(new_settings)
-                old_settings = self.settings
-                try:
-                    await self._replace_settings(new_settings)
-                    save_settings(new_settings, self.settings_path)
-                except Exception:
-                    await self._replace_settings(old_settings)
-                    raise
+                async with self._config_request_lock:
+                    patch = params.get("patch")
+                    new_settings = apply_settings_patch(self.settings, patch)
+                    validate_discovery(new_settings.discovery)
+                    self._validate_operator_settings(new_settings)
+                    ensure_data_directories(new_settings)
+                    old_settings = self.settings
+                    try:
+                        await self._replace_settings(new_settings)
+                        save_settings(new_settings, self.settings_path)
+                    except Exception:
+                        await self._replace_settings(old_settings)
+                        raise
                 return JsonTcpResponse(True, self.settings.to_dict())
             if command == "reload_config":
-                new_settings = load_settings(self.settings_path)
-                ensure_data_directories(new_settings)
-                await self._replace_settings(new_settings)
+                async with self._config_request_lock:
+                    new_settings = load_settings(self.settings_path)
+                    ensure_data_directories(new_settings)
+                    await self._replace_settings(new_settings)
                 return JsonTcpResponse(True, self.settings.to_dict())
             if command == "xgt.configure":
-                if not self._plc_enabled():
-                    return JsonTcpResponse(False, error={"code": "PROCESS_DISABLED", "message": "PLC Communication is disabled"})
-                result = await self.xgt_gateway.configure_gateway()
-                self._gateway_configured = True
-                self._last_plc_heartbeat = None
-                self._last_plc_heartbeat_change_ms = now_ms()
+                async with self._settings_lock:
+                    if not self._plc_enabled():
+                        return JsonTcpResponse(False, error={"code": "PROCESS_DISABLED", "message": "PLC Communication is disabled"})
+                    self._gateway_update_in_progress = True
+                    try:
+                        if self._gateway_config_task is not None:
+                            self._gateway_config_task.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await self._gateway_config_task
+                            self._gateway_config_task = None
+                        self._gateway_configured = False
+                        self.plc_memory.close()
+                        self._gateway_refresh_ms = now_ms() + 2000
+                        result = await self.xgt_gateway.configure_gateway()
+                        self._apply_gateway_config(await self.xgt_gateway.get_config())
+                    finally:
+                        self._gateway_update_in_progress = False
                 return JsonTcpResponse(True, result)
             if command == "xgt.status":
                 if not self._plc_enabled():
@@ -1383,7 +1466,7 @@ class CoreApplication:
         timestamp = now_ms()
         timeout_ms = max(
             self.settings.runtime.plc_heartbeat_fault_ms,
-            self.settings.xgt.plc_area.interval_ms * 6,
+            int(self._plc_area_value("write", "interval_ms")) * 6,
         )
         if not self._plc_enabled():
             delivery_state = "disabled"
@@ -1407,7 +1490,7 @@ class CoreApplication:
             delivery_state = "pending"
         return {
             "state": delivery_state,
-            "base_address": self.settings.xgt.plc_area.write_address,
+            "base_address": self._plc_area_value("write", "address"),
             "commit_count": self._plc_write_commit_count,
             "committed_sequence": self._plc_write_sequence,
             "acknowledged_sequence": header.write_ack_sequence if header else None,
@@ -1418,7 +1501,7 @@ class CoreApplication:
             "last_ack_age_ms": timestamp - self._plc_write_last_ack_ms
             if self._plc_write_ack_seen else None,
             "ack_timeout_ms": timeout_ms,
-            "last_error": self._plc_write_error,
+            "last_error": self._plc_write_error or self._gateway_config_error,
             "last_committed_words_preview": words_from_bytes(self._plc_write_payload)[:80]
             if self._plc_write_payload else [],
         }
@@ -1449,8 +1532,10 @@ class CoreApplication:
             "plc": {
                 "enabled": self._plc_enabled(),
                 "gateway_configured": self._gateway_configured,
+                "gateway_config_error": self._gateway_config_error,
                 "shared_memory_connected": self.plc_memory.connected,
                 "shared_memory_name": self.plc_memory.connected_name
+                or self._gateway_config.get("shared_memory", {}).get("name")
                 or self.settings.xgt.shared_memory.name,
                 "input_words_preview": plc_words,
                 "output_words_preview": output_words,
@@ -1626,13 +1711,13 @@ class CoreApplication:
                 "refresh_ms": 500,
                 "header": header.to_dict(),
                 "read": {
-                    "base_address": self.settings.xgt.plc_area.read_address,
+                    "base_address": self._plc_area_value("read", "address"),
                     "offset": header.read_offset,
                     "word_count": read_count,
                     "words": words_from_bytes(read_bytes, read_count),
                 },
                 "write": {
-                    "base_address": self.settings.xgt.plc_area.write_address,
+                    "base_address": self._plc_area_value("write", "address"),
                     "offset": header.write_offset,
                     "word_count": write_count,
                     "words": words_from_bytes(write_bytes, write_count),
@@ -1644,7 +1729,7 @@ class CoreApplication:
 
 
 def _scale_or_zero(value: float | None) -> int:
-    if value is None:
+    if value is None or not math.isfinite(value):
         return 0
     return max(0, min(65535, int(round(abs(value) * 100))))
 

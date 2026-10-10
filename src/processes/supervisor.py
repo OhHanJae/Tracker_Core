@@ -19,7 +19,7 @@ def _set_parent_death_signal(expected_parent: int) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in {2, 3}:
         return 2
 
     stopping = False
@@ -31,7 +31,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
 
-    expected_parent = os.getppid()
+    expected_parent = int(sys.argv[2]) if len(sys.argv) == 3 else os.getppid()
     _set_parent_death_signal(expected_parent)
     if stopping:
         return 1

@@ -72,6 +72,15 @@ class _Responder(asyncio.DatagramProtocol):
             self.service.transport.sendto(self.service.packet("offer"), address)
 
 
+class _Scanner(asyncio.DatagramProtocol):
+    def __init__(self, queue: asyncio.Queue) -> None:
+        self.queue = queue
+
+    def datagram_received(self, data: bytes, address: tuple[str, int]) -> None:
+        if not self.queue.full():
+            self.queue.put_nowait((data, address))
+
+
 class DiscoveryService:
     def __init__(self, settings: DiscoverySettings, core_port: int, web_port: int) -> None:
         validate_discovery(settings)
@@ -81,6 +90,7 @@ class DiscoveryService:
         self.transport: asyncio.DatagramTransport | None = None
         self._announce_task: asyncio.Task[None] | None = None
         self._announce_socket: socket.socket | None = None
+        self._announce_transport: asyncio.DatagramTransport | None = None
 
     def packet(self, kind: str) -> bytes:
         ip = interface_ipv4(self.settings.interface)
@@ -120,6 +130,10 @@ class DiscoveryService:
             source = interface_ipv4(self.settings.interface) if os.name == "posix" else "0.0.0.0"
             self._announce_socket.bind((source, 0))
             self._announce_socket.setblocking(False)
+            self._announce_transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+                asyncio.DatagramProtocol, sock=self._announce_socket
+            )
+            self._announce_socket = None
         except Exception:
             await self.stop()
             raise
@@ -137,14 +151,17 @@ class DiscoveryService:
         if self._announce_socket:
             self._announce_socket.close()
             self._announce_socket = None
+        if self._announce_transport:
+            self._announce_transport.close()
+            self._announce_transport = None
         await asyncio.sleep(0)
 
     async def _announce_loop(self) -> None:
         while True:
             try:
-                if self._announce_socket:
-                    await asyncio.get_running_loop().sock_sendto(
-                        self._announce_socket, self.packet("announce"),
+                if self._announce_transport:
+                    self._announce_transport.sendto(
+                        self.packet("announce"),
                         (self.settings.broadcast_address, int(self.settings.port)))
             except OSError:
                 pass
@@ -159,29 +176,32 @@ class DiscoveryService:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.bind((interface_ipv4(self.settings.interface) if os.name == "posix" else "0.0.0.0", 0))
             sock.setblocking(False)
+            queue: asyncio.Queue = asyncio.Queue(maxsize=128)
+            transport, _ = await loop.create_datagram_endpoint(lambda: _Scanner(queue), sock=sock)
             request = json.dumps({
                 "protocol": PROTOCOL, "version": VERSION, "type": "discover"
             }).encode("utf-8")
-            for _ in range(int(self.settings.retries)):
-                await loop.sock_sendto(sock, request, (
-                    self.settings.broadcast_address, int(self.settings.port)
-                ))
-                deadline = loop.time() + int(self.settings.timeout_ms) / 1000
-                while loop.time() < deadline:
-                    try:
-                        data, peer = await asyncio.wait_for(
-                            loop.sock_recvfrom(sock, 8192), deadline - loop.time()
-                        )
-                    except asyncio.TimeoutError:
-                        break
-                    try:
-                        offer = json.loads(data.decode("utf-8"))
-                    except (UnicodeDecodeError, ValueError):
-                        continue
-                    if not isinstance(offer, dict) or offer.get("protocol") != PROTOCOL:
-                        continue
-                    if offer.get("version") != VERSION or offer.get("type") != "offer":
-                        continue
-                    offer["ip"] = peer[0]
-                    found[str(offer.get("id") or peer[0])] = offer
+            try:
+                for _ in range(int(self.settings.retries)):
+                    transport.sendto(request, (
+                        self.settings.broadcast_address, int(self.settings.port)
+                    ))
+                    deadline = loop.time() + int(self.settings.timeout_ms) / 1000
+                    while loop.time() < deadline:
+                        try:
+                            data, peer = await asyncio.wait_for(queue.get(), deadline - loop.time())
+                        except asyncio.TimeoutError:
+                            break
+                        try:
+                            offer = json.loads(data.decode("utf-8"))
+                        except (UnicodeDecodeError, ValueError):
+                            continue
+                        if not isinstance(offer, dict) or offer.get("protocol") != PROTOCOL:
+                            continue
+                        if offer.get("version") != VERSION or offer.get("type") != "offer":
+                            continue
+                        offer["ip"] = peer[0]
+                        found[str(offer.get("id") or peer[0])] = offer
+            finally:
+                transport.close()
         return list(found.values())

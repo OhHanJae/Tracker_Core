@@ -116,6 +116,19 @@ class PlcSharedMemoryClient:
             )
         if header.header_size != HEADER_SIZE:
             raise SharedMemoryError(f"unsupported header size: {header.header_size}")
+        if header.layout_version != 1:
+            raise SharedMemoryError(f"unsupported layout version: {header.layout_version}")
+        if header.total_size > len(shm.buf) or header.total_size < HEADER_SIZE:
+            raise SharedMemoryError("invalid shared memory total size")
+        for offset, length in ((header.read_offset, header.read_length),
+                               (header.write_offset, header.write_length)):
+            if offset < HEADER_SIZE or length <= 0 or length % 2 or offset + length > header.total_size:
+                raise SharedMemoryError("invalid shared memory area bounds")
+        if (
+            header.read_offset < header.write_offset + header.write_length
+            and header.write_offset < header.read_offset + header.read_length
+        ):
+            raise SharedMemoryError("shared memory read and write areas overlap")
         return header
 
     def read_plc_data(self, retry_count: int = 3, retry_delay_s: float = 0.002) -> bytes:

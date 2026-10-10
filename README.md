@@ -1,6 +1,6 @@
 ﻿# Tracker Process Control Core
 
-LastModified: 2026-09-29
+LastModified: 2026-10-09
 
 비전, PTM/PT503/PT510 모터 API, 레이저, XGT Shared Memory Gateway, 글로벌 설정, 외부 모듈 실행 관리를 한 곳에서 묶는 Python 기반 코어 서버입니다.
 
@@ -19,13 +19,20 @@ LastModified: 2026-09-29
 | 대상 | 기본 포트 | 비고 |
 |---|---:|---|
 | Core TCP/HTTP/Web | 8000 | 글로벌 설정/상태/수동 명령/웹 관리 화면 |
-| Core Web 기본 HTTP | 80 | 포트 번호 없이 장비 IP로 접속 |
-| XGT Gateway TCP | 8765 | 기존 Gateway 설정 서버 |
-| PTM API TCP | 8766 | `motor.status`, `motion.stop`, `point.goto` 등 |
-| Vision TCP | 8767 | `vision.status` 기준 |
+| Core Web 선택 HTTP | 80 | `core.http_port`를 설정한 경우 |
+| XGT Gateway TCP | 15150 | Gateway 설정/상태 서버 |
+| XGT Gateway Web | 5051 | PLC 주소·영역·통신 설정 |
+| PTM API TCP | 8765 | `system.status`, `motion.stop`, `point.goto` 등 |
+| PTM Web | 8080 | 레시피·모터·레이저 설정 |
+| Vision TCP | 8768 | `vision.status` 기준 |
+| Vision Web | 8767 | Vision 실행 환경에 따라 설정 |
 | Laser TCP | 8768 | `laser.mode=tcp`일 때 사용, 기본은 `ptm` 모드 |
 
-포트와 주소는 `datas/global.json`에서 수정합니다.
+연결 주소와 포트는 `datas/global.json`에서 수정합니다. PLC 주소·영역 크기·주기는 Gateway 설정이 기준입니다. Core는 시작/설정 적용/운전 중 Gateway의 `get_config`를 읽으며 자동으로 덮어쓰지 않습니다. 예전 `configure_gateway_on_start=true` 값이 남아 있어도 자동 쓰기는 수행하지 않습니다. 명시적인 `xgt.configure` 명령만 Core의 PLC 설정을 Gateway에 전송합니다.
+
+Core PLC 맵은 방향별 100 WORD(200 BYTE)입니다. Gateway의 크기가 다르거나 방향이 비활성화돼 있으면 설정 오류를 표시하고 PLC 운전을 차단합니다. Gateway Web에서 올바른 영역을 지정하세요.
+
+운전 점검 결과와 운영체제별 배포 조건은 [RUNTIME_AUDIT.md](docs/RUNTIME_AUDIT.md), Vision 수정 지침은 [VISION_INTEGRATION_GUIDE.md](docs/VISION_INTEGRATION_GUIDE.md)를 참고하세요.
 
 ## 실행
 
@@ -82,11 +89,11 @@ http://장비IP/
 | Process Manager | 모듈별 실행/정지/재시작 및 Health Check 상태 |
 | Module Config | 모듈별 start/stop script, working directory, health endpoint 설정 |
 | PLC | 공유메모리 연결, 입력/출력 워드 미리보기 |
-| All Settings | `datas/global.json` 주요 연결 설정 수정 및 즉시 반영 |
+| 운전 모니터 | Core 주기·명령 진행·PLC 쓰기 ACK·장비 상태 확인 |
 
 ## 보안/운용 메모
 
-- Core 기본 바인딩은 TCP/HTTP `0.0.0.0:8000`과 Web `0.0.0.0:80`입니다. 같은 장비에서는 `http://127.0.0.1/`, 외부 PC에서는 `http://장비IP/`로 접속할 수 있습니다.
+- Core 기본 바인딩은 TCP/HTTP `0.0.0.0:8000`입니다. `core.http_port:80`을 별도로 설정하면 포트 번호 없는 접속도 가능합니다. 선택 포트를 열지 못해도 8000 서버는 유지됩니다.
 - XGT Gateway, PTM API, Vision 앱이 같은 장비에서 실행되면 각 서버 주소는 기본값 `127.0.0.1`을 그대로 쓰면 됩니다.
 - 다른 장비에서 실행되는 서버에 붙일 때는 `datas/global.json`의 `xgt.control.host`, `motor.host`, `vision.host`를 해당 IP로 바꿉니다.
 - TCP/HTTP에는 인증이 없으니 설비 내부망, 전용망, VPN 안에서만 열어두세요.

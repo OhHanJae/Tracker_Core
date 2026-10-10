@@ -65,7 +65,7 @@ class SharedMemorySettings:
     read_words: int = 100
     write_offset: int = 264
     write_words: int = 100
-    configure_gateway_on_start: bool = True
+    configure_gateway_on_start: bool = False
 
 
 @dataclass

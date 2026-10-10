@@ -225,7 +225,11 @@ class ProcessManager:
             "cwd": str(working_dir),
             "stdout": asyncio.subprocess.DEVNULL,
             "stderr": asyncio.subprocess.DEVNULL,
-            "env": {**os.environ, "PYTHON": sys.executable},
+            "env": {
+                **os.environ,
+                "PYTHON": sys.executable,
+                "CORE_PROCESS_SCRIPT": f'"{script}"',
+            },
         }
 
         if os.name == "nt":
@@ -2069,7 +2073,19 @@ class ProcessManager:
         suffix = script.suffix.lower()
 
         if os.name == "nt" and suffix in {".bat", ".cmd"}:
-            return ["cmd.exe", "/c", str(script)]
+            # BAT files are UTF-8. Expand the quoted path once so shell
+            # metacharacters in a module directory remain part of the path.
+            return [
+                "cmd.exe",
+                "/d",
+                "/v:off",
+                "/c",
+                "chcp",
+                "65001",
+                ">nul",
+                "&",
+                "%CORE_PROCESS_SCRIPT%",
+            ]
 
         if os.name == "nt" and suffix == ".ps1":
             return [
@@ -2082,7 +2098,7 @@ class ProcessManager:
 
         if os.name != "nt":
             supervisor = Path(__file__).with_name("supervisor.py")
-            return [sys.executable, str(supervisor), str(script)]
+            return [sys.executable, str(supervisor), str(script), str(os.getpid())]
 
         return [str(script)]
 
@@ -2097,7 +2113,11 @@ class ProcessManager:
             "cwd": str(working_dir),
             "stdout": asyncio.subprocess.DEVNULL,
             "stderr": asyncio.subprocess.DEVNULL,
-            "env": {**os.environ, "PYTHON": sys.executable},
+            "env": {
+                **os.environ,
+                "PYTHON": sys.executable,
+                "CORE_PROCESS_SCRIPT": f'"{script}"',
+            },
         }
         if os.name == "nt":
             kwargs["creationflags"] = getattr(

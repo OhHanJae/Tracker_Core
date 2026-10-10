@@ -8,7 +8,7 @@ from typing import Any
 
 from src.communication.plc_memory_mapping import PlcInput
 from src.devices.vision_service import VisionDeviceService
-from src.common.status import now_ms
+from src.common.status import DeviceSummaryBit, now_ms
 
 
 LOGGER = logging.getLogger("tracker_core.orchestration")
@@ -29,9 +29,16 @@ class CoreOrchestrator:
         core._update_plc_heartbeat_alarm(timestamp_ms)
         core._sync_device_snapshots()
         await core._apply_safe_stop_if_needed()
+        latch_enabled = core.settings.runtime.fault_latch_enabled
+        tracking_blockers = core.alarms.fault_summary(latch_enabled)
+        # Tracking must run to recover result-invalid; motion interlocks still
+        # consume the complete alarm book in _apply_safe_stop_if_needed.
+        tracker_fault = core.alarms.fault_word(DeviceSummaryBit.TRACKER, latch_enabled)
+        if not tracker_fault & ~1:
+            tracking_blockers &= ~(1 << int(DeviceSummaryBit.TRACKER))
         self.tick(
             core.plc_input,
-            bool(core.alarms.fault_summary(core.settings.runtime.fault_latch_enabled)),
+            bool(tracking_blockers),
         )
         await core._handle_plc_command()
         core._build_output(timestamp_ms)
@@ -42,7 +49,10 @@ class CoreOrchestrator:
             plc.run_enable and plc.tracking_enable
             and not plc.force_stop and not fault_active
         )
-        retry = bool(self.last_error) and now_ms() - self._last_attempt_ms >= 1000
+        timestamp_ms = now_ms()
+        actual = getattr(self.vision.state, "status", {}).get("tracking_active")
+        mismatch = actual is not None and bool(actual) != desired
+        retry = bool(self.last_error or mismatch) and timestamp_ms - self._last_attempt_ms >= 1000
         if desired == self._requested_tracking and not retry:
             return
         if self._task is not None and not self._task.done():
@@ -52,7 +62,7 @@ class CoreOrchestrator:
             return
         previous = self._task
         command = "tracking.start" if desired else "tracking.stop"
-        self._last_attempt_ms = now_ms()
+        self._last_attempt_ms = timestamp_ms
 
         async def dispatch() -> None:
             if previous:

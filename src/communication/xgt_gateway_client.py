@@ -35,6 +35,20 @@ class XgtGatewayClient:
             raise JsonTcpError(str(response.error))
         return response.result or {}
 
+    async def get_config(self) -> dict[str, Any]:
+        response = await send_json_request(
+            self.settings.control.host,
+            self.settings.control.port,
+            "get_config",
+            {},
+            self.settings.control.timeout_s,
+        )
+        if not response.ok:
+            raise JsonTcpError(str(response.error))
+        if not isinstance(response.result, dict):
+            raise JsonTcpError("Gateway returned an invalid configuration")
+        return response.result
+
     async def configure_gateway(self) -> dict[str, Any]:
         shm = self.settings.shared_memory
         area = self.settings.plc_area

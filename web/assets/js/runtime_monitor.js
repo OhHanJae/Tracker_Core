@@ -10,7 +10,7 @@ const commandLabels = {
   COMPLETE: '완료', REJECTED: '거부', ERROR: '실패',
 };
 const writeLabels = {
-  disabled: '비활성', waiting_gateway: 'Gateway 설정 대기', disconnected: '공유메모리 단절',
+  disabled: '비활성', waiting_gateway: 'Gateway 설정 조회 대기', disconnected: '공유메모리 단절',
   waiting_commit: '첫 기록 대기', pending: 'PLC 응답 대기',
   transmitting: '전송 중 · PLC 응답 정상', confirmed: '최신 기록 전송 확인', error: '쓰기 오류',
 };
