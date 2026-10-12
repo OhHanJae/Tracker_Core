@@ -16,7 +16,9 @@ from src.common.network import client_connect_host
 
 
 class JsonTcpError(RuntimeError):
-    pass
+    def __init__(self, *args: Any, code: str | None = None) -> None:
+        super().__init__(*args)
+        self.code = code
 
 
 @dataclass

@@ -85,12 +85,14 @@ function showProbeFailure(options, frame, detail) {
 async function probeFrame(options, forceReload = false, initial = false) {
   const { id, command, configuredUrl, unavailableTitle } = options;
   const frame = document.getElementById(`${id}Frame`);
-  if (!frame) return;
+  const pendingRuntime = runtimes.get(id);
+  if (!frame || !pendingRuntime) return;
   if (initial || forceReload) {
     showFrameState(id, '연결 확인 중...', `${options.name} Web Server 상태를 확인하고 있습니다.`);
   }
   try {
     const status = await options.commandRequest(command);
+    if (runtimes.get(id) !== pendingRuntime) return;
     const url = browserReachableUrl(status?.url || configuredUrl());
     const urlLabel = document.getElementById(`${id}WebUrl`);
     if (urlLabel) {
@@ -112,6 +114,7 @@ async function probeFrame(options, forceReload = false, initial = false) {
       if (frame.dataset.requestedUrl === url) return;
     }
     frame.onload = () => {
+      if (runtimes.get(id) !== pendingRuntime) return;
       if (frame.src !== 'about:blank') {
         frame.dataset.loadedUrl = url;
         showFrameState(id, '', '', false);
@@ -119,16 +122,19 @@ async function probeFrame(options, forceReload = false, initial = false) {
       const runtime = runtimes.get(id);
       if (runtime?.loadTimer) clearTimeout(runtime.loadTimer);
     };
-    frame.onerror = () => showFrameState(id, `${options.name} Web UI 로드 실패`, 'Refresh 버튼으로 다시 시도하세요.');
+    frame.onerror = () => {
+      if (runtimes.get(id) === pendingRuntime) showFrameState(id, `${options.name} Web UI 로드 실패`, 'Refresh 버튼으로 다시 시도하세요.');
+    };
     frame.dataset.requestedUrl = url;
     frame.src = url;
     const activeRuntime = runtimes.get(id) || {};
     activeRuntime.loadTimer = setTimeout(() => {
+      if (runtimes.get(id) !== pendingRuntime) return;
       showFrameState(id, `${options.name} Web UI 응답 지연`, '서버 상태를 다시 확인하거나 Refresh를 누르세요.');
     }, 8000);
     runtimes.set(id, activeRuntime);
   } catch (error) {
-    showProbeFailure(options, frame, error.message || String(error));
+    if (runtimes.get(id) === pendingRuntime) showProbeFailure(options, frame, error.message || String(error));
   }
 }
 
@@ -137,8 +143,10 @@ export function startExternalWebFrame(options) {
   bindExternalWebModal();
   const runtime = { statusTimer: null, loadTimer: null, statusFailures: 0 };
   runtimes.set(options.id, runtime);
-  document.getElementById(`${options.id}FrameRefresh`)?.addEventListener('click', () => probeFrame(options, true));
-  document.getElementById(`${options.id}WebUrl`)?.addEventListener('click', event => {
+  runtime.refreshButton = document.getElementById(`${options.id}FrameRefresh`);
+  runtime.urlLabel = document.getElementById(`${options.id}WebUrl`);
+  runtime.refreshHandler = () => probeFrame(options, true);
+  runtime.urlHandler = event => {
     event.preventDefault();
     const url = event.currentTarget.dataset.url;
     if (!url) return;
@@ -147,7 +155,9 @@ export function startExternalWebFrame(options) {
       return;
     }
     openExternalWebModal(options.name, url);
-  });
+  };
+  runtime.refreshButton?.addEventListener('click', runtime.refreshHandler);
+  runtime.urlLabel?.addEventListener('click', runtime.urlHandler);
   probeFrame(options, false, true);
   runtime.statusTimer = setInterval(() => probeFrame(options), 5000);
 }
@@ -157,5 +167,41 @@ export function stopExternalWebFrame(id) {
   if (!runtime) return;
   if (runtime.statusTimer) clearInterval(runtime.statusTimer);
   if (runtime.loadTimer) clearTimeout(runtime.loadTimer);
+  runtime.refreshButton?.removeEventListener('click', runtime.refreshHandler);
+  runtime.urlLabel?.removeEventListener('click', runtime.urlHandler);
+  closeExternalWebModal();
   runtimes.delete(id);
+}
+
+export function setExternalWebFrameBypassed(options, active) {
+  const { id, name } = options;
+  const frame = document.getElementById(`${id}Frame`);
+  if (!frame) return;
+  const wasBypassed = frame.dataset.bypassed === '1';
+  if (active && wasBypassed) return;
+  const refresh = document.getElementById(`${id}FrameRefresh`);
+  const link = document.getElementById(`${id}WebUrl`);
+  frame.dataset.bypassed = active ? '1' : '0';
+  frame.style.pointerEvents = active ? 'none' : '';
+  frame.inert = active;
+  frame.tabIndex = active ? -1 : 0;
+  if (refresh) refresh.disabled = active;
+  if (link) {
+    link.style.pointerEvents = active ? 'none' : '';
+    link.tabIndex = active ? -1 : 0;
+    link.href = active ? '#' : link.dataset.url || '#';
+    link.setAttribute('aria-disabled', active ? 'true' : 'false');
+  }
+  if (active) {
+    stopExternalWebFrame(id);
+    closeExternalWebModal();
+    frame.onload = null;
+    frame.onerror = null;
+    frame.src = 'about:blank';
+    delete frame.dataset.loadedUrl;
+    delete frame.dataset.requestedUrl;
+    showFrameState(id, `${name} 바이패스 활성화`, '바이패스를 해제하면 장치 Web UI를 다시 연결합니다.');
+  } else if (wasBypassed || !runtimes.has(id)) {
+    startExternalWebFrame(options);
+  }
 }

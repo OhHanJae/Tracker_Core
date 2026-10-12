@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -77,6 +78,97 @@ class VisionTcpClient:
             raise JsonTcpError(str(response.error))
         data = response.result if isinstance(response.result, dict) else {}
         return normalize_vision_snapshot(data, self.settings.camera_count)
+
+    async def request_nutrunner_data(
+        self, recipe_id: int, point_id: int, command_seq: int
+    ) -> dict[str, Any]:
+        params = {
+            "recipe_id": recipe_id,
+            "point_id": point_id,
+            "command_seq": command_seq,
+        }
+        for key, value in params.items():
+            minimum = 0 if key == "command_seq" else 1
+            if type(value) is not int or not minimum <= value <= 65535:
+                raise JsonTcpError(f"{key} must be an integer from {minimum} to 65535")
+        response = await send_json_request(
+            self.settings.host,
+            self.settings.port,
+            self.settings.result_command,
+            params,
+            self.settings.timeout_s,
+        )
+        if not response.ok:
+            code = response.error.get("code") if isinstance(response.error, dict) else None
+            raise JsonTcpError(
+                str(response.error), code=code if isinstance(code, str) else None
+            )
+        return normalize_nutrunner_result(
+            response.result, recipe_id, point_id, command_seq
+        )
+
+
+def normalize_nutrunner_result(
+    data: Any, recipe_id: int, point_id: int, command_seq: int
+) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise JsonTcpError("vision.result must be an object")
+    expected = {
+        "recipe_id": recipe_id,
+        "point_id": point_id,
+        "command_seq": command_seq,
+    }
+    for key, value in expected.items():
+        if type(data.get(key)) is not int or data[key] != value:
+            raise JsonTcpError(f"vision.result {key} does not match the request")
+    for key in ("supported", "data_valid"):
+        if type(data.get(key)) is not bool:
+            raise JsonTcpError(f"vision.result {key} must be a boolean")
+    result = {
+        **expected,
+        "supported": data["supported"],
+        "data_valid": data["data_valid"],
+        "tightening_angle_deg": None,
+        "inclination_deg": None,
+        "fastening_coordinate_mm": {"x": None, "y": None, "z": None},
+        "timestamp_ms": None,
+        "coordinate_frame": None,
+    }
+    if not data["data_valid"]:
+        return result
+    if not data["supported"]:
+        raise JsonTcpError("unsupported vision.result cannot contain valid data")
+    coordinate = data.get("fastening_coordinate_mm")
+    if not isinstance(coordinate, dict):
+        raise JsonTcpError("valid vision.result requires fastening_coordinate_mm")
+    for source, keys in (
+        (data, ("tightening_angle_deg", "inclination_deg")),
+        (coordinate, ("x", "y", "z")),
+    ):
+        for key in keys:
+            value = source.get(key)
+            try:
+                valid = type(value) in (int, float) and math.isfinite(value)
+            except OverflowError:
+                valid = False
+            if not valid:
+                raise JsonTcpError(f"valid vision.result requires finite {key}")
+    timestamp_ms = data.get("timestamp_ms")
+    if type(timestamp_ms) is not int or timestamp_ms <= 0:
+        raise JsonTcpError("valid vision.result requires positive integer timestamp_ms")
+    coordinate_frame = data.get("coordinate_frame")
+    if coordinate_frame is not None and (
+        not isinstance(coordinate_frame, str) or not coordinate_frame.strip()
+    ):
+        raise JsonTcpError("coordinate_frame must be a nonempty string or null")
+    result.update(
+        tightening_angle_deg=float(data["tightening_angle_deg"]),
+        inclination_deg=float(data["inclination_deg"]),
+        fastening_coordinate_mm={key: float(coordinate[key]) for key in ("x", "y", "z")},
+        timestamp_ms=timestamp_ms,
+        coordinate_frame=coordinate_frame,
+    )
+    return result
 
 
 def normalize_vision_snapshot(data: dict[str, Any], camera_count: int) -> VisionSnapshot:

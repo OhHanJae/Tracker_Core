@@ -97,6 +97,7 @@ class MotorSettings:
     timeout_s: float = 3.0
     enabled: bool = True
     status_command: str = "system.status"
+    bypass: bool = False
 
 
 @dataclass
@@ -111,6 +112,7 @@ class VisionSettings:
     camera_count: int = 1
     status_command: str = "vision.status"
     result_command: str = "vision.result"
+    bypass: bool = False
 
 
 @dataclass
@@ -227,6 +229,15 @@ def _default_command_map() -> dict[str, dict[str, Any]]:
             "command": "controller.restart_request",
             "params": {},
         },
+        "5": {
+            "name": "NUTRUNNER_DATA_REQUEST",
+            "target": "vision",
+            "command": "vision.result",
+            "params": {
+                "recipe_id": "$req_recipe_id",
+                "point_id": "$req_point_id",
+            },
+        },
     }
 
 
@@ -300,6 +311,9 @@ def settings_from_dict(data: dict[str, Any]) -> AppSettings:
         tcp["host"], tcp["port"] = process["health_host"], int(process["health_port"])
         web[host_key], web[port_key] = process["http_host"], int(process["http_port"])
     merged["vision"]["camera_count"] = 1
+    for section in ("motor", "vision"):
+        if not isinstance(merged[section]["bypass"], bool):
+            raise ValueError(f"{section}.bypass must be a boolean")
     return AppSettings(
         core=_coerce_dataclass(CoreServerSettings, merged["core"]),
         discovery=_coerce_dataclass(DiscoverySettings, merged["discovery"]),

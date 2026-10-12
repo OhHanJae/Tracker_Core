@@ -1,6 +1,6 @@
 window.TRACK_EYE_PLC_MAP = {
   "sourceFile": "트래커 PLC 통신 맵 v4.xlsx",
-  "sourceTitle": "Tracker Project PLC to Controller Communication Map v4.0",
+  "sourceTitle": "Tracker Project PLC to Controller Communication Map v4.1",
   "note": "웹에서는 PLC 기준 주소를 적용하여 Dnnn 형식으로 표시합니다.",
   "sheets": [
     {
@@ -329,7 +329,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "REQ_RECIPE_ID",
           "PLC 요구 Recipe ID",
-          "차종/작업 Recipe",
+          "명령 1: PTM 레시피/포인트 ID\n명령 5: Vision 레시피/포인트 ID",
           "UINT16",
           "Parameter",
           "자동",
@@ -341,7 +341,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "REQ_POINT_ID",
           "PLC 요구 체결 Point ID",
-          "현재 목표 Point",
+          "명령 1: PTM 레시피/포인트 ID\n명령 5: Vision 레시피/포인트 ID",
           "UINT16",
           "Parameter",
           "자동",
@@ -353,7 +353,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "COMMAND_CODE",
           "일회성 명령 코드",
-          "0 = NONE (명령 없음)\n1 = TARGET_APPLY_MOVE (REQ_RECIPE_ID/REQ_POINT_ID 적용 후 Pan/Tilt 목표 이동)\n2 = HOME (Pan/Tilt 원점복귀)\n3 = ERROR_RESET (해제 가능한 Latch Fault Reset)\n4 = CONTROLLER_RESTART (PLC 명령은 거부, Process Manager 사용)\n5 = RELOAD_CONFIG (PLC에서는 거부)\n6~65535 = Reserved",
+          "0 = NONE (명령 없음)\n1 = TARGET_APPLY_MOVE (REQ_RECIPE_ID/REQ_POINT_ID 적용 후 Pan/Tilt 목표 이동)\n2 = HOME (Pan/Tilt 원점복귀)\n3 = ERROR_RESET (해제 가능한 Latch Fault Reset)\n4 = CONTROLLER_RESTART (PLC 명령은 거부, Process Manager 사용)\n5 = NUTRUNNER_DATA_REQUEST (Vision 체결 데이터 요청)\n6~65535 = Reserved",
           "UINT16",
           "Command",
           "자동",
@@ -684,16 +684,16 @@ window.TRACK_EYE_PLC_MAP = {
           "0"
         ],
         [
-          "예약",
+          "바이패스",
           "D+40",
-          "-",
-          "Reserved",
-          "예약",
-          "항상 0. 사용 금지",
-          "WORD",
-          "Reserve",
-          "-",
-          "0"
+          "0~1",
+          "BYPASS_CONTROL",
+          "PLC PTM/Vision 바이패스 요청",
+          "bit0 = PTM_BYPASS_REQUEST\nbit1 = VISION_BYPASS_REQUEST\nbit2~F = Reserved (0)\nPLC 요청 OR 웹 설정. PLC 활성 우선\nPTM 바이패스 시 레이저 자동 바이패스",
+          "BITMAP",
+          "Level",
+          "전체",
+          "0x0000~0x0003"
         ],
         [
           "예약",
@@ -1335,7 +1335,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "LAST_COMMAND_CODE",
           "마지막 수신/처리 명령 코드",
-          "0 = NONE (명령 없음)\n1 = TARGET_APPLY_MOVE (REQ_RECIPE_ID/REQ_POINT_ID 적용 후 Pan/Tilt 목표 이동)\n2 = HOME (Pan/Tilt 원점복귀)\n3 = ERROR_RESET (해제 가능한 Latch Fault Reset)\n4 = CONTROLLER_RESTART (PLC 명령은 거부, Process Manager 사용)\n5 = RELOAD_CONFIG (PLC에서는 거부)\n6~65535 = Reserved",
+          "0 = NONE (명령 없음)\n1 = TARGET_APPLY_MOVE (REQ_RECIPE_ID/REQ_POINT_ID 적용 후 Pan/Tilt 목표 이동)\n2 = HOME (Pan/Tilt 원점복귀)\n3 = ERROR_RESET (해제 가능한 Latch Fault Reset)\n4 = CONTROLLER_RESTART (PLC 명령은 거부, Process Manager 사용)\n5 = NUTRUNNER_DATA_REQUEST (Vision 체결 데이터 요청)\n6~65535 = Reserved",
           "UINT16",
           "Response",
           "자동",
@@ -1846,16 +1846,16 @@ window.TRACK_EYE_PLC_MAP = {
           "0"
         ],
         [
-          "예약",
+          "바이패스",
           "D+40",
-          "-",
-          "Reserved",
-          "예약",
-          "항상 0. 사용 금지",
-          "WORD",
-          "Reserve",
-          "-",
-          "0"
+          "0~2",
+          "BYPASS_STATUS",
+          "실제 적용된 바이패스 상태",
+          "bit0 = PTM_BYPASS_ACTIVE\nbit1 = VISION_BYPASS_ACTIVE\nbit2 = LASER_BYPASS_ACTIVE\nbit3~F = Reserved (0)\nPLC 요청과 웹 설정을 합친 실제 적용 상태\nPTM 바이패스 시 bit2 자동 1",
+          "BITMAP",
+          "Level",
+          "전체",
+          "0x0000~0x0007"
         ],
         [
           "예약",

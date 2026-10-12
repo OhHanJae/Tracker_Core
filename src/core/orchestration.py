@@ -45,6 +45,9 @@ class CoreOrchestrator:
         core._write_plc_output()
 
     def tick(self, plc: PlcInput, fault_active: bool = False) -> None:
+        if getattr(self.vision.state, "bypassed", False):
+            self.cancel_tracking()
+            return
         status = getattr(self.vision.state, "status", {})
         desired = bool(
             plc.run_enable and plc.tracking_enable
@@ -81,6 +84,13 @@ class CoreOrchestrator:
                 LOGGER.warning("Vision %s failed: %s", command, exc)
 
         self._task = asyncio.create_task(dispatch())
+
+    def cancel_tracking(self) -> None:
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+        self._task = None
+        self._requested_tracking = False
+        self.last_error = ""
 
     async def stop(self) -> None:
         if self._task:

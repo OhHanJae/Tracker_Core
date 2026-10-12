@@ -73,6 +73,8 @@ class PlcInput:
     req_point_id: int = 0
     command_code: int = 0
     command_seq: int = 0
+    ptm_bypass: bool = False
+    vision_bypass: bool = False
     admin_command: int = 0
     admin_seq: int = 0
     admin_param1: int = 0
@@ -96,6 +98,8 @@ class PlcInput:
             req_point_id=padded[11],
             command_code=padded[12],
             command_seq=padded[13],
+            ptm_bypass=get_word_bit(padded, 40, 0),
+            vision_bypass=get_word_bit(padded, 40, 1),
             raw_words=padded,
         )
 
@@ -159,6 +163,9 @@ class PlcOutput:
     admin_ack_seq: int = 0
     teach_status: int = 0
     latch_faults: bool = True
+    ptm_bypass: bool = False
+    vision_bypass: bool = False
+    laser_bypass: bool = False
 
     def to_words(self) -> list[int]:
         words = [0] * WORD_COUNT
@@ -267,6 +274,11 @@ class PlcOutput:
         words[26] = _u16(warning_summary)
         words[27] = _u16(self.alarms.active_fault_count(self.latch_faults))
         words[28] = _u16(self.alarms.active_warning_count())
+        words[40] = (
+            bit(self.ptm_bypass, 0)
+            | bit(self.vision_bypass, 1)
+            | bit(self.laser_bypass or self.ptm_bypass, 2)
+        )
 
         detail_map = {
             50: DeviceSummaryBit.CAMERA_1,

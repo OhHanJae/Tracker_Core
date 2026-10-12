@@ -12,6 +12,7 @@ class CommandCode(IntEnum):
     HOME = 2
     ERROR_RESET = 3
     CONTROLLER_RESTART = 4
+    NUTRUNNER_DATA_REQUEST = 5
     RELOAD_CONFIG = 5
 
 
@@ -145,6 +146,7 @@ class AlarmBook:
     latched_faults: dict[int, int] = field(default_factory=dict)
     last_fault_code: int = 0
     alarm_sequence: int = 0
+    suppressed_devices: set[int] = field(default_factory=set)
 
     def set_warning_word(self, device: DeviceSummaryBit, word: int) -> None:
         self.warnings[int(device)] = word & 0xFFFF
@@ -174,6 +176,8 @@ class AlarmBook:
         self.latched_faults.clear()
 
     def fault_word(self, device: DeviceSummaryBit, latch_enabled: bool = True) -> int:
+        if int(device) in self.suppressed_devices:
+            return 0
         active = self.faults.get(int(device), 0)
         retained = self.latched_faults.get(int(device), 0) if latch_enabled else 0
         word = active | (retained & ~AUTO_RESET_FAULT_MASKS.get(device, 0))
@@ -182,9 +186,11 @@ class AlarmBook:
         return word & 0xFFFF
 
     def warning_word(self, device: DeviceSummaryBit) -> int:
+        if int(device) in self.suppressed_devices:
+            return 0
         word = self.warnings.get(int(device), 0)
         if device == DeviceSummaryBit.PAN_TILT_MOTOR:
-            word |= self.warnings.get(int(DeviceSummaryBit.TILT_MOTOR), 0)
+            word |= self.warning_word(DeviceSummaryBit.TILT_MOTOR)
         return word & 0xFFFF
 
     def fault_summary(self, latch_enabled: bool = True) -> int:

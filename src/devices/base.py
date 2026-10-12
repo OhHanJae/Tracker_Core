@@ -26,6 +26,8 @@ class DeviceState:
     error_count: int = 0
     last_error: str = ""
     status: dict[str, Any] = field(default_factory=dict)
+    bypassed: bool = False
+    bypass_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +47,8 @@ class DeviceState:
             "error_count": self.error_count,
             "last_error": self.last_error,
             "status": self.status,
+            "bypassed": self.bypassed,
+            "bypass_source": self.bypass_source,
         }
 
 
@@ -93,6 +97,9 @@ class DeviceService:
             await asyncio.sleep(self.state.poll_interval_ms / 1000)
 
     async def poll_once(self) -> None:
+        if self.state.bypassed:
+            self.state.last_error = ""
+            return
         if not self.state.enabled:
             self.state.online = False
             self.state.running = False
@@ -103,6 +110,8 @@ class DeviceService:
         self.state.poll_count += 1
         try:
             status = await self.read_status()
+            if self.state.bypassed:
+                return
             response_ms = max(0, now_ms() - started)
             if not isinstance(status, dict):
                 status = {"value": status}
@@ -113,6 +122,8 @@ class DeviceService:
             self.state.last_error = ""
             self.state.ok_count += 1
         except Exception as exc:
+            if self.state.bypassed:
+                return
             self.state.online = False
             self.state.response_ms = max(0, now_ms() - started)
             self.state.last_error = str(exc)
@@ -125,7 +136,14 @@ class DeviceService:
         raise NotImplementedError
 
     def snapshot(self) -> dict[str, Any]:
-        return self.state.to_dict()
+        result = self.state.to_dict()
+        if self.state.bypassed:
+            result["last_error"] = ""
+            result["status"] = {
+                key: value for key, value in self.state.status.items()
+                if "fault" not in key and "warning" not in key and key != "raw"
+            }
+        return result
 
 
 class DeviceRegistry:
@@ -160,6 +178,8 @@ class DeviceRegistry:
         service = self.get(device_id)
         if service is None:
             raise ValueError(f"unknown device: {device_id}")
+        if service.state.bypassed:
+            return {"accepted": False, "bypassed": True}
         if not service.state.enabled:
             raise ValueError(f"device is disabled: {device_id}")
         return await service.command(command, params or {})

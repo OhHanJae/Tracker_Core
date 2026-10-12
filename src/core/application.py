@@ -144,6 +144,10 @@ class CoreApplication:
         self._last_cycle_error = ""
         self._plc_read_error = ""
         self._diagnostic_states: dict[str, str] = {}
+        self._bypass_stop_tasks: set[asyncio.Task[None]] = set()
+        self._last_bypass_state: dict[str, bool] = {}
+        self.nutrunner_result: dict[str, Any] | None = None
+        self._sync_bypass_state(initial=True)
         if managed_worker:
             endpoint = self.settings.processes["core"]
             self._server.host = str(endpoint["health_host"])
@@ -251,6 +255,108 @@ class CoreApplication:
     def _vision_enabled(self) -> bool:
         return self.settings.vision.enabled and self._process_enabled("vision")
 
+    def _bypass_status(self) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        for name, settings in (("ptm", self.settings.motor), ("vision", self.settings.vision)):
+            plc = bool(getattr(self.plc_input, f"{name}_bypass", False))
+            web = bool(settings.bypass)
+            result[name] = {"active": plc or web, "source": "plc" if plc else "web" if web else None,
+                            "plc": plc, "web": web}
+        laser_local = bool(
+            (self.laser_service.state.online and self.laser_service.state.status.get("bypass") is True)
+            or (self.settings.laser.mode.lower() == "ptm" and self.ptm_service.state.online
+                and self.ptm_service.state.status.get("laser_bypass") is True)
+        )
+        result["laser"] = {"active": result["ptm"]["active"] or laser_local,
+                           "source": "ptm" if result["ptm"]["active"] else "device" if laser_local else None}
+        return result
+
+    def _device_bypassed(self, device: str) -> bool:
+        return bool(self._bypass_status().get(device, {}).get("active"))
+
+    def _complete_bypassed_command(self, device: str) -> None:
+        codes = ({CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME} if device == "ptm"
+                 else {CommandCode.NUTRUNNER_DATA_REQUEST})
+        if self.command.status not in {CommandStatus.RECEIVED, CommandStatus.BUSY} or self.command.last_code not in codes:
+            return
+        if self._command_task is not None and not self._command_task.done():
+            self._command_task.cancel()
+        self._command_task = None
+        self._pending_request = None
+        if device == "ptm":
+            self._active_motion = None
+            self._active_recipe_id = 0
+            self._active_point_id = 0
+        else:
+            self.nutrunner_result = None
+        self.command.status = CommandStatus.COMPLETE
+        self.command.result = CommandResult.OK
+        self.command.message = f"{device} bypassed; no device operation"
+
+    def _sync_bypass_state(self, *, initial: bool = False) -> None:
+        bypass = self._bypass_status()
+        suppressed = set()
+        if bypass["ptm"]["active"]:
+            suppressed.update((DeviceSummaryBit.PAN_TILT_MOTOR,
+                               DeviceSummaryBit.TILT_MOTOR, DeviceSummaryBit.LASER))
+        if bypass["vision"]["active"]:
+            suppressed.update((DeviceSummaryBit.VISION_COMMON, DeviceSummaryBit.TRACKER,
+                               DeviceSummaryBit.CAMERA_1, DeviceSummaryBit.CAMERA_2,
+                               DeviceSummaryBit.CAMERA_3, DeviceSummaryBit.CAMERA_4))
+        self.alarms.suppressed_devices = {int(device) for device in suppressed}
+        for name, service in self.devices.services.items():
+            active = bool(bypass["ptm" if name == "laser" else name]["active"])
+            previous = self._last_bypass_state.get(name, active)
+            service.state.bypassed = active
+            service.state.bypass_source = bypass[name]["source"] if active else None
+            if active:
+                service.state.last_error = ""
+            elif previous:
+                service.state.online = False
+                service.state.last_ok_ms = 0
+                service.state.status = {}
+                if name == "vision":
+                    self.vision_service.snapshot_value = VisionSnapshot(online=False)
+            self._last_bypass_state[name] = active
+            if name == "vision" and active != previous:
+                self.nutrunner_result = None
+            if initial or active == previous or not active or name == "laser":
+                continue
+            self._complete_bypassed_command(name)
+            if name == "vision":
+                self.nutrunner_result = None
+                self.orchestrator.cancel_tracking()
+            if self._started or service.state.online or service.state.status.get("moving") or service.state.status.get("tracking_active"):
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    continue
+                task = loop.create_task(self._stop_for_bypass(name))
+                self._bypass_stop_tasks.add(task)
+                task.add_done_callback(self._bypass_stop_tasks.discard)
+
+    async def _stop_for_bypass(self, device: str) -> None:
+        operations = [(self.ptm_service, "motion.stop"),
+                      (self.laser_service, self.settings.laser.off_command)] if device == "ptm" else [
+                          (self.vision_service, "tracking.stop")]
+        for service, command in operations:
+            if not service.state.enabled:
+                if (device == "ptm" and service is self.laser_service
+                        and self.ptm_service.state.enabled
+                        and (self.settings.laser.mode.lower() == "ptm"
+                             or self.ptm_service.state.status.get("laser_on")
+                             or self.ptm_service.state.status.get("laser_connected") is True)):
+                    try:
+                        await self.ptm_service.command("laser.off")
+                    except Exception:
+                        pass
+                continue
+            try:
+                await service.command(command)
+            except Exception:
+                # A bypassed device may be absent; this cannot create a process alarm.
+                pass
+
     def _process_communication_endpoints(self) -> dict[str, dict[str, Any]]:
         endpoints: dict[str, dict[str, Any]] = {}
 
@@ -334,6 +440,23 @@ class CoreApplication:
             self.command.status == CommandStatus.BUSY
             and self.command.last_code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME}
         )
+        ptm_bypass = settings.motor.bypass or getattr(self.plc_input, "ptm_bypass", False)
+        vision_bypass = settings.vision.bypass or getattr(self.plc_input, "vision_bypass", False)
+        activating_ptm = ptm_bypass and not self._last_bypass_state.get("ptm", False)
+        activating_vision = vision_bypass and not self._last_bypass_state.get("vision", False)
+        if ptm_bypass:
+            self._complete_bypassed_command("ptm")
+            if activating_ptm and (had_motion or self._started or self.ptm_service.state.online):
+                await self._stop_for_bypass("ptm")
+            self.ptm_service.state.bypassed = True
+            self.laser_service.state.bypassed = True
+        if vision_bypass:
+            self._complete_bypassed_command("vision")
+            if activating_vision and (self._started or self.vision_service.state.online):
+                await self.orchestrator.stop()
+                await self._stop_for_bypass("vision")
+            self.vision_service.state.bypassed = True
+        self.nutrunner_result = None
         self._abort_active_command(CommandResult.SYSTEM_NOT_READY)
         if self._safe_stop_task is not None:
             with contextlib.suppress(asyncio.CancelledError):
@@ -363,6 +486,11 @@ class CoreApplication:
             await self.discovery.stop()
 
         self.settings = settings
+        if activating_ptm:
+            self._last_bypass_state["ptm"] = True
+            self._last_bypass_state["laser"] = True
+        if activating_vision:
+            self._last_bypass_state["vision"] = True
         if gateway_reconfigure:
             self._gateway_config = {}
             self._gateway_config_error = ""
@@ -451,6 +579,8 @@ class CoreApplication:
             await self._perform_safe_stop()
         await self.devices.stop_all()
         await self.orchestrator.stop()
+        if self._bypass_stop_tasks:
+            await asyncio.gather(*self._bypass_stop_tasks, return_exceptions=True)
         await self.discovery.stop()
         await self.network_manager.cancel()
         with contextlib.suppress(Exception):
@@ -560,7 +690,7 @@ class CoreApplication:
         for key, service in self.devices.services.items():
             state = service.state
             fault = state.status.get("fault_word") or state.status.get("fault")
-            errors[key] = (state.last_error or (f"device fault: {fault}" if fault else "")) if state.enabled else ""
+            errors[key] = (state.last_error or (f"device fault: {fault}" if fault else "")) if state.enabled and not state.bypassed else ""
         summary = self.alarms.fault_summary(False)
         errors["alarms"] = f"active fault summary={summary}, code={self.alarms.primary_fault_code(False)}" if summary else ""
         for source, error in errors.items():
@@ -682,9 +812,13 @@ class CoreApplication:
             self.plc_input = PlcInput()
 
     def _sync_device_snapshots(self) -> None:
+        self._sync_bypass_state()
         self._apply_ptm_alarms()
         self._apply_laser_alarms()
 
+        if self._device_bypassed("vision"):
+            self.vision_snapshot = VisionSnapshot(online=False)
+            return
         if not self.vision_service.state.enabled:
             self.vision_snapshot = VisionSnapshot(online=False)
             self._clear_vision_alarms()
@@ -705,6 +839,8 @@ class CoreApplication:
         self._apply_vision_alarms(self.vision_snapshot)
 
     def _apply_ptm_alarms(self) -> None:
+        if self._device_bypassed("ptm"):
+            return
         if not self.ptm_service.state.enabled:
             self.alarms.clear_device(DeviceSummaryBit.PAN_TILT_MOTOR)
             self.alarms.clear_device(DeviceSummaryBit.TILT_MOTOR)
@@ -726,6 +862,8 @@ class CoreApplication:
         )
 
     def _apply_laser_alarms(self) -> None:
+        if self._device_bypassed("ptm"):
+            return
         if not self.laser_service.state.enabled:
             self.alarms.clear_device(DeviceSummaryBit.LASER)
             return
@@ -824,6 +962,8 @@ class CoreApplication:
         if (
             self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY}
             and self.command.last_code != CommandCode.ERROR_RESET
+            and (self.command.last_code != CommandCode.NUTRUNNER_DATA_REQUEST
+                 or self.plc_input.force_stop or not self.plc_input.run_enable)
         ):
             result = (
                 CommandResult.FORCE_STOP_ACTIVE if self.plc_input.force_stop
@@ -862,18 +1002,19 @@ class CoreApplication:
 
     async def _perform_safe_stop(self) -> bool:
         success = True
-        if self.ptm_service.state.enabled:
+        if self.ptm_service.state.enabled and not self.ptm_service.state.bypassed:
             try:
                 await self.ptm_service.command("motion.stop")
             except Exception as exc:
-                success = False
-                LOGGER.error("motor stop failed during safe stop: %s", exc)
-                self.alarms.set_fault_word(
-                    DeviceSummaryBit.PAN_TILT_MOTOR,
-                    1 << 0,
-                    self.settings.runtime.fault_latch_enabled,
-                )
-        if (
+                if not self.ptm_service.state.bypassed:
+                    success = False
+                    LOGGER.error("motor stop failed during safe stop: %s", exc)
+                    self.alarms.set_fault_word(
+                        DeviceSummaryBit.PAN_TILT_MOTOR,
+                        1 << 0,
+                        self.settings.runtime.fault_latch_enabled,
+                    )
+        if not self.laser_service.state.bypassed and (
             self.laser_service.state.enabled
             or self.ptm_service.state.status.get("laser_on")
             or (
@@ -887,16 +1028,18 @@ class CoreApplication:
                 else:
                     await self.ptm_service.command("laser.off")
             except Exception as exc:
-                success = False
-                LOGGER.error("laser off failed during safe stop: %s", exc)
-                self.alarms.set_fault_word(
-                    DeviceSummaryBit.LASER,
-                    1 << 0,
-                    self.settings.runtime.fault_latch_enabled,
-                )
+                if not self.laser_service.state.bypassed:
+                    success = False
+                    LOGGER.error("laser off failed during safe stop: %s", exc)
+                    self.alarms.set_fault_word(
+                        DeviceSummaryBit.LASER,
+                        1 << 0,
+                        self.settings.runtime.fault_latch_enabled,
+                    )
         return success
 
     async def _handle_plc_command(self) -> None:
+        self._sync_bypass_state()
         self._progress_motion_command(now_ms())
         if self._pending_request is not None:
             code, seq, expected, params = self._pending_request
@@ -920,9 +1063,12 @@ class CoreApplication:
         self.command.result = CommandResult.OK
         self.command.message = ""
         self.command.busy_since_ms = now_ms()
+        if code == CommandCode.NUTRUNNER_DATA_REQUEST:
+            self.nutrunner_result = None
 
         if code not in {
-            CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME, CommandCode.ERROR_RESET
+            CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME, CommandCode.ERROR_RESET,
+            CommandCode.NUTRUNNER_DATA_REQUEST,
         }:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.INVALID_COMMAND
@@ -936,11 +1082,21 @@ class CoreApplication:
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.SYSTEM_NOT_READY
                 return
+            if code == CommandCode.NUTRUNNER_DATA_REQUEST:
+                if self._device_bypassed("vision"):
+                    self._complete_bypassed_command("vision")
+                    return
+                self._prepare_nutrunner_request(code, seq)
+                return
+            if self._device_bypassed("ptm"):
+                self._complete_bypassed_command("ptm")
+                return
             if self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled):
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.FAULT_ACTIVE
                 return
-            if self._safe_stop_task is not None and not self._safe_stop_task.done():
+            if ((self._safe_stop_task is not None and not self._safe_stop_task.done())
+                    or any(not task.done() for task in self._bypass_stop_tasks)):
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.SYSTEM_NOT_READY
                 return
@@ -988,6 +1144,27 @@ class CoreApplication:
             self._active_recipe_id = 0
             self._active_point_id = 0
 
+    def _prepare_nutrunner_request(self, code: int, seq: int) -> None:
+        recipe_id, point_id = self.plc_input.req_recipe_id, self.plc_input.req_point_id
+        if not 1 <= recipe_id <= 65535:
+            self.command.status = CommandStatus.REJECTED
+            self.command.result = CommandResult.RECIPE_NOT_FOUND
+            return
+        if not 1 <= point_id <= 65535:
+            self.command.status = CommandStatus.REJECTED
+            self.command.result = CommandResult.POINT_NOT_FOUND
+            return
+        entry = self.settings.command_map.get(str(code))
+        if entry is None or entry.get("target") != "vision" or entry.get("command") != "vision.result":
+            self.command.status = CommandStatus.REJECTED
+            self.command.result = CommandResult.INVALID_COMMAND
+            return
+        if not self.vision_service.state.enabled or not self.vision_service.state.online:
+            self.command.status = CommandStatus.REJECTED
+            self.command.result = CommandResult.TRACKING_UNAVAILABLE
+            return
+        self._pending_request = (code, seq, "vision.result", {"recipe_id": recipe_id, "point_id": point_id})
+
     async def _dispatch_plc_command(
         self, code: int, seq: int, command: str, params: dict[str, Any]
     ) -> None:
@@ -995,6 +1172,25 @@ class CoreApplication:
             if code == CommandCode.ERROR_RESET:
                 self.alarms.reset_latched_faults()
                 self.command.status = CommandStatus.COMPLETE
+                return
+            if code == CommandCode.NUTRUNNER_DATA_REQUEST:
+                response = await self.vision_service.request_nutrunner_data(
+                    int(params["recipe_id"]), int(params["point_id"]), seq,
+                )
+                if seq != self.command.last_seq or self.command.status != CommandStatus.BUSY:
+                    return
+                if self._device_bypassed("vision"):
+                    self._complete_bypassed_command("vision")
+                    return
+                if not response["supported"] or not response["data_valid"]:
+                    self.nutrunner_result = response
+                    self.command.status = CommandStatus.REJECTED
+                    self.command.result = CommandResult.TRACKING_UNAVAILABLE
+                    self.command.message = "Vision tightening data is not available"
+                    return
+                self.nutrunner_result = response
+                self.command.status = CommandStatus.COMPLETE
+                self.command.result = CommandResult.OK
                 return
             response = await self.ptm_service.command(command, params)
             if seq != self.command.last_seq or self.command.status != CommandStatus.BUSY:
@@ -1018,6 +1214,18 @@ class CoreApplication:
                 LOGGER.warning("PLC command %s/%s failed: %s", code, seq, exc)
                 self.command.status = CommandStatus.ERROR
                 self.command.message = str(exc)
+                if code == CommandCode.NUTRUNNER_DATA_REQUEST:
+                    self.nutrunner_result = None
+                    vision_error = getattr(exc, "code", None)
+                    if vision_error in {"RECIPE_NOT_FOUND", "POINT_NOT_FOUND"}:
+                        self.command.status = CommandStatus.REJECTED
+                        self.command.result = (
+                            CommandResult.RECIPE_NOT_FOUND if vision_error == "RECIPE_NOT_FOUND"
+                            else CommandResult.POINT_NOT_FOUND
+                        )
+                    else:
+                        self.command.result = CommandResult.TRACKING_UNAVAILABLE
+                    return
                 if "unknown recipe" in self.command.message.lower():
                     self.command.result = CommandResult.RECIPE_NOT_FOUND
                 elif "unknown point" in self.command.message.lower():
@@ -1098,11 +1306,12 @@ class CoreApplication:
         return resolved
 
     def _build_output(self, timestamp_ms: int) -> None:
+        bypass = self._bypass_status()
         tracking_tolerance = self.plc_input.applied_tracking_tolerance(
             self.settings.runtime.tracking_tolerance_default_mm_x100
         )
-        ptm_status = self.ptm_service.state.status if self.ptm_service.state.online else {}
-        laser_status = self.laser_service.state.status if self.laser_service.state.online else {}
+        ptm_status = self.ptm_service.state.status if self.ptm_service.state.online and not bypass["ptm"]["active"] else {}
+        laser_status = self.laser_service.state.status if self.laser_service.state.online and not bypass["laser"]["active"] else {}
         laser_tolerance = self.plc_input.applied_laser_tolerance(
             self.settings.runtime.laser_tolerance_default_deg_x100
         )
@@ -1111,7 +1320,8 @@ class CoreApplication:
         tilt_error_x100 = _scale_or_zero(self.vision_snapshot.tilt_error_deg)
 
         position_ok = (
-            self.plc_input.tracking_enable
+            not bypass["ptm"]["active"] and not bypass["vision"]["active"]
+            and self.plc_input.tracking_enable
             and self.vision_snapshot.tracker_valid
             and self.vision_snapshot.position_error_mm is not None
             and math.isfinite(self.vision_snapshot.position_error_mm)
@@ -1128,7 +1338,8 @@ class CoreApplication:
             >= self.settings.runtime.position_stable_ms
         )
         laser_target_ready = (
-            self.laser_service.state.enabled
+            not bypass["laser"]["active"] and not bypass["vision"]["active"]
+            and self.laser_service.state.enabled
             and self.vision_service.state.enabled
             and position_stable
             and self._active_recipe_id > 0
@@ -1152,7 +1363,7 @@ class CoreApplication:
         fault_active = self.alarms.fault_summary(
             self.settings.runtime.fault_latch_enabled
         ) != 0
-        motor_ready = (
+        motor_ready = bypass["ptm"]["active"] or (
             self.ptm_service.state.enabled
             and self.ptm_service.state.online
             and bool(ptm_status.get("connected"))
@@ -1162,6 +1373,7 @@ class CoreApplication:
             self.plc_input.run_enable and not self.plc_input.force_stop
             and not fault_active and motor_ready
             and (self._safe_stop_task is None or self._safe_stop_task.done())
+            and not any(not task.done() for task in self._bypass_stop_tasks)
         )
         if fault_active:
             controller_state = ControllerState.FAULT
@@ -1171,7 +1383,7 @@ class CoreApplication:
             controller_state = ControllerState.HOMING
         elif self.command.status == CommandStatus.BUSY and self.command.last_code == CommandCode.TARGET_APPLY_MOVE:
             controller_state = ControllerState.TARGET_MOVING
-        elif self.plc_input.tracking_enable and self.vision_snapshot.tracking_active:
+        elif not bypass["vision"]["active"] and self.plc_input.tracking_enable and self.vision_snapshot.tracking_active:
             controller_state = ControllerState.TRACKING
         elif system_ready:
             controller_state = ControllerState.READY
@@ -1179,7 +1391,7 @@ class CoreApplication:
             controller_state = ControllerState.STANDBY
 
         tracking_state = TrackingState.OFF
-        if self.plc_input.tracking_enable:
+        if self.plc_input.tracking_enable and not bypass["vision"]["active"]:
             if fault_active:
                 tracking_state = TrackingState.FAULT
             elif self.vision_snapshot.tracking_active and self.vision_snapshot.tracker_valid:
@@ -1193,14 +1405,14 @@ class CoreApplication:
             flags=ProcessFlags(
                 controller_online=True,
                 system_ready=system_ready,
-                tracking_active=self.vision_snapshot.tracking_active,
+                tracking_active=self.vision_snapshot.tracking_active and not bypass["vision"]["active"],
                 homing=controller_state == ControllerState.HOMING or bool(ptm_status.get("homing")),
                 motion_moving=bool(ptm_status.get("moving") and ptm_status.get("connected", True)),
                 laser_on=bool(laser_status.get("on", ptm_status.get("laser_on", False))),
                 homed=bool(ptm_status.get("homed")),
                 stop_active=self.plc_input.force_stop or not self.plc_input.run_enable,
                 force_stop_active=self.plc_input.force_stop,
-                camera_ready=self.vision_service.state.enabled and _mask_ready(
+                camera_ready=not bypass["vision"]["active"] and self.vision_service.state.enabled and _mask_ready(
                     self.vision_snapshot.camera_required_mask,
                     self.vision_snapshot.camera_valid_mask,
                 ),
@@ -1218,6 +1430,9 @@ class CoreApplication:
             active_laser_tolerance_deg_x100=laser_tolerance,
             active_recipe_id=self._active_recipe_id,
             active_point_id=self._active_point_id,
+            ptm_bypass=bypass["ptm"]["active"],
+            vision_bypass=bypass["vision"]["active"],
+            laser_bypass=bypass["laser"]["active"],
             command=self.command,
             cameras=CameraMasks(
                 required=self.vision_snapshot.camera_required_mask,
@@ -1305,6 +1520,8 @@ class CoreApplication:
     ) -> JsonTcpResponse:
         try:
             command = _normalize_command(command)
+            if command in {"device.command", "motion.stop", "laser.on", "laser.off"}:
+                self._sync_bypass_state()
             if command == "runtime.snapshot":
                 return JsonTcpResponse(True, self.status_snapshot())
             if command == "worker.shutdown" and self._managed_worker:
@@ -1447,6 +1664,8 @@ class CoreApplication:
                         },
                     )
                 service = self.devices.get(device_id)
+                if self._device_bypassed(device_id):
+                    return JsonTcpResponse(True, {"accepted": False, "bypassed": True})
                 if service is not None and not service.state.enabled:
                     return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": f"device is disabled: {device_id}"})
                 result = await self.devices.command(device_id, device_command, device_params)
@@ -1491,16 +1710,22 @@ class CoreApplication:
             if command == "laser.status":
                 return JsonTcpResponse(True, self.laser_service.snapshot())
             if command == "motion.stop":
+                if self._device_bypassed("ptm"):
+                    return JsonTcpResponse(True, {"accepted": False, "bypassed": True})
                 if not self.ptm_service.state.enabled:
                     return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": "PTM is disabled"})
                 await self.ptm_service.command("motion.stop")
                 return JsonTcpResponse(True, {"accepted": True})
             if command == "laser.on":
+                if self._device_bypassed("laser"):
+                    return JsonTcpResponse(True, {"accepted": False, "bypassed": True})
                 if not self.laser_service.state.enabled:
                     return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": "Laser is disabled"})
                 result = await self.laser_service.command(self.settings.laser.on_command)
                 return JsonTcpResponse(True, result or {"accepted": True})
             if command == "laser.off":
+                if self._device_bypassed("laser"):
+                    return JsonTcpResponse(True, {"accepted": False, "bypassed": True})
                 if not self.laser_service.state.enabled:
                     return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": "Laser is disabled"})
                 result = await self.laser_service.command(self.settings.laser.off_command)
@@ -1620,6 +1845,7 @@ class CoreApplication:
                 "active_point_id": self._active_point_id,
             },
             "command": self.command.to_dict(),
+            "bypass": self._bypass_status(),
             "devices": self.devices.snapshot(),
             "processes": processes if processes is not None else self.process_manager.snapshot(),
             "ptm": {
@@ -1645,6 +1871,7 @@ class CoreApplication:
                 "camera_ip": self.vision_snapshot.camera_ip,
                 "tracking_bypass": self.vision_snapshot.tracking_bypass,
                 "tracking_bypass_reason": self.vision_snapshot.tracking_bypass_reason,
+                "nutrunner_result": self.nutrunner_result,
             },
             "alarms": {
                 "warning_summary": self.alarms.warning_summary(),

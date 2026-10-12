@@ -1,7 +1,8 @@
 import { state, coreCommand } from '../global.js';
+import { renderBypassControl, bindBypassControl, startBypassStatus } from '../device_bypass.js';
 import {
   renderExternalWebFrame,
-  startExternalWebFrame,
+  setExternalWebFrameBypassed,
   stopExternalWebFrame,
 } from '../external_web_frame.js';
 
@@ -25,14 +26,29 @@ const frameOptions = {
   unavailableTitle: 'PTM Web UI 연결 불가',
 };
 
+let stopStatus = null;
+
 export function renderPTM() {
-  return renderExternalWebFrame({ ...frameOptions, url: configuredWebUrl() });
+  return renderBypassControl('ptm', 'motor', 'PTM', '활성화 시 모터 동작과 PTM 오류를 차단하고 레이저도 자동 바이패스합니다.')
+    + renderExternalWebFrame({ ...frameOptions, url: configuredWebUrl() });
 }
 
 export function startPtmRuntime() {
-  startExternalWebFrame(frameOptions);
+  if (stopStatus) stopStatus();
+  const updateFrame = status => {
+    const active = status?.bypass?.ptm?.active;
+    const pendingEnable = document.getElementById('ptmBypass');
+    if (active === undefined && !state.coreConfig?.motor?.bypass) return;
+    setExternalWebFrameBypassed(frameOptions,
+      Boolean((pendingEnable?.disabled && pendingEnable.checked) || active || (active === undefined && state.coreConfig?.motor?.bypass)));
+  };
+  bindBypassControl('ptm', 'motor', () => setExternalWebFrameBypassed(frameOptions, true));
+  updateFrame(state.coreStatus);
+  stopStatus = startBypassStatus('ptm', updateFrame);
 }
 
 export function stopPtmRuntime() {
+  if (stopStatus) stopStatus();
+  stopStatus = null;
   stopExternalWebFrame(frameOptions.id);
 }
