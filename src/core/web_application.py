@@ -22,6 +22,7 @@ class CoreWebApplication(CoreApplication):
         self._worker_snapshot: dict[str, Any] = {}
         self._worker_sample_ms = 0
         self._worker_poll_task: asyncio.Task[None] | None = None
+        self._worker_expected_stop = False
         super().__init__(*args, **kwargs)
         self.history = EventHistory(resolve_app_path(self.settings.paths.logs_dir) / "events.jsonl")
         self.process_manager.set_diagnostic_callback(self._process_diagnostic)
@@ -35,6 +36,7 @@ class CoreWebApplication(CoreApplication):
 
     async def _before_process_stop(self, process_name: str) -> None:
         if process_name == self.settings.processes["core"]["process_name"]:
+            self._worker_expected_stop = True
             self._worker_snapshot = {}
             self._worker_sample_ms = 0
             return
@@ -45,6 +47,8 @@ class CoreWebApplication(CoreApplication):
                 self.history.add(process_name, "ERROR", f"Could not prepare worker for stop: {response.error}", event="safe_stop")
 
     async def _after_process_start(self, process_name: str) -> None:
+        if process_name == self.settings.processes["core"]["process_name"]:
+            self._worker_expected_stop = False
         if process_name == self.settings.processes["plc_gateway"]["process_name"]:
             await self._worker_request("runtime.resume_process", {})
 
@@ -100,8 +104,11 @@ class CoreWebApplication(CoreApplication):
             self._http_server_task = asyncio.create_task(self._http_server.serve_forever())
         await self.discovery.start()
         self._started = True
+        await self.process_manager.reconcile(start_order=[
+            self.settings.processes[key]["process_name"]
+            for key in ("plc_gateway", "ptm", "vision", "core")
+        ])
         self._worker_poll_task = asyncio.create_task(self._poll_worker(), name="core-worker-status")
-        await self.process_manager.reconcile()
         self.process_manager.start_watchdog()
         self.history.add("web", "INFO", "Core management server started", event="started")
 
@@ -147,19 +154,24 @@ class CoreWebApplication(CoreApplication):
 
     async def _poll_worker(self) -> None:
         previous_error = ""
+        previous_level = ""
         while not self._stop_event.is_set():
             response = await self._worker_request("runtime.snapshot", {})
             if response.ok and isinstance(response.result, dict):
                 self._worker_snapshot = response.result
                 self._worker_sample_ms = now_ms()
                 previous_error = ""
+                previous_level = ""
             else:
                 error = str(response.error)
                 self._worker_snapshot = {}
                 self._worker_sample_ms = 0
-                if error != previous_error:
-                    self.history.add("core_runtime", "WARNING", error, event="communication")
+                expected_stop = self._worker_expected_stop or not self.settings.processes["core"].get("enabled", True)
+                level = "INFO" if expected_stop else "WARNING"
+                if error != previous_error or level != previous_level:
+                    self.history.add("core_runtime", level, error, event="communication")
                     previous_error = error
+                    previous_level = level
             await asyncio.sleep(0.3)
 
     def status_snapshot(self, processes: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -213,6 +213,12 @@ class AlarmBook:
                 return code
         return 0
 
+    def visible_last_fault_code(self) -> int:
+        for device, code in FAULT_PRIORITY:
+            if code == self.last_fault_code and int(device) in self.suppressed_devices:
+                return 0
+        return self.last_fault_code
+
     def primary_warning_code(self) -> int:
         for device, code in WARNING_PRIORITY:
             if self.warning_word(device):

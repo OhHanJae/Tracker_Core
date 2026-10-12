@@ -28,6 +28,15 @@ class LaserService(DeviceService):
             poll_interval_ms=200,
         )
 
+    async def poll_once(self) -> None:
+        ptm = self.ptm_service.state
+        if (self.state.enabled and self.settings.mode.lower() == "ptm"
+                and not ptm.online and not (ptm.ok_count or ptm.error_count)):
+            self.state.online = False
+            self.state.last_error = ""
+            return
+        await super().poll_once()
+
     async def read_status(self) -> dict[str, Any]:
         mode = self.settings.mode.lower()
         if mode == "ptm":

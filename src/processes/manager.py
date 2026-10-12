@@ -9,6 +9,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -144,7 +145,7 @@ class ProcessManager:
             with contextlib.suppress(Exception):
                 self._diagnostic_callback({
                     "process_name": process_name, "level": level, "event": event,
-                    "message": message, "timestamp_ms": now_ms(), "details": details,
+                    "message": message, "timestamp_ms": int(time.time() * 1000), "details": details,
                 })
 
     def _launch_environment(self, process_name: str, script: Path) -> dict[str, str]:
@@ -187,10 +188,40 @@ class ProcessManager:
         self, process_name: str, stream: asyncio.StreamReader, source: str,
     ) -> None:
         pending = bytearray()
+        http_state: dict[tuple[str, str], dict[str, Any]] = {}
 
         def record(line: bytes) -> None:
             message = line.decode("utf-8", errors="replace").strip()
             if not message:
+                return
+            # HTTP servers write access logs to stderr, including successful requests.
+            access = re.search(r'"([A-Z]+) (\S+) HTTP/[0-9.]+" (\d{3})(?:\s|$)', message)
+            if access:
+                method, target, status_text = access.groups()
+                status = int(status_text)
+                level = "ERROR" if status >= 500 else "WARNING" if status >= 400 else "INFO"
+                path = target.partition("?")[0]
+                key = (method, path)
+                stamp = now_ms()
+                previous = http_state.get(key)
+                details: dict[str, Any] = {
+                    "stream": source, "http_method": method, "http_path": path, "http_status": status,
+                }
+                if previous is not None:
+                    if status == previous["status"] and stamp - previous["logged_ms"] < 60_000:
+                        previous["repeat_count"] += 1
+                        previous["message"] = message
+                        return
+                    if status == previous["status"]:
+                        details["repeat_count"] = previous["repeat_count"]
+                    else:
+                        details.update(previous_http_status=previous["status"],
+                                       previous_repeat_count=previous["repeat_count"])
+                http_state[key] = {
+                    "status": status, "level": level, "logged_ms": stamp,
+                    "repeat_count": 0, "message": message, "details": details,
+                }
+                self._diagnostic(process_name, level, "process_output", message, **details)
                 return
             match = re.search(r"\b(CRITICAL|FATAL|ERROR|WARNING|WARN|INFO|DEBUG)\b", message)
             level = "WARNING" if source == "stderr" else "INFO"
@@ -198,6 +229,10 @@ class ProcessManager:
                 level = {"FATAL": "CRITICAL", "WARN": "WARNING"}.get(match[1], match[1])
             elif message.startswith("Traceback ") or re.search(r"\b\w*(?:Error|Exception):", message):
                 level = "ERROR"
+            elif message.startswith("* Running on ") or message == "Press CTRL+C to quit":
+                level = "INFO"
+            elif message == "Terminated" and process_name in self._expected_stops:
+                level = "INFO"
             self._diagnostic(process_name, level, "process_output", message, stream=source)
 
         try:
@@ -218,6 +253,14 @@ class ProcessManager:
             raise
         except Exception as exc:
             self._diagnostic(process_name, "ERROR", "output_read_failed", str(exc), stream=source)
+        finally:
+            for state in http_state.values():
+                if state["repeat_count"]:
+                    self._diagnostic(
+                        process_name, state["level"], "process_output",
+                        f'{state["message"]} (repeated {state["repeat_count"]} more times)',
+                        **{**state["details"], "repeat_count": state["repeat_count"], "summary": True},
+                    )
 
     async def _record_process_exit(
         self, process_name: str, wrapper: asyncio.subprocess.Process,
@@ -572,7 +615,9 @@ class ProcessManager:
                 results[process_name] = {"error": str(exc)}
         return results
 
-    async def reconcile(self, *, start_missing: bool = True) -> dict[str, Any]:
+    async def reconcile(
+        self, *, start_missing: bool = True, start_order: list[str] | None = None
+    ) -> dict[str, Any]:
         """Apply enabled state after a config reload."""
         results: dict[str, Any] = {}
         for process_name in sorted(self._retired_process_names):
@@ -591,7 +636,11 @@ class ProcessManager:
                 results[process_name] = {"error": str(exc)}
         self._retired_process_names.clear()
 
-        for process_name, config in self.modules.items():
+        modules = list(self.modules.items())
+        if start_order:
+            priority = {name: index for index, name in enumerate(start_order)}
+            modules.sort(key=lambda item: priority.get(item[0], len(priority)))
+        for process_name, config in modules:
             runtime = await asyncio.to_thread(
                 self._valid_runtime_record_sync,
                 process_name,

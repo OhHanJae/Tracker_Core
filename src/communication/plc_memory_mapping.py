@@ -268,7 +268,7 @@ class PlcOutput:
         )
         words[21] = _u16(self.alarms.primary_fault_code(self.latch_faults))
         words[22] = _u16(self.alarms.primary_warning_code())
-        words[23] = _u16(self.alarms.last_fault_code)
+        words[23] = _u16(self.alarms.visible_last_fault_code())
         words[24] = _u16(self.alarms.alarm_sequence)
         words[25] = _u16(fault_summary)
         words[26] = _u16(warning_summary)
