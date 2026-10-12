@@ -9,7 +9,6 @@ __pycache__/
 .ruff_cache/
 logs/*.log
 runtime
-tests
 logs
 datas/global.json
 

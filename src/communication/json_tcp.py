@@ -44,45 +44,65 @@ async def send_json_request(
         "command": command,
         "params": params or {},
     }
+    # One budget covers connect, send and all response lines. Banners or an
+    # unrelated request ID must not keep a PLC command BUSY indefinitely.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+
+    def remaining() -> float:
+        return max(0.0, deadline - loop.time())
 
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(connect_host, port), timeout=timeout_s
+            asyncio.open_connection(connect_host, port), timeout=remaining()
         )
-    except OSError as exc:
-        raise JsonTcpError(f"connect failed: {connect_host}:{port}: {exc}") from exc
     except asyncio.TimeoutError as exc:
-        raise JsonTcpError(f"connect timeout: {connect_host}:{port}") from exc
+        raise JsonTcpError(f"connect timeout: {connect_host}:{port}", code="TIMEOUT") from exc
+    except OSError as exc:
+        raise JsonTcpError(f"connect failed: {connect_host}:{port}: {exc}", code="CONNECT_FAILED") from exc
 
     try:
         writer.write(json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n")
-        await asyncio.wait_for(writer.drain(), timeout=timeout_s)
+        await asyncio.wait_for(writer.drain(), timeout=remaining())
 
         while True:
-            raw_line = await asyncio.wait_for(reader.readline(), timeout=timeout_s)
+            raw_line = await asyncio.wait_for(reader.readline(), timeout=remaining())
             if not raw_line:
                 raise JsonTcpError("connection closed before response")
+            if not raw_line.endswith(b"\n"):
+                raise JsonTcpError("response must end with a newline", code="INVALID_RESPONSE")
             try:
                 message = json.loads(raw_line.decode("utf-8"))
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeError):
+                continue
+            if not isinstance(message, dict):
                 continue
             if message.get("id") != request_id:
                 continue
             if message.get("ok") is True:
                 return JsonTcpResponse(ok=True, result=message.get("result"), raw=message)
+            if message.get("ok") is not False:
+                raise JsonTcpError("response ok must be a boolean", code="INVALID_RESPONSE")
             return JsonTcpResponse(
                 ok=False,
                 error=message.get("error") or message.get("message"),
                 raw=message,
             )
     except asyncio.TimeoutError as exc:
-        raise JsonTcpError(f"request timeout: {command}") from exc
+        raise JsonTcpError(f"request timeout: {command}", code="TIMEOUT") from exc
+    except OSError as exc:
+        raise JsonTcpError(f"request failed: {command}: {exc}", code="CONNECTION_ERROR") from exc
+    except ValueError as exc:
+        raise JsonTcpError(f"invalid response: {command}: {exc}", code="INVALID_RESPONSE") from exc
     finally:
         writer.close()
         try:
-            await writer.wait_closed()
-        except OSError:
-            pass
+            if remaining() > 0:
+                await asyncio.wait_for(writer.wait_closed(), timeout=remaining())
+            else:
+                writer.transport.abort()
+        except (OSError, asyncio.TimeoutError):
+            writer.transport.abort()
 
 
 JsonCommandHandler = Callable[[str, dict[str, Any]], Awaitable[JsonTcpResponse]]

@@ -164,7 +164,18 @@ TCP JSON Lines 방식은 한 줄에 JSON 객체 하나와 LF(`\n`)를 보냅니�
 | 2 | `HOME` | 설정된 모터 API 명령 `home.start` |
 | 3 | `ERROR_RESET` | latch fault reset |
 | 4 | `CONTROLLER_RESTART` | 서비스 매니저에서 처리해야 하므로 reject |
-| 5 | `RELOAD_CONFIG` | 글로벌 설정 reload |
+| 5 | `NUTRUNNER_DATA_REQUEST` | `vision.result(recipe_id, point_id, command_seq)` 체결 데이터 조회 |
+
+설정 재로드는 기존 JSON 명령 `reload_config`로 요청합니다. PLC 코드 5는
+재로드를 실행하지 않습니다. 코드 1~3의 동작과 코드 4 거부는 유지됩니다.
+Vision의 현재 `vision.result`는 레시피/포인트를 확인한 뒤
+`supported=false`, `data_valid=false`, 측정값 `null`을 반환하는 준비 단계입니다.
+Core는 이를 `REJECTED / TRACKING_UNAVAILABLE`로 처리합니다. 체결 각도,
+기울기, XYZ와 측정 시각 계산 및 PLC 측정값 전송은 구현되지 않았습니다.
+조회가 완료돼도 위치 OK나 체결 허가가 만들어지는 것은 아닙니다.
+
+통신 계약, 오류별 PLC 상태와 회귀 테스트 실행법은
+[Core–Vision 계약 검증](docs/CORE_VISION_CONTRACT_AUDIT.md)을 참고하세요.
 
 ## 데이터/설정 폴더
 
