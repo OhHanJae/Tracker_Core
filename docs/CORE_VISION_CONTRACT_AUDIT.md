@@ -201,8 +201,10 @@ Windows PowerShell에서는 `$env:FVP_REPOSITORY='C:\\path\\Fastening_Vision_Pla
 
 실행 결과: Python 3.12에서 Core 테스트 37개(실제 브리지 5개 포함)와
 기존 Vision 계약 테스트 14개 통과. 별칭·오프라인 사전 거부·무한 잡음 읽기의
-회귀 테스트는 수정 전 실패, 수정 후 통과했다. Python 3.10 실행은 GitHub
-Actions 결과로 확인해야 하며 로컬에서 3.10을 실행했다고 주장하지 않는다.
+회귀 테스트는 수정 전 실패, 수정 후 통과했다. [GitHub Actions 검증](https://github.com/OhHanJae/Tracker_Core/actions/runs/38323903561)에서도
+Python 3.10/3.12의 일반 테스트 32개와 compileall이 모두 통과했다.
+각 CI 실행의 실제 Vision 브리지 테스트 5개는 별도 checkout이 없어 skip했으며,
+위 로컬 Python 3.12 통합 실행에서는 5개 모두 수행했다.
 
 PLC 출력 단어 검증은 메모리 직렬화까지이며 XGT 전송 ACK, 실장비 시운전,
 카메라 정확도·지연·측정 성능 및 운영 배포는 이번 검증에 포함되지 않는다.
