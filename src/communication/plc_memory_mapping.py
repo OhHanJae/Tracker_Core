@@ -96,11 +96,6 @@ class PlcInput:
             req_point_id=padded[11],
             command_code=padded[12],
             command_seq=padded[13],
-            admin_command=padded[40],
-            admin_seq=padded[41],
-            admin_param1=padded[42],
-            admin_param2=padded[43],
-            teach_enable_key=padded[49],
             raw_words=padded,
         )
 
@@ -114,9 +109,9 @@ class PlcInput:
         return default_value
 
     def applied_laser_tolerance(self, default_value: int) -> int:
-        if 1 <= self.laser_tolerance_deg_x100 <= 10000:
+        if 1 <= self.laser_tolerance_deg_x100 <= 0xFFFF:
             return self.laser_tolerance_deg_x100
-        return default_value
+        return 5
 
 
 @dataclass
@@ -239,32 +234,29 @@ class PlcOutput:
             self.alarms.fault_word(DeviceSummaryBit.TRACKER, self.latch_faults)
         )
         motion_fault = bool(
-            self.alarms.fault_word(DeviceSummaryBit.PAN_MOTOR, self.latch_faults)
-            or self.alarms.fault_word(DeviceSummaryBit.TILT_MOTOR, self.latch_faults)
+            self.alarms.fault_word(DeviceSummaryBit.PAN_TILT_MOTOR, self.latch_faults)
         )
 
         words[20] = (
-            bit(warning_active, 0)
-            | bit(fault_active, 1)
-            | bit(process_stop, 2)
-            | bit(vision_degraded, 3)
-            | bit(vision_fault, 4)
-            | bit(tracking_fault, 5)
-            | bit(motion_fault, 6)
-            | bit(bool(self.alarms.fault_word(DeviceSummaryBit.LASER, self.latch_faults)), 7)
-            | bit(bool(self.alarms.fault_word(DeviceSummaryBit.CONTROLLER, self.latch_faults)), 8)
+            bit(process_stop, 0)
+            | bit(vision_degraded, 1)
+            | bit(vision_fault, 2)
+            | bit(tracking_fault, 3)
+            | bit(motion_fault, 4)
+            | bit(bool(self.alarms.fault_word(DeviceSummaryBit.LASER, self.latch_faults)), 5)
+            | bit(bool(self.alarms.fault_word(DeviceSummaryBit.CONTROLLER, self.latch_faults)), 6)
             | bit(
                 bool(
                     self.alarms.fault_word(
                         DeviceSummaryBit.PLC_COMMUNICATION, self.latch_faults
                     )
                 ),
-                9,
+                7,
             )
-            | bit(bool(self.alarms.fault_word(DeviceSummaryBit.RECIPE, self.latch_faults)), 10)
+            | bit(bool(self.alarms.fault_word(DeviceSummaryBit.RECIPE, self.latch_faults)), 8)
             | bit(
                 bool(self.alarms.fault_word(DeviceSummaryBit.CALIBRATION, self.latch_faults)),
-                11,
+                9,
             )
         )
         words[21] = _u16(self.alarms.primary_fault_code(self.latch_faults))
@@ -276,11 +268,6 @@ class PlcOutput:
         words[27] = _u16(self.alarms.active_fault_count(self.latch_faults))
         words[28] = _u16(self.alarms.active_warning_count())
 
-        words[40] = _u16(self.admin_status)
-        words[41] = _u16(self.admin_result)
-        words[42] = _u16(self.admin_ack_seq)
-        words[43] = _u16(self.teach_status)
-
         detail_map = {
             50: DeviceSummaryBit.CAMERA_1,
             52: DeviceSummaryBit.CAMERA_2,
@@ -288,8 +275,7 @@ class PlcOutput:
             56: DeviceSummaryBit.CAMERA_4,
             58: DeviceSummaryBit.VISION_COMMON,
             60: DeviceSummaryBit.TRACKER,
-            62: DeviceSummaryBit.PAN_MOTOR,
-            64: DeviceSummaryBit.TILT_MOTOR,
+            62: DeviceSummaryBit.PAN_TILT_MOTOR,
             66: DeviceSummaryBit.LASER,
             68: DeviceSummaryBit.CONTROLLER,
             70: DeviceSummaryBit.PLC_COMMUNICATION,

@@ -72,11 +72,14 @@ def normalize_ptm_status(data: dict[str, Any]) -> dict[str, Any]:
     laser = _dict(data.get("laser"))
     motion_state = str(motion.get("state") or "").lower()
 
-    return {
-        "online": _bool_first(True, data, motor, "online", "ready"),
-        "connected": _bool_first(True, serial, data, motor, "connected"),
-        "moving": _bool_first(motion_state in {"tracking", "jog"}, data, motor, "moving", "motion_moving", "busy"),
-        "homed": _bool_first(False, data, motor, "homed", "home_complete"),
+    status = {
+        "online": _bool_first(True, data, motor, "online", "ready")
+        and _positive_axis_status(True, {}, {}, pan, tilt, "online"),
+        "connected": _bool_first(True, serial, data, motor, "connected")
+        and _positive_axis_status(True, {}, {}, pan, tilt, "connected"),
+        "moving": _bool_any(motion_state in {"tracking", "jog"}, data, motor, pan, tilt, "moving", "motion_moving", "busy"),
+        "homing": _bool_any(motion_state == "homing", data, motor, pan, tilt, "homing", "home_busy"),
+        "homed": _positive_axis_status(False, data, motor, pan, tilt, "homed", "home_complete"),
         "pan_deg": _first_number(data, motor, pan, position, "pan_deg", "pan", "position_deg"),
         "tilt_deg": _first_number(data, motor, tilt, position, "tilt_deg", "tilt", "position_deg"),
         "pan_speed_deg_s": _first_number(data, motor, pan, "pan_speed_deg_s", "speed"),
@@ -84,11 +87,15 @@ def normalize_ptm_status(data: dict[str, Any]) -> dict[str, Any]:
         "laser_on": _bool_first(False, data, motor, laser, "laser_on", "on", "emission"),
         "laser_connected": _bool_first(False, laser, "connected") if "connected" in laser else None,
         "laser_bypass": _bool_first(False, laser, "bypass"),
-        "warning_word": _first_int(0, data, motor, "warning_word", "warnings"),
-        "fault_word": _first_int(0, data, motor, "fault_word", "faults"),
-        "fault": _bool_first(False, data, motor, "fault", "error"),
+        "warning_word": _or_words(data, motor, pan, tilt, "warning_word", "warnings"),
+        "fault_word": _or_words(data, motor, pan, tilt, "fault_word", "faults"),
+        "fault": _bool_any(False, data, motor, pan, tilt, "fault", "error"),
         "raw": data,
     }
+    for name, keys in (("ready", ("ready",)), ("in_position", ("in_position", "inposition", "position_ok"))):
+        if any(key in source for source in (data, motor, pan, tilt) for key in keys):
+            status[name] = _positive_axis_status(False, data, motor, pan, tilt, *keys)
+    return status
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -134,6 +141,39 @@ def _bool_first(default: bool, *sources_and_keys: Any) -> bool:
                 return value.strip().lower() in {"1", "true", "on", "yes", "ready"}
             return bool(value)
     return default
+
+
+def _positive_axis_status(
+    default: bool, data: dict[str, Any], motor: dict[str, Any],
+    pan: dict[str, Any], tilt: dict[str, Any], *keys: str,
+) -> bool:
+    aggregate = [
+        _bool_first(default, source, key)
+        for source in (data, motor) for key in keys if key in source
+    ]
+    fallback = all(aggregate) if aggregate else default
+    axes = [
+        all(_bool_first(default, axis, key) for key in keys if key in axis)
+        if any(key in axis for key in keys) else fallback
+        for axis in (pan, tilt)
+    ]
+    return all(aggregate) and all(axes)
+
+
+def _bool_any(default: bool, *sources_and_keys: Any) -> bool:
+    sources, keys = _split_sources_and_keys(sources_and_keys)
+    return default or any(
+        _bool_first(False, source, key)
+        for source in sources for key in keys if key in source
+    )
+
+
+def _or_words(*sources_and_keys: Any) -> int:
+    sources, keys = _split_sources_and_keys(sources_and_keys)
+    word = 0
+    for source in sources:
+        word |= _first_int(0, source, *keys)
+    return word & 0xFFFF
 
 
 def _split_sources_and_keys(values: tuple[Any, ...]) -> tuple[list[dict[str, Any]], list[str]]:

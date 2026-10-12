@@ -71,6 +71,7 @@ class DeviceSummaryBit(IntEnum):
     CAMERA_3 = 5
     CAMERA_4 = 6
     TRACKER = 7
+    PAN_TILT_MOTOR = 8
     PAN_MOTOR = 8
     TILT_MOTOR = 9
     LASER = 10
@@ -88,7 +89,8 @@ AUTO_RESET_FAULT_MASKS = {
     DeviceSummaryBit.CAMERA_3: (1 << 0) | (1 << 1) | (1 << 6),
     DeviceSummaryBit.CAMERA_4: (1 << 0) | (1 << 1) | (1 << 6),
     DeviceSummaryBit.TRACKER: (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 6),
-    DeviceSummaryBit.PAN_MOTOR: 1 << 0,
+    DeviceSummaryBit.PAN_TILT_MOTOR: 1 << 0,
+    DeviceSummaryBit.TILT_MOTOR: 1 << 0,
     DeviceSummaryBit.LASER: (1 << 0) | (1 << 3),
 }
 
@@ -102,8 +104,7 @@ FAULT_PRIORITY = [
     (DeviceSummaryBit.CAMERA_3, 2301),
     (DeviceSummaryBit.CAMERA_4, 2401),
     (DeviceSummaryBit.TRACKER, 3001),
-    (DeviceSummaryBit.PAN_MOTOR, 4001),
-    (DeviceSummaryBit.TILT_MOTOR, 4001),
+    (DeviceSummaryBit.PAN_TILT_MOTOR, 4001),
     (DeviceSummaryBit.LASER, 5001),
     (DeviceSummaryBit.RECIPE, 6001),
     (DeviceSummaryBit.CALIBRATION, 6101),
@@ -118,8 +119,7 @@ WARNING_PRIORITY = [
     (DeviceSummaryBit.CAMERA_3, 2300),
     (DeviceSummaryBit.CAMERA_4, 2400),
     (DeviceSummaryBit.TRACKER, 3000),
-    (DeviceSummaryBit.PAN_MOTOR, 4000),
-    (DeviceSummaryBit.TILT_MOTOR, 4100),
+    (DeviceSummaryBit.PAN_TILT_MOTOR, 4000),
     (DeviceSummaryBit.LASER, 5000),
     (DeviceSummaryBit.RECIPE, 6000),
     (DeviceSummaryBit.CALIBRATION, 6100),
@@ -175,13 +175,17 @@ class AlarmBook:
 
     def fault_word(self, device: DeviceSummaryBit, latch_enabled: bool = True) -> int:
         active = self.faults.get(int(device), 0)
-        if latch_enabled:
-            retained = self.latched_faults.get(int(device), 0)
-            return (active | (retained & ~AUTO_RESET_FAULT_MASKS.get(device, 0))) & 0xFFFF
-        return active & 0xFFFF
+        retained = self.latched_faults.get(int(device), 0) if latch_enabled else 0
+        word = active | (retained & ~AUTO_RESET_FAULT_MASKS.get(device, 0))
+        if device == DeviceSummaryBit.PAN_TILT_MOTOR:
+            word |= self.fault_word(DeviceSummaryBit.TILT_MOTOR, latch_enabled)
+        return word & 0xFFFF
 
     def warning_word(self, device: DeviceSummaryBit) -> int:
-        return self.warnings.get(int(device), 0) & 0xFFFF
+        word = self.warnings.get(int(device), 0)
+        if device == DeviceSummaryBit.PAN_TILT_MOTOR:
+            word |= self.warnings.get(int(DeviceSummaryBit.TILT_MOTOR), 0)
+        return word & 0xFFFF
 
     def fault_summary(self, latch_enabled: bool = True) -> int:
         summary = 0

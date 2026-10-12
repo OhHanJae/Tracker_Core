@@ -1,6 +1,6 @@
 window.TRACK_EYE_PLC_MAP = {
-  "sourceFile": "트래커 PLC 통신 맵 v3.xlsx",
-  "sourceTitle": "Tracker Project PLC ↔ Controller Communication Map v3.0",
+  "sourceFile": "트래커 PLC 통신 맵 v4.xlsx",
+  "sourceTitle": "Tracker Project PLC to Controller Communication Map v4.0",
   "note": "웹에서는 PLC 기준 주소를 적용하여 Dnnn 형식으로 표시합니다.",
   "sheets": [
     {
@@ -317,11 +317,11 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "LASER_TOLERANCE",
           "Pan/Tilt 목표 허용오차",
-          "1 = 0.01°, 범위 밖이면 기본값",
+          "Pan/Tilt 공통 허용오차. 1 = 0.01°\n0 = 기본값 0.05° (5)\n1~65535 = 입력값 × 0.01°\nPan 오차 AND Tilt 오차 모두 허용오차 이내여야 도달",
           "UINT16",
           "Parameter",
           "자동",
-          "1~10000"
+          "0~65535"
         ],
         [
           "일반 명령",
@@ -353,7 +353,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "COMMAND_CODE",
           "일회성 명령 코드",
-          "명령표 참조",
+          "0 = NONE (명령 없음)\n1 = TARGET_APPLY_MOVE (REQ_RECIPE_ID/REQ_POINT_ID 적용 후 Pan/Tilt 목표 이동)\n2 = HOME (Pan/Tilt 원점복귀)\n3 = ERROR_RESET (해제 가능한 Latch Fault Reset)\n4 = CONTROLLER_RESTART (PLC 명령은 거부, Process Manager 사용)\n5 = RELOAD_CONFIG (PLC에서는 거부)\n6~65535 = Reserved",
           "UINT16",
           "Command",
           "자동",
@@ -684,124 +684,124 @@ window.TRACK_EYE_PLC_MAP = {
           "0"
         ],
         [
-          "관리자",
+          "예약",
           "D+40",
           "-",
-          "ADMIN_COMMAND",
-          "관리자/Calibration 명령",
-          "일반 운전 명령과 분리",
-          "UINT16",
-          "Command",
-          "비운전/관리자",
-          "0~65535"
+          "Reserved",
+          "예약",
+          "항상 0. 사용 금지",
+          "WORD",
+          "Reserve",
+          "-",
+          "0"
         ],
         [
-          "관리자",
+          "예약",
           "D+41",
           "-",
-          "ADMIN_SEQ",
-          "관리자 명령 Sequence",
-          "새 명령마다 +1",
-          "UINT16",
-          "Counter",
-          "비운전/관리자",
-          "0~65535"
+          "Reserved",
+          "예약",
+          "항상 0. 사용 금지",
+          "WORD",
+          "Reserve",
+          "-",
+          "0"
         ],
         [
-          "관리자",
+          "예약",
           "D+42",
           "-",
-          "ADMIN_PARAM1",
-          "관리자 Parameter 1",
-          "명령별 정의",
-          "INT16/UINT16",
-          "Parameter",
-          "관리자",
-          "-32768~65535"
+          "Reserved",
+          "예약",
+          "항상 0. 사용 금지",
+          "WORD",
+          "Reserve",
+          "-",
+          "0"
         ],
         [
-          "관리자",
+          "예약",
           "D+43",
           "-",
-          "ADMIN_PARAM2",
-          "관리자 Parameter 2",
-          "명령별 정의",
-          "INT16/UINT16",
-          "Parameter",
-          "관리자",
-          "-32768~65535"
+          "Reserved",
+          "예약",
+          "항상 0. 사용 금지",
+          "WORD",
+          "Reserve",
+          "-",
+          "0"
         ],
         [
-          "관리자",
+          "예약",
           "D+44",
           "-",
           "Reserved",
           "예약",
-          "사용 금지",
+          "항상 0. 사용 금지",
           "WORD",
           "Reserve",
-          "관리자",
+          "-",
           "0"
         ],
         [
-          "관리자",
+          "예약",
           "D+45",
           "-",
           "Reserved",
           "예약",
-          "사용 금지",
+          "항상 0. 사용 금지",
           "WORD",
           "Reserve",
-          "관리자",
+          "-",
           "0"
         ],
         [
-          "관리자",
+          "예약",
           "D+46",
           "-",
           "Reserved",
           "예약",
-          "사용 금지",
+          "항상 0. 사용 금지",
           "WORD",
           "Reserve",
-          "관리자",
+          "-",
           "0"
         ],
         [
-          "관리자",
+          "예약",
           "D+47",
           "-",
           "Reserved",
           "예약",
-          "사용 금지",
+          "항상 0. 사용 금지",
           "WORD",
           "Reserve",
-          "관리자",
+          "-",
           "0"
         ],
         [
-          "관리자",
+          "예약",
           "D+48",
           "-",
           "Reserved",
           "예약",
-          "사용 금지",
+          "항상 0. 사용 금지",
           "WORD",
           "Reserve",
-          "관리자",
+          "-",
           "0"
         ],
         [
-          "관리자",
+          "예약",
           "D+49",
           "-",
-          "TEACH_ENABLE_KEY",
-          "Teach/Calibration 진입 허용 키",
-          "보안 Password가 아닌 오조작 방지용",
-          "UINT16",
-          "Interlock Key",
-          "관리자",
-          "0~65535"
+          "Reserved",
+          "예약",
+          "항상 0. 사용 금지",
+          "WORD",
+          "Reserve",
+          "-",
+          "0"
         ]
       ]
     },
@@ -843,7 +843,7 @@ window.TRACK_EYE_PLC_MAP = {
           "1",
           "SYSTEM_READY",
           "정상 운전 가능 상태",
-          "치명 Fault 없음/필수 초기화 완료",
+          "필수 장치 준비 AND Pan/Tilt 준비 AND Fault 없음",
           "BOOL",
           "Level",
           "전체",
@@ -867,7 +867,7 @@ window.TRACK_EYE_PLC_MAP = {
           "3",
           "HOMING",
           "Homing 진행 중",
-          "",
+          "Pan 원점복귀 진행 OR Tilt 원점복귀 진행",
           "BOOL",
           "Level",
           "전체",
@@ -879,7 +879,7 @@ window.TRACK_EYE_PLC_MAP = {
           "4",
           "MOTION_MOVING",
           "Pan/Tilt 이동 중",
-          "",
+          "Pan 이동 OR Tilt 이동",
           "BOOL",
           "Level",
           "전체",
@@ -915,7 +915,7 @@ window.TRACK_EYE_PLC_MAP = {
           "7",
           "FAULT_ACTIVE",
           "하나 이상의 Fault 존재",
-          "D+20.1과 의미 동일/요약",
+          "전체 Fault OR 요약. Pan/Tilt Fault는 한 시스템으로 집계",
           "BOOL",
           "Level",
           "전체",
@@ -927,7 +927,7 @@ window.TRACK_EYE_PLC_MAP = {
           "8",
           "WARNING_ACTIVE",
           "하나 이상의 Warning 존재",
-          "D+20.0과 의미 동일/요약",
+          "전체 Warning OR 요약. Pan/Tilt Warning은 한 시스템으로 집계",
           "BOOL",
           "Level",
           "전체",
@@ -951,7 +951,7 @@ window.TRACK_EYE_PLC_MAP = {
           "A",
           "HOMED",
           "원점 정보 유효",
-          "",
+          "Pan 원점 유효 AND Tilt 원점 유효",
           "BOOL",
           "Level",
           "전체",
@@ -1167,7 +1167,7 @@ window.TRACK_EYE_PLC_MAP = {
           "C",
           "LASER_TARGET_READY",
           "Pan/Tilt 목표 위치 도달 및 Settling 완료",
-          "",
+          "Pan 목표 도달 AND Tilt 목표 도달 AND Settling 완료\n각 축 오차가 ACTIVE_LASER_TOLERANCE 이내",
           "BOOL",
           "Level",
           "자동",
@@ -1215,7 +1215,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "CONTROLLER_STATE",
           "Controller 전체 상태",
-          "상태 코드표 참조",
+          "0 = INIT (초기화)\n1 = STANDBY (운전 대기)\n2 = READY (운전 준비완료)\n3 = HOMING (원점복귀 중)\n4 = TARGET_MOVING (목표 위치 이동 중)\n5 = TRACKING (Tracking 운전 중)\n6 = STOPPED (정지 상태)\n7 = FAULT (Fault 상태)\n8 = TEACH/CALIBRATION (관리자/Calibration 상태)",
           "ENUM",
           "State",
           "전체",
@@ -1227,7 +1227,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "TRACKING_STATE",
           "Tracking 상태",
-          "상태 코드표 참조",
+          "0 = OFF (Tracking 비활성)\n1 = INITIALIZING (Tracking 초기화)\n2 = SEARCHING (Marker/Tracker 탐색)\n3 = TRACKING (정상 Tracking)\n4 = DEGRADED (성능 저하)\n5 = LOST (Tracker 유실)\n6 = FAULT (Tracking 처리 Fault)",
           "ENUM",
           "State",
           "전체",
@@ -1299,11 +1299,11 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "ACTIVE_LASER_TOLERANCE",
           "실제 적용된 Laser/PanTilt 허용오차",
-          "1 = 0.01°",
+          "Pan/Tilt 공통 적용값. 1 = 0.01°\n입력 LASER_TOLERANCE=0이면 5 (0.05°) 반환\n그 외 LASER_TOLERANCE 입력값을 그대로 반환",
           "UINT16",
           "Response",
           "전체",
-          "1~10000"
+          "1~65535"
         ],
         [
           "명령 응답",
@@ -1335,7 +1335,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "LAST_COMMAND_CODE",
           "마지막 수신/처리 명령 코드",
-          "",
+          "0 = NONE (명령 없음)\n1 = TARGET_APPLY_MOVE (REQ_RECIPE_ID/REQ_POINT_ID 적용 후 Pan/Tilt 목표 이동)\n2 = HOME (Pan/Tilt 원점복귀)\n3 = ERROR_RESET (해제 가능한 Latch Fault Reset)\n4 = CONTROLLER_RESTART (PLC 명령은 거부, Process Manager 사용)\n5 = RELOAD_CONFIG (PLC에서는 거부)\n6~65535 = Reserved",
           "UINT16",
           "Response",
           "자동",
@@ -1359,7 +1359,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "COMMAND_STATUS",
           "명령 처리 상태",
-          "상태 코드표 참조",
+          "0 = IDLE (대기)\n1 = RECEIVED (명령 수신)\n2 = BUSY (처리 중)\n3 = COMPLETE (정상 완료)\n4 = REJECTED (조건 불충족으로 명령 거부)\n5 = ERROR (처리 중 오류)",
           "ENUM",
           "Response",
           "자동",
@@ -1371,7 +1371,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "COMMAND_RESULT",
           "명령 처리 결과",
-          "결과 코드표 참조",
+          "0 = OK (정상)\n1 = INVALID_COMMAND (잘못된 Command Code)\n2 = RECIPE_NOT_FOUND (Recipe 없음)\n3 = POINT_NOT_FOUND (Point 없음)\n4 = SYSTEM_NOT_READY (System Ready 아님)\n5 = HOMING_REQUIRED (Homing 필요)\n6 = FAULT_ACTIVE (Fault 상태)\n7 = FORCE_STOP_ACTIVE (강제중단 상태)\n8 = TRACKING_UNAVAILABLE (Tracking 사용 불가)\n9 = MOTION_TIMEOUT (Pan/Tilt 이동 Timeout)\n10 = CONFIG_OR_CAL_ERROR (설정/Calibration 오류)\n11 = COMMAND_BUSY (다른 명령 처리 중)\n12 = INTERNAL_ERROR (Controller 내부 오류)",
           "ENUM",
           "Response",
           "자동",
@@ -1429,30 +1429,6 @@ window.TRACK_EYE_PLC_MAP = {
           "알람 요약",
           "D+20",
           "0",
-          "WARNING_ACTIVE",
-          "Warning 하나 이상",
-          "",
-          "BOOL",
-          "Level",
-          "전체",
-          "0/1"
-        ],
-        [
-          "알람 요약",
-          "D+20",
-          "1",
-          "FAULT_ACTIVE",
-          "Fault 하나 이상",
-          "",
-          "BOOL",
-          "Level",
-          "전체",
-          "0/1"
-        ],
-        [
-          "알람 요약",
-          "D+20",
-          "2",
           "PROCESS_STOP",
           "현재 공정 진행 불가",
           "PLC 체결허가 차단 핵심",
@@ -1464,7 +1440,7 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "알람 요약",
           "D+20",
-          "3",
+          "1",
           "VISION_DEGRADED",
           "Vision 일부 성능 저하",
           "운전 가능 여부는 Controller 판단",
@@ -1476,7 +1452,7 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "알람 요약",
           "D+20",
-          "4",
+          "2",
           "VISION_FAULT",
           "Vision 기능 수행 불가",
           "",
@@ -1488,7 +1464,7 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "알람 요약",
           "D+20",
-          "5",
+          "3",
           "TRACKING_FAULT",
           "Tracker 기능 수행 불가",
           "",
@@ -1500,7 +1476,7 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "알람 요약",
           "D+20",
-          "6",
+          "4",
           "MOTION_FAULT",
           "Pan/Tilt 정상 동작 불가",
           "",
@@ -1512,7 +1488,7 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "알람 요약",
           "D+20",
-          "7",
+          "5",
           "LASER_FAULT",
           "Laser 기능 이상",
           "",
@@ -1524,7 +1500,7 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "알람 요약",
           "D+20",
-          "8",
+          "6",
           "CONTROLLER_FAULT",
           "Controller 자체 이상",
           "",
@@ -1536,7 +1512,7 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "알람 요약",
           "D+20",
-          "9",
+          "7",
           "PLC_COMM_FAULT",
           "PLC 통신 이상",
           "",
@@ -1548,7 +1524,7 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "알람 요약",
           "D+20",
-          "A",
+          "8",
           "CONFIG_FAULT",
           "Recipe/설정 이상",
           "",
@@ -1560,7 +1536,7 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "알람 요약",
           "D+20",
-          "B",
+          "9",
           "CALIBRATION_FAULT",
           "Calibration 이상",
           "",
@@ -1572,10 +1548,34 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "알람 요약",
           "D+20",
+          "A",
+          "Reserved",
+          "예약",
+          "항상 0",
+          "-",
+          "-",
+          "-",
+          "0"
+        ],
+        [
+          "알람 요약",
+          "D+20",
+          "B",
+          "Reserved",
+          "예약",
+          "항상 0",
+          "-",
+          "-",
+          "-",
+          "0"
+        ],
+        [
+          "알람 요약",
+          "D+20",
           "C",
           "Reserved",
           "예약",
-          "",
+          "항상 0",
           "-",
           "-",
           "-",
@@ -1587,7 +1587,7 @@ window.TRACK_EYE_PLC_MAP = {
           "D",
           "Reserved",
           "예약",
-          "",
+          "항상 0",
           "-",
           "-",
           "-",
@@ -1599,7 +1599,7 @@ window.TRACK_EYE_PLC_MAP = {
           "E",
           "Reserved",
           "예약",
-          "",
+          "항상 0",
           "-",
           "-",
           "-",
@@ -1611,7 +1611,7 @@ window.TRACK_EYE_PLC_MAP = {
           "F",
           "Reserved",
           "예약",
-          "",
+          "항상 0",
           "-",
           "-",
           "-",
@@ -1623,7 +1623,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "PRIMARY_FAULT_CODE",
           "현재 가장 우선순위 높은 Fault Code",
-          "0 = 없음",
+          "0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Camera 1 Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Reserved (Camera 2~4 미사용)\n2300~2399 = Reserved (Camera 2~4 미사용)\n2400~2499 = Reserved (Camera 2~4 미사용)\n3000~3099 = Tracker (3001 Tracker Lost)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Laser (5001 Laser Communication Fault)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)",
           "UINT16",
           "Code",
           "전체",
@@ -1635,7 +1635,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "PRIMARY_WARNING_CODE",
           "현재 가장 우선순위 높은 Warning Code",
-          "0 = 없음",
+          "0 = 없음\n1000 = Controller Warning\n1100 = PLC Communication Warning\n2000 = Vision Common Warning\n2100 = Camera 1 Warning\n2200~2499 = Reserved\n3000 = Tracker Warning\n4000 = Pan/Tilt 공통 Warning\n4100~4199 = Reserved\n5000 = Laser Warning\n6000 = Recipe Warning\n6100 = Calibration Warning",
           "UINT16",
           "Code",
           "전체",
@@ -1647,7 +1647,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "LAST_FAULT_CODE",
           "마지막 발생 Fault Code",
-          "이력/HMI 표시용",
+          "마지막 Fault 이력\n0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Camera 1 Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Reserved (Camera 2~4 미사용)\n2300~2399 = Reserved (Camera 2~4 미사용)\n2400~2499 = Reserved (Camera 2~4 미사용)\n3000~3099 = Tracker (3001 Tracker Lost)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Laser (5001 Laser Communication Fault)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)",
           "UINT16",
           "Code",
           "전체",
@@ -1671,7 +1671,7 @@ window.TRACK_EYE_PLC_MAP = {
           "0~C",
           "DEVICE_FAULT_SUMMARY",
           "Fault 발생 장치 Summary",
-          "장치 비트맵표 참조",
+          "bit0 = Controller\nbit1 = PLC Communication\nbit2 = Vision Common\nbit3 = Camera 1\nbit4~6 = Reserved\nbit7 = Tracker\nbit8 = Pan/Tilt (Pan OR Tilt)\nbit9 = Reserved\nbitA = Laser\nbitB = Recipe\nbitC = Calibration\nbitD~F = Reserved",
           "BITMAP",
           "Level",
           "전체",
@@ -1683,7 +1683,7 @@ window.TRACK_EYE_PLC_MAP = {
           "0~C",
           "DEVICE_WARNING_SUMMARY",
           "Warning 발생 장치 Summary",
-          "장치 비트맵표 참조",
+          "bit0 = Controller\nbit1 = PLC Communication\nbit2 = Vision Common\nbit3 = Camera 1\nbit4~6 = Reserved\nbit7 = Tracker\nbit8 = Pan/Tilt (Pan OR Tilt)\nbit9 = Reserved\nbitA = Laser\nbitB = Recipe\nbitC = Calibration\nbitD~F = Reserved",
           "BITMAP",
           "Level",
           "전체",
@@ -1695,7 +1695,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "ACTIVE_FAULT_COUNT",
           "현재 Active Fault 개수",
-          "",
+          "장치별 Fault 비트 수 합계\nPan/Tilt 같은 Fault 비트는 OR 후 1회만 집계",
           "UINT16",
           "Value",
           "전체",
@@ -1707,7 +1707,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "ACTIVE_WARNING_COUNT",
           "현재 Active Warning 개수",
-          "",
+          "장치별 Warning 비트 수 합계\nPan/Tilt 같은 Warning 비트는 OR 후 1회만 집계",
           "UINT16",
           "Value",
           "전체",
@@ -1846,123 +1846,123 @@ window.TRACK_EYE_PLC_MAP = {
           "0"
         ],
         [
-          "관리자 응답",
+          "예약",
           "D+40",
           "-",
-          "ADMIN_STATUS",
-          "관리자 명령 상태",
-          "",
-          "ENUM",
-          "Response",
-          "관리자",
-          "0~65535"
+          "Reserved",
+          "예약",
+          "항상 0. 사용 금지",
+          "WORD",
+          "Reserve",
+          "-",
+          "0"
         ],
         [
-          "관리자 응답",
+          "예약",
           "D+41",
           "-",
-          "ADMIN_RESULT",
-          "관리자 명령 결과",
-          "",
-          "ENUM",
-          "Response",
-          "관리자",
-          "0~65535"
+          "Reserved",
+          "예약",
+          "항상 0. 사용 금지",
+          "WORD",
+          "Reserve",
+          "-",
+          "0"
         ],
         [
-          "관리자 응답",
+          "예약",
           "D+42",
           "-",
-          "ADMIN_ACK_SEQ",
-          "마지막 처리 관리자 Sequence",
-          "",
-          "UINT16",
-          "Response",
-          "관리자",
-          "0~65535"
+          "Reserved",
+          "예약",
+          "항상 0. 사용 금지",
+          "WORD",
+          "Reserve",
+          "-",
+          "0"
         ],
         [
-          "관리자 응답",
+          "예약",
           "D+43",
           "-",
-          "TEACH_STATUS",
-          "Teach/Calibration 상태",
-          "",
-          "ENUM",
-          "Response",
-          "관리자",
-          "0~65535"
+          "Reserved",
+          "예약",
+          "항상 0. 사용 금지",
+          "WORD",
+          "Reserve",
+          "-",
+          "0"
         ],
         [
-          "관리자 응답",
+          "예약",
           "D+44",
           "-",
           "Reserved",
           "예약",
-          "사용 금지",
+          "항상 0. 사용 금지",
           "WORD",
           "Reserve",
-          "관리자",
+          "-",
           "0"
         ],
         [
-          "관리자 응답",
+          "예약",
           "D+45",
           "-",
           "Reserved",
           "예약",
-          "사용 금지",
+          "항상 0. 사용 금지",
           "WORD",
           "Reserve",
-          "관리자",
+          "-",
           "0"
         ],
         [
-          "관리자 응답",
+          "예약",
           "D+46",
           "-",
           "Reserved",
           "예약",
-          "사용 금지",
+          "항상 0. 사용 금지",
           "WORD",
           "Reserve",
-          "관리자",
+          "-",
           "0"
         ],
         [
-          "관리자 응답",
+          "예약",
           "D+47",
           "-",
           "Reserved",
           "예약",
-          "사용 금지",
+          "항상 0. 사용 금지",
           "WORD",
           "Reserve",
-          "관리자",
+          "-",
           "0"
         ],
         [
-          "관리자 응답",
+          "예약",
           "D+48",
           "-",
           "Reserved",
           "예약",
-          "사용 금지",
+          "항상 0. 사용 금지",
           "WORD",
           "Reserve",
-          "관리자",
+          "-",
           "0"
         ],
         [
-          "관리자 응답",
+          "예약",
           "D+49",
           "-",
           "Reserved",
           "예약",
-          "사용 금지",
+          "항상 0. 사용 금지",
           "WORD",
           "Reserve",
-          "관리자",
+          "-",
           "0"
         ],
         [
@@ -2113,9 +2113,9 @@ window.TRACK_EYE_PLC_MAP = {
           "상세 진단",
           "D+62",
           "0~F",
-          "PAN_WARNING",
-          "Pan Warning",
-          "03_Device_Alarm_Detail 시트 참조",
+          "PANTILT_WARNING",
+          "Pan/Tilt 공통 Warning",
+          "Pan Warning OR Tilt Warning. 03_Device_Alarm_Detail 참조",
           "BITMAP",
           "Level",
           "전체",
@@ -2125,37 +2125,37 @@ window.TRACK_EYE_PLC_MAP = {
           "상세 진단",
           "D+63",
           "0~F",
-          "PAN_FAULT",
-          "PTM 공통 통신 고장 및 Pan 축 고장",
-          "03_Device_Alarm_Detail 시트 참조",
+          "PANTILT_FAULT",
+          "Pan/Tilt 공통 Fault",
+          "Pan Fault OR Tilt Fault. 03_Device_Alarm_Detail 참조",
           "BITMAP",
           "Level",
           "전체",
           "Bit Map"
         ],
         [
-          "상세 진단",
+          "예약",
           "D+64",
-          "0~F",
-          "TILT_WARNING",
-          "Tilt Warning",
-          "03_Device_Alarm_Detail 시트 참조",
-          "BITMAP",
-          "Level",
-          "전체",
-          "Bit Map"
+          "-",
+          "Reserved",
+          "Pan/Tilt 진단 D+62/63 통합",
+          "항상 0. 사용 금지",
+          "WORD",
+          "Reserve",
+          "-",
+          "0"
         ],
         [
-          "상세 진단",
+          "예약",
           "D+65",
-          "0~F",
-          "TILT_FAULT",
-          "Tilt 축 고장 (bit0 예약, 항상 0)",
-          "03_Device_Alarm_Detail 시트 참조",
-          "BITMAP",
-          "Level",
-          "전체",
-          "Bit Map"
+          "-",
+          "Reserved",
+          "Pan/Tilt 진단 D+62/63 통합",
+          "항상 0. 사용 금지",
+          "WORD",
+          "Reserve",
+          "-",
+          "0"
         ],
         [
           "상세 진단",
@@ -2789,71 +2789,71 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "Pan/Tilt",
           "Warning",
-          "D+62 / D+64",
+          "D+62",
           "0",
           "POSITION_ERROR_HIGH",
           "Warning",
           "Auto",
           "아니오",
-          "목표 대비 위치오차 증가"
+          "목표 대비 위치오차 증가. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Pan/Tilt",
           "Warning",
-          "D+62 / D+64",
+          "D+62",
           "1",
           "MOVE_TIME_HIGH",
           "Warning",
           "Auto",
           "아니오",
-          "평균 이동시간 증가"
+          "평균 이동시간 증가. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Pan/Tilt",
           "Warning",
-          "D+62 / D+64",
+          "D+62",
           "2",
           "LIMIT_NEAR",
           "Warning",
           "Auto",
           "아니오",
-          "소프트/하드 Limit 근접"
+          "소프트/하드 Limit 근접. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Pan/Tilt",
           "Warning",
-          "D+62 / D+64",
+          "D+62",
           "3",
           "MOTOR_TEMP_HIGH",
           "Warning",
           "Auto",
           "아니오",
-          "온도 정보 지원 시 사용"
+          "온도 정보 지원 시 사용. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Pan/Tilt",
           "Warning",
-          "D+62 / D+64",
+          "D+62",
           "4",
           "COMM_RETRY_HIGH",
           "Warning",
           "Auto",
           "아니오",
-          "모터 통신 Retry 증가"
+          "모터 통신 Retry 증가. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Pan/Tilt",
           "Warning",
-          "D+62 / D+64",
+          "D+62",
           "5",
           "ENCODER_JITTER_HIGH",
           "Warning",
           "Auto",
           "아니오",
-          "Encoder 값 흔들림"
+          "Encoder 값 흔들림. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
-          "PTM (Pan/Tilt 공통)",
+          "Pan/Tilt",
           "Fault",
           "D+63",
           "0",
@@ -2861,84 +2861,84 @@ window.TRACK_EYE_PLC_MAP = {
           "Fault",
           "Latch/Auto",
           "예",
-          "PTM TCP 또는 공통 RS-485 통신 끊김; D+65 bit0 예약"
+          "PTM TCP 또는 공통 RS-485 통신 끊김. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Pan/Tilt",
           "Fault",
-          "D+63 / D+65",
+          "D+63",
           "1",
           "MOTOR_DRIVER_FAULT",
           "Fault",
           "Latch",
           "예",
-          "Motor/Driver Fault"
+          "Motor/Driver Fault. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Pan/Tilt",
           "Fault",
-          "D+63 / D+65",
+          "D+63",
           "2",
           "HOMING_FAIL",
           "Fault",
           "Latch",
           "예",
-          "Homing 실패/Timeout"
+          "Homing 실패/Timeout. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Pan/Tilt",
           "Fault",
-          "D+63 / D+65",
+          "D+63",
           "3",
           "MOVE_TIMEOUT",
           "Fault",
           "Latch",
           "예",
-          "목표 위치 이동 Timeout"
+          "목표 위치 이동 Timeout. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Pan/Tilt",
           "Fault",
-          "D+63 / D+65",
+          "D+63",
           "4",
           "ENCODER_FAULT",
           "Fault",
           "Latch",
           "예",
-          "Encoder 이상"
+          "Encoder 이상. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Pan/Tilt",
           "Fault",
-          "D+63 / D+65",
+          "D+63",
           "5",
           "LIMIT_FAULT",
           "Fault",
           "Latch",
           "예",
-          "Limit 비정상"
+          "Limit 비정상. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Pan/Tilt",
           "Fault",
-          "D+63 / D+65",
+          "D+63",
           "6",
           "TARGET_NOT_REACHED",
           "Fault",
           "Latch",
           "예",
-          "목표 위치 도달 실패"
+          "목표 위치 도달 실패. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Pan/Tilt",
           "Fault",
-          "D+63 / D+65",
+          "D+63",
           "7",
           "DRIVER_PROTECTION",
           "Fault",
           "Latch",
           "예",
-          "과전류 등 Driver 보호동작 지원 시 사용"
+          "과전류 등 Driver 보호동작 지원 시 사용. Pan 또는 Tilt 발생 시 1 (OR)"
         ],
         [
           "Laser",
@@ -3512,431 +3512,6 @@ window.TRACK_EYE_PLC_MAP = {
           "예",
           "Calibration Version 불일치"
         ]
-      ]
-    },
-    {
-      "key": "04_Code_Definitions",
-      "label": "4. Code Definitions",
-      "title": "Command / State / Result / Error Code 정의",
-      "subtitle": "PLC와 Controller 양쪽 구현에서 동일한 상수를 사용하기 위한 코드 정의 시트",
-      "type": "sections",
-      "base": null,
-      "sections": [
-        {
-          "title": "COMMAND_CODE",
-          "headers": [
-            "값",
-            "이름",
-            "설명"
-          ],
-          "rows": [
-            [
-              0,
-              "NONE",
-              "명령 없음"
-            ],
-            [
-              1,
-              "TARGET_APPLY_MOVE",
-              "REQ_RECIPE_ID/REQ_POINT_ID 적용 후 Pan/Tilt 목표 이동"
-            ],
-            [
-              2,
-              "HOME",
-              "Pan/Tilt 원점복귀"
-            ],
-            [
-              3,
-              "ERROR_RESET",
-              "해제 가능한 Latch Fault Reset"
-            ],
-            [
-              4,
-              "CONTROLLER_RESTART",
-              "비운전중 Controller 재시작"
-            ],
-            [
-              5,
-              "RELOAD_CONFIG",
-              "설정/Recipe 재로드"
-            ],
-            [
-              "6~65535",
-              "Reserved",
-              "향후 확장"
-            ]
-          ]
-        },
-        {
-          "title": "CONTROLLER_STATE",
-          "headers": [
-            "값",
-            "상태",
-            "설명"
-          ],
-          "rows": [
-            [
-              0,
-              "INIT",
-              "초기화"
-            ],
-            [
-              1,
-              "STANDBY",
-              "운전 대기"
-            ],
-            [
-              2,
-              "READY",
-              "운전 준비완료"
-            ],
-            [
-              3,
-              "HOMING",
-              "원점복귀 중"
-            ],
-            [
-              4,
-              "TARGET_MOVING",
-              "목표 위치 이동 중"
-            ],
-            [
-              5,
-              "TRACKING",
-              "Tracking 운전 중"
-            ],
-            [
-              6,
-              "STOPPED",
-              "정지 상태"
-            ],
-            [
-              7,
-              "FAULT",
-              "Fault 상태"
-            ],
-            [
-              8,
-              "TEACH/CALIBRATION",
-              "관리자/Calibration 상태"
-            ]
-          ]
-        },
-        {
-          "title": "TRACKING_STATE",
-          "headers": [
-            "값",
-            "상태",
-            "설명"
-          ],
-          "rows": [
-            [
-              0,
-              "OFF",
-              "Tracking 비활성"
-            ],
-            [
-              1,
-              "INITIALIZING",
-              "Tracking 초기화"
-            ],
-            [
-              2,
-              "SEARCHING",
-              "Marker/Tracker 탐색"
-            ],
-            [
-              3,
-              "TRACKING",
-              "정상 Tracking"
-            ],
-            [
-              4,
-              "DEGRADED",
-              "성능 저하"
-            ],
-            [
-              5,
-              "LOST",
-              "Tracker 유실"
-            ],
-            [
-              6,
-              "FAULT",
-              "Tracking 처리 Fault"
-            ]
-          ]
-        },
-        {
-          "title": "COMMAND_STATUS",
-          "headers": [
-            "값",
-            "상태",
-            "설명"
-          ],
-          "rows": [
-            [
-              0,
-              "IDLE",
-              "대기"
-            ],
-            [
-              1,
-              "RECEIVED",
-              "명령 수신"
-            ],
-            [
-              2,
-              "BUSY",
-              "처리 중"
-            ],
-            [
-              3,
-              "COMPLETE",
-              "정상 완료"
-            ],
-            [
-              4,
-              "REJECTED",
-              "조건 불충족으로 명령 거부"
-            ],
-            [
-              5,
-              "ERROR",
-              "처리 중 오류"
-            ]
-          ]
-        },
-        {
-          "title": "COMMAND_RESULT",
-          "headers": [
-            "값",
-            "이름",
-            "설명"
-          ],
-          "rows": [
-            [
-              0,
-              "OK",
-              "정상"
-            ],
-            [
-              1,
-              "INVALID_COMMAND",
-              "잘못된 Command Code"
-            ],
-            [
-              2,
-              "RECIPE_NOT_FOUND",
-              "Recipe 없음"
-            ],
-            [
-              3,
-              "POINT_NOT_FOUND",
-              "Point 없음"
-            ],
-            [
-              4,
-              "SYSTEM_NOT_READY",
-              "System Ready 아님"
-            ],
-            [
-              5,
-              "HOMING_REQUIRED",
-              "Homing 필요"
-            ],
-            [
-              6,
-              "FAULT_ACTIVE",
-              "Fault 상태"
-            ],
-            [
-              7,
-              "FORCE_STOP_ACTIVE",
-              "강제중단 상태"
-            ],
-            [
-              8,
-              "TRACKING_UNAVAILABLE",
-              "Tracking 사용 불가"
-            ],
-            [
-              9,
-              "MOTION_TIMEOUT",
-              "Pan/Tilt 이동 Timeout"
-            ],
-            [
-              10,
-              "CONFIG_OR_CAL_ERROR",
-              "설정/Calibration 오류"
-            ],
-            [
-              11,
-              "COMMAND_BUSY",
-              "다른 명령 처리 중"
-            ],
-            [
-              12,
-              "INTERNAL_ERROR",
-              "Controller 내부 오류"
-            ]
-          ]
-        },
-        {
-          "title": "DEVICE_FAULT/WARNING_SUMMARY Bit",
-          "headers": [
-            "Bit",
-            "장치",
-            "설명"
-          ],
-          "rows": [
-            [
-              "0",
-              "Controller",
-              "Controller 자체"
-            ],
-            [
-              "1",
-              "PLC Communication",
-              "PLC/XGT 통신"
-            ],
-            [
-              "2",
-              "Vision Common",
-              "Vision 공통 (Camera 1)"
-            ],
-            [
-              "3",
-              "Camera 1",
-              "Camera 1"
-            ],
-            [
-              "4",
-              "Reserved",
-              "Camera 2~4 미사용"
-            ],
-            [
-              "5",
-              "Reserved",
-              "Camera 2~4 미사용"
-            ],
-            [
-              "6",
-              "Reserved",
-              "Camera 2~4 미사용"
-            ],
-            [
-              "7",
-              "Tracker",
-              "Nutrunner Tracker"
-            ],
-            [
-              "8",
-              "Pan Motor",
-              "Pan 축"
-            ],
-            [
-              "9",
-              "Tilt Motor",
-              "Tilt 축"
-            ],
-            [
-              "A",
-              "Laser",
-              "Laser"
-            ],
-            [
-              "B",
-              "Recipe",
-              "Recipe/Point Data"
-            ],
-            [
-              "C",
-              "Calibration",
-              "Calibration"
-            ],
-            [
-              "D~F",
-              "Reserved",
-              "향후 확장"
-            ]
-          ]
-        },
-        {
-          "title": "대표 Fault Code 범위",
-          "headers": [
-            "범위",
-            "장치/범주",
-            "예시"
-          ],
-          "rows": [
-            [
-              "1000~1099",
-              "Controller",
-              "1001 Main Task Fault"
-            ],
-            [
-              "1100~1199",
-              "PLC Communication",
-              "1101 PLC Disconnected"
-            ],
-            [
-              "2000~2099",
-              "Vision Common",
-              "2001 Camera 1 Unavailable"
-            ],
-            [
-              "2100~2199",
-              "Camera 1",
-              "2101 Camera 1 Disconnected"
-            ],
-            [
-              "2200~2299",
-              "Reserved",
-              "미사용"
-            ],
-            [
-              "2300~2399",
-              "Reserved",
-              "미사용"
-            ],
-            [
-              "2400~2499",
-              "Reserved",
-              "미사용"
-            ],
-            [
-              "3000~3099",
-              "Tracker",
-              "3001 Tracker Lost"
-            ],
-            [
-              "4000~4099",
-              "PTM (Pan/Tilt 공통)",
-              "4001 PTM Communication Fault"
-            ],
-            [
-              "4100~4199",
-              "Reserved",
-              "4101 미사용; PTM 공통 4001 사용"
-            ],
-            [
-              "5000~5099",
-              "Laser",
-              "5001 Laser Communication Fault"
-            ],
-            [
-              "6000~6099",
-              "Recipe",
-              "6001 Recipe Not Found"
-            ],
-            [
-              "6100~6199",
-              "Calibration",
-              "6101 Camera Calibration Missing"
-            ]
-          ]
-        }
       ]
     }
   ]

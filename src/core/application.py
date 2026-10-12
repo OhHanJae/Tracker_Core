@@ -76,10 +76,6 @@ class CoreApplication:
         self.alarms = AlarmBook()
         self.command = CommandRuntime()
         self._command_seen = False
-        self._admin_seen = False
-        self._admin_ack_seq = 0
-        self._admin_status = CommandStatus.IDLE
-        self._admin_result = CommandResult.OK
         self.plc_input = PlcInput()
         self.vision_snapshot = VisionSnapshot()
         self.output = PlcOutput(alarms=self.alarms, command=self.command)
@@ -710,7 +706,7 @@ class CoreApplication:
 
     def _apply_ptm_alarms(self) -> None:
         if not self.ptm_service.state.enabled:
-            self.alarms.clear_device(DeviceSummaryBit.PAN_MOTOR)
+            self.alarms.clear_device(DeviceSummaryBit.PAN_TILT_MOTOR)
             self.alarms.clear_device(DeviceSummaryBit.TILT_MOTOR)
             return
 
@@ -722,16 +718,10 @@ class CoreApplication:
             fault |= 1 << 1
         if (state.ok_count or state.error_count) and (not state.online or status.get("connected") is False):
             fault |= 1 << 0
-        self.alarms.set_warning_word(DeviceSummaryBit.PAN_MOTOR, warning)
-        self.alarms.set_warning_word(DeviceSummaryBit.TILT_MOTOR, warning)
+        self.alarms.set_warning_word(DeviceSummaryBit.PAN_TILT_MOTOR, warning)
         self.alarms.set_fault_word(
-            DeviceSummaryBit.PAN_MOTOR,
+            DeviceSummaryBit.PAN_TILT_MOTOR,
             fault,
-            self.settings.runtime.fault_latch_enabled,
-        )
-        self.alarms.set_fault_word(
-            DeviceSummaryBit.TILT_MOTOR,
-            fault & ~(1 << 0),
             self.settings.runtime.fault_latch_enabled,
         )
 
@@ -879,7 +869,7 @@ class CoreApplication:
                 success = False
                 LOGGER.error("motor stop failed during safe stop: %s", exc)
                 self.alarms.set_fault_word(
-                    DeviceSummaryBit.PAN_MOTOR,
+                    DeviceSummaryBit.PAN_TILT_MOTOR,
                     1 << 0,
                     self.settings.runtime.fault_latch_enabled,
                 )
@@ -907,13 +897,6 @@ class CoreApplication:
         return success
 
     async def _handle_plc_command(self) -> None:
-        if self.plc_input.admin_command and (
-            not self._admin_seen or self.plc_input.admin_seq != self._admin_ack_seq
-        ):
-            self._admin_seen = True
-            self._admin_ack_seq = self.plc_input.admin_seq
-            self._admin_status = CommandStatus.REJECTED
-            self._admin_result = CommandResult.INVALID_COMMAND
         self._progress_motion_command(now_ms())
         if self._pending_request is not None:
             code, seq, expected, params = self._pending_request
@@ -964,6 +947,7 @@ class CoreApplication:
             if (
                 not self.ptm_service.state.online
                 or not self.ptm_service.state.status.get("connected")
+                or not self.ptm_service.state.status.get("ready", True)
             ):
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.SYSTEM_NOT_READY
@@ -1041,7 +1025,7 @@ class CoreApplication:
                 else:
                     self.command.result = CommandResult.INTERNAL_ERROR
                     self.alarms.set_fault_word(
-                        DeviceSummaryBit.PAN_MOTOR, 1 << 0,
+                        DeviceSummaryBit.PAN_TILT_MOTOR, 1 << 0,
                         self.settings.runtime.fault_latch_enabled,
                     )
 
@@ -1097,11 +1081,10 @@ class CoreApplication:
             self._safe_stop_applied = False
 
     def _set_motion_fault(self, bit_index: int) -> None:
-        for device in (DeviceSummaryBit.PAN_MOTOR, DeviceSummaryBit.TILT_MOTOR):
-            self.alarms.set_fault_word(
-                device, 1 << bit_index,
-                self.settings.runtime.fault_latch_enabled,
-            )
+        self.alarms.set_fault_word(
+            DeviceSummaryBit.PAN_TILT_MOTOR, 1 << bit_index,
+            self.settings.runtime.fault_latch_enabled,
+        )
 
     def _resolve_params(self, params: dict[str, Any]) -> dict[str, Any]:
         resolved: dict[str, Any] = {}
@@ -1156,10 +1139,12 @@ class CoreApplication:
             and self.vision_snapshot.tilt_error_deg is not None
             and math.isfinite(self.vision_snapshot.pan_error_deg)
             and math.isfinite(self.vision_snapshot.tilt_error_deg)
-            and pan_error_x100 <= laser_tolerance
-            and tilt_error_x100 <= laser_tolerance
+            and abs(self.vision_snapshot.pan_error_deg) <= laser_tolerance / 100
+            and abs(self.vision_snapshot.tilt_error_deg) <= laser_tolerance / 100
             and self.ptm_service.state.online
             and bool(ptm_status.get("connected", True))
+            and bool(ptm_status.get("ready", True))
+            and bool(ptm_status.get("in_position", True))
             and not ptm_status.get("moving", False)
             and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
         )
@@ -1171,6 +1156,7 @@ class CoreApplication:
             self.ptm_service.state.enabled
             and self.ptm_service.state.online
             and bool(ptm_status.get("connected"))
+            and bool(ptm_status.get("ready", True))
         )
         system_ready = (
             self.plc_input.run_enable and not self.plc_input.force_stop
@@ -1208,7 +1194,7 @@ class CoreApplication:
                 controller_online=True,
                 system_ready=system_ready,
                 tracking_active=self.vision_snapshot.tracking_active,
-                homing=controller_state == ControllerState.HOMING,
+                homing=controller_state == ControllerState.HOMING or bool(ptm_status.get("homing")),
                 motion_moving=bool(ptm_status.get("moving") and ptm_status.get("connected", True)),
                 laser_on=bool(laser_status.get("on", ptm_status.get("laser_on", False))),
                 homed=bool(ptm_status.get("homed")),
@@ -1239,9 +1225,6 @@ class CoreApplication:
                 valid=self.vision_snapshot.camera_valid_mask,
             ),
             alarms=self.alarms,
-            admin_status=int(self._admin_status),
-            admin_result=int(self._admin_result),
-            admin_ack_seq=self._admin_ack_seq,
             latch_faults=self.settings.runtime.fault_latch_enabled,
         )
 

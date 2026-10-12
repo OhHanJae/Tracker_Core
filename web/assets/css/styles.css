@@ -237,7 +237,7 @@ tr:hover td { background:#fbfcfd; }
 .map-table-wrap { max-height:640px; overflow:auto; }
 .map-table { min-width:960px; }
 .map-table th { position:sticky; top:0; z-index:2; box-shadow:0 1px 0 var(--line); }
-.map-table td { font-size:11px; line-height:1.45; }
+.map-table td { font-size:11px; line-height:1.45; white-space:pre-line; }
 .map-table .mono-cell { color:#245d9d; font-weight:700; white-space:nowrap; }
 .map-table.compact { min-width:520px; }
 .map-table.compact td { padding:9px 11px; }

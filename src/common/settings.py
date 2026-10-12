@@ -133,7 +133,7 @@ class RuntimeSettings:
     plc_heartbeat_fault_ms: int = 3000
     position_stable_ms: int = 300
     tracking_tolerance_default_mm_x100: int = 100
-    laser_tolerance_default_deg_x100: int = 50
+    laser_tolerance_default_deg_x100: int = 5
     command_timeout_s: float = 10.0
     fault_latch_enabled: bool = True
 
