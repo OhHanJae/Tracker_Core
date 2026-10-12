@@ -19,9 +19,23 @@ class PtmService(DeviceService):
         )
         self.settings = settings
         self.client = client
+        self._poll_motion_id: str | None = None
 
     async def read_status(self) -> dict[str, Any]:
-        data = await self.client.status()
+        try:
+            data = await self.client.status()
+        except Exception:
+            self.state.poll_interval_ms = 200
+            raise
+        motion = _dict(data.get("motion"))
+        if self._poll_motion_id is not None and self._poll_motion_id in (
+            motion.get("completed_id"), motion.get("failed_id")
+        ):
+            self._poll_motion_id = None
+        self.state.poll_interval_ms = (
+            50 if self._poll_motion_id is not None
+            or str(motion.get("state") or "").lower() == "tracking" else 200
+        )
         return normalize_ptm_status(data)
 
     async def command(self, command: str, params: dict[str, Any] | None = None) -> Any:
@@ -29,14 +43,23 @@ class PtmService(DeviceService):
         if command in {"ptm.status", "motor.status", self.settings.status_command}:
             return self.snapshot()
         if command == "point.goto":
-            return await self.client.point_goto(
+            response = await self.client.point_goto(
                 int(params.get("recipe_id", 0)),
                 int(params.get("point_id", 0)),
             )
-        if command == "motion.stop":
+        elif command == "motion.stop":
             await self.client.stop()
+            self._poll_motion_id = None
+            self.state.poll_interval_ms = 200
             return {"accepted": True}
-        return await self.client.request(command, params)
+        else:
+            response = await self.client.request(command, params)
+        if command in {"point.goto", "home.start"} and isinstance(response, dict):
+            motion_id = response.get("motion_id")
+            if motion_id:
+                self._poll_motion_id = motion_id
+                self.state.poll_interval_ms = 50
+        return response
 
 
 def normalize_ptm_status(data: dict[str, Any]) -> dict[str, Any]:
