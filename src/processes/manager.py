@@ -72,6 +72,8 @@ class ProcessManager:
         self._manually_stopped: set[str] = set()
         self._manage_persisted_processes = manage_persisted_processes
         self._communication_state: dict[str, dict[str, Any]] = {}
+        self._communication_probes: dict[str, tuple[tuple[Any, ...], asyncio.Task[dict[str, Any]]]] = {}
+        self._active_probe_tasks: set[asyncio.Task[dict[str, Any]]] = set()
         self._ping_sequences: dict[str, int] = {}
         self._shutting_down = False
         self._windows_job: int | None = None
@@ -675,6 +677,13 @@ class ProcessManager:
                 await self._watchdog_task
             self._watchdog_task = None
 
+        probes = list(self._active_probe_tasks)
+        for task in probes:
+            task.cancel()
+        if probes:
+            await asyncio.gather(*probes, return_exceptions=True)
+        self._communication_probes.clear()
+
         results = await self.stop_all()
         self._close_windows_job()
         return results
@@ -1016,7 +1025,31 @@ class ProcessManager:
         process_name: str,
         config: dict[str, Any],
     ) -> dict[str, Any]:
-        endpoint = self._communication_configs.get(process_name, {})
+        endpoint = dict(self._communication_configs.get(process_name, {}))
+        key = (endpoint, config.get("health_host"), config.get("health_port"))
+        previous = self._communication_probes.get(process_name)
+        if previous is not None and previous[0] == key and not previous[1].done():
+            task = previous[1]
+        else:
+            task = asyncio.create_task(self._run_communication_probe(process_name, dict(config), endpoint))
+            self._communication_probes[process_name] = (key, task)
+            self._active_probe_tasks.add(task)
+
+            def finished(completed: asyncio.Task[dict[str, Any]]) -> None:
+                self._active_probe_tasks.discard(completed)
+                if not completed.cancelled():
+                    completed.exception()
+                current = self._communication_probes.get(process_name)
+                if current is not None and current[1] is completed:
+                    self._communication_probes.pop(process_name, None)
+
+            task.add_done_callback(finished)
+        # A disconnected HTTP caller must not cancel another caller's health check.
+        return await asyncio.shield(task)
+
+    async def _run_communication_probe(
+        self, process_name: str, config: dict[str, Any], endpoint: dict[str, Any],
+    ) -> dict[str, Any]:
         host = client_connect_host(
             str(endpoint.get("host") or config.get("health_host") or "127.0.0.1")
         )
