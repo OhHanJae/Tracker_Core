@@ -92,6 +92,10 @@ button { cursor: pointer; }
 .section-gap { margin-top:16px; }
 .table-wrap { overflow:auto; }
 table { width:100%; border-collapse:collapse; }
+.dashboard-table-card { min-width:0; }
+.dashboard-table { min-width:560px; table-layout:fixed; }
+.dashboard-table td { overflow-wrap:anywhere; }
+.dashboard-table .badge { max-width:100%; box-sizing:border-box; }
 th { background:#f7f9fb; color:#6d7986; font-size:11px; line-height:1.35; text-transform:none; letter-spacing:.3px; text-align:left; padding:11px 12px; border-bottom:1px solid var(--line); white-space:nowrap; }
 td { padding:12px; border-bottom:1px solid #edf1f4; font-size:13px; line-height:1.4; color:#354150; vertical-align:middle; }
 tr:last-child td { border-bottom:0; }

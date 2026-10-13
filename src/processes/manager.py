@@ -1032,7 +1032,8 @@ class ProcessManager:
         previous = self._communication_state.get(process_name, {})
         self._communication_state[process_name] = {
             **previous,
-            "online": False,
+            # Keep the last completed result while the next ping is in flight.
+            "online": bool(previous.get("online", False)),
             "request_id": request_id,
             "sequence": sequence,
             "last_ping_ms": started,

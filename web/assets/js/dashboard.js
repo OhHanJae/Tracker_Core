@@ -60,9 +60,10 @@ export function renderDashboard() {
       ${topStatuses.map(([name, status, meta]) => `<div class="card status-card"><div class="kicker">${esc(name)}</div><strong>${statusBadge(status)}</strong><small>${esc(meta)}</small></div>`).join('')}
     </div>
     <div class="grid two section-gap">
-      <div class="card">
+      <div class="card dashboard-table-card">
         <div class="card-head"><h3>Process Health</h3><small>OS process identity · 1s refresh</small></div>
-        <div class="table-wrap"><table>
+        <div class="table-wrap"><table class="dashboard-table">
+          <colgroup><col style="width:10%"><col style="width:27%"><col style="width:18%"><col style="width:27%"><col style="width:18%"></colgroup>
           <thead><tr><th>Order</th><th>Process</th><th>Status</th><th>Detail</th><th>Watchdog</th></tr></thead>
           <tbody>${managedModules.map((module, index) => {
             const proc = processForModule(module);
@@ -82,9 +83,10 @@ export function renderDashboard() {
       </div>
     </div>
     <div class="grid two section-gap">
-      <div class="card">
+      <div class="card dashboard-table-card">
         <div class="card-head"><h3>TCP Communication</h3><small>Core command channel · Application Ping/Pong</small></div>
-        <div class="table-wrap"><table>
+        <div class="table-wrap"><table class="dashboard-table">
+          <colgroup><col style="width:25%"><col style="width:27%"><col style="width:16%"><col style="width:18%"><col style="width:14%"></colgroup>
           <thead><tr><th>Service</th><th>Endpoint</th><th>Latency</th><th>Status</th><th>Failures</th></tr></thead>
           <tbody>${managedModules.map(module => {
             const proc = processForModule(module);
@@ -94,9 +96,10 @@ export function renderDashboard() {
           }).join('')}</tbody>
         </table></div>
       </div>
-      <div class="card">
+      <div class="card dashboard-table-card">
         <div class="card-head"><h3>HTTP Communication</h3><small>Setup / Calibration Web UI</small></div>
-        <div class="table-wrap"><table>
+        <div class="table-wrap"><table class="dashboard-table">
+          <colgroup><col style="width:22%"><col style="width:32%"><col style="width:18%"><col style="width:28%"></colgroup>
           <thead><tr><th>Service</th><th>Endpoint</th><th>Status</th><th>Detail</th></tr></thead>
           <tbody>${[
             ['PLC Web', state.httpCommunication?.plc],
