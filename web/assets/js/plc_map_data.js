@@ -1,5 +1,5 @@
 window.TRACK_EYE_PLC_MAP = {
-  "sourceFile": "트래커 PLC 통신 맵 v4.2.xlsx",
+  "sourceFile": "트래커 PLC 통신 맵 v4.2 Core 반영.xlsx",
   "sourceTitle": "Tracker Project PLC to Controller Communication Map v4.2",
   "note": "웹에서는 PLC 기준 주소를 적용하여 Dnnn 형식으로 표시합니다.",
   "sheets": [
@@ -353,7 +353,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "COMMAND_CODE",
           "일회성 명령 코드",
-          "0 = NONE (명령 없음)\n1 = TARGET_APPLY_MOVE (REQ_RECIPE_ID/REQ_POINT_ID 적용 후 Pan/Tilt 목표 이동)\n2 = HOME (Pan/Tilt 원점복귀)\n3 = ERROR_RESET (해제 가능한 Latch Fault Reset)\n4 = CONTROLLER_RESTART (PLC 명령은 거부, Process Manager 사용)\n5 = NUTRUNNER_DATA_REQUEST (Vision 체결 데이터 요청)\n6~65535 = Reserved\nPTM 바이패스: 1/2 COMPLETE/OK. Vision 바이패스: 5 COMPLETE/OK (측정값 없음)",
+          "0 = NONE (명령 없음)\n1 = TARGET_APPLY_MOVE (REQ_RECIPE_ID/REQ_POINT_ID 적용 후 Pan/Tilt 목표 이동)\n2 = HOME (Pan/Tilt 원점복귀)\n3 = ERROR_RESET (해제 가능한 Latch Fault Reset)\n4 = CONTROLLER_RESTART (안전 정지 확인 후 Main Core 재시작; 관리 웹 유지)\n5 = NUTRUNNER_DATA_REQUEST (Vision 체결 데이터 요청)\n6~65535 = Reserved\nPTM 바이패스: 1/2 COMPLETE/OK. Vision 바이패스: 5 COMPLETE/OK (측정값 없음)\n4는 RUN_ENABLE/FORCE_STOP/Fault와 무관하게 복구 요청 가능. 안전 정지 실패는 ERROR/INTERNAL_ERROR\n4 수신 RECEIVED/BUSY; 재시작 후 COMPLETE/OK 및 원 COMMAND_SEQ 유지. 같은 SEQ 재실행 금지",
           "UINT16",
           "Command",
           "자동",
@@ -843,7 +843,7 @@ window.TRACK_EYE_PLC_MAP = {
           "1",
           "SYSTEM_READY",
           "정상 운전 가능 상태",
-          "바이패스하지 않은 필수 장치 준비 AND Fault 없음\nPTM/Vision 바이패스는 해당 준비 검사만 제외",
+          "바이패스하지 않은 필수 장치 준비 AND Fault 없음\nPTM/Vision 바이패스는 해당 준비 검사만 제외. Core 재시작 대기는 0",
           "BOOL",
           "Level",
           "전체",
@@ -855,7 +855,7 @@ window.TRACK_EYE_PLC_MAP = {
           "2",
           "TRACKING_ACTIVE",
           "Tracking 실제 실행 중",
-          "일반 운전은 실제 상태\nVision 바이패스 시 공정 허용 + TRACKING_ENABLE이면 논리 1",
+          "일반 운전은 활성 Vision의 실제 상태; 프로세스 비활성 또는 재시작 대기는 0\nVision 바이패스 시 공정 허용 + TRACKING_ENABLE이면 논리 1",
           "BOOL",
           "Level",
           "자동",
@@ -963,7 +963,7 @@ window.TRACK_EYE_PLC_MAP = {
           "B",
           "STOP_ACTIVE",
           "Controller 동작정지 상태",
-          "",
+          "FORCE_STOP 또는 RUN_ENABLE=0 또는 Main Core 재시작 대기",
           "BOOL",
           "Level",
           "전체",
@@ -1227,7 +1227,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "TRACKING_STATE",
           "Tracking 상태",
-          "0 = OFF (Tracking 비활성)\n1 = INITIALIZING (Tracking 초기화)\n2 = SEARCHING (Marker/Tracker 탐색)\n3 = TRACKING (정상 Tracking)\n4 = DEGRADED (성능 저하)\n5 = LOST (Tracker 유실)\n6 = FAULT (Tracking 처리 Fault)\nVision 바이패스 + 공정 허용 + TRACKING_ENABLE이면 논리 3",
+          "0 = OFF (Tracking 비활성 또는 Vision 프로세스 비활성/재시작 대기)\n1 = INITIALIZING (Tracking 초기화)\n2 = SEARCHING (Marker/Tracker 탐색)\n3 = TRACKING (정상 Tracking)\n4 = DEGRADED (성능 저하)\n5 = LOST (Tracker 유실)\n6 = FAULT (Tracking 처리 Fault)\nVision 바이패스 + 공정 허용 + TRACKING_ENABLE이면 논리 3",
           "ENUM",
           "State",
           "전체",
@@ -1335,7 +1335,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "LAST_COMMAND_CODE",
           "마지막 수신/처리 명령 코드",
-          "0 = NONE (명령 없음)\n1 = TARGET_APPLY_MOVE (REQ_RECIPE_ID/REQ_POINT_ID 적용 후 Pan/Tilt 목표 이동)\n2 = HOME (Pan/Tilt 원점복귀)\n3 = ERROR_RESET (해제 가능한 Latch Fault Reset)\n4 = CONTROLLER_RESTART (PLC 명령은 거부, Process Manager 사용)\n5 = NUTRUNNER_DATA_REQUEST (Vision 체결 데이터 요청)\n6~65535 = Reserved",
+          "0 = NONE (명령 없음)\n1 = TARGET_APPLY_MOVE (REQ_RECIPE_ID/REQ_POINT_ID 적용 후 Pan/Tilt 목표 이동)\n2 = HOME (Pan/Tilt 원점복귀)\n3 = ERROR_RESET (해제 가능한 Latch Fault Reset)\n4 = CONTROLLER_RESTART (안전 정지 확인 후 Main Core 재시작; 관리 웹 유지)\n5 = NUTRUNNER_DATA_REQUEST (Vision 체결 데이터 요청)\n6~65535 = Reserved\nPTM 바이패스: 1/2 COMPLETE/OK. Vision 바이패스: 5 COMPLETE/OK (측정값 없음)\n4는 RUN_ENABLE/FORCE_STOP/Fault와 무관하게 복구 요청 가능. 안전 정지 실패는 ERROR/INTERNAL_ERROR\n4 수신 RECEIVED/BUSY; 재시작 후 COMPLETE/OK 및 원 COMMAND_SEQ 유지. 같은 SEQ 재실행 금지",
           "UINT16",
           "Response",
           "자동",
@@ -1623,7 +1623,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "PRIMARY_FAULT_CODE",
           "현재 가장 우선순위 높은 Fault Code",
-          "0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Camera 1 Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Reserved (Camera 2~4 미사용)\n2300~2399 = Reserved (Camera 2~4 미사용)\n2400~2499 = Reserved (Camera 2~4 미사용)\n3000~3099 = Tracker (3001 Tracker Lost)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Laser (5001 Laser Communication Fault)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)\n바이패스 장치 코드 제외. 내부 고장 기록은 보존",
+          "0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Camera 1 Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Reserved (Camera 2~4 미사용)\n2300~2399 = Reserved (Camera 2~4 미사용)\n2400~2499 = Reserved (Camera 2~4 미사용)\n3000~3099 = Tracker (3001 Tracker Fault; 미검출은 Warning 3000)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Laser (5001 Laser Communication Fault)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)\n바이패스 장치 코드 제외. 내부 고장 기록은 보존",
           "UINT16",
           "Code",
           "전체",
@@ -1647,7 +1647,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "LAST_FAULT_CODE",
           "마지막 발생 Fault Code",
-          "마지막 Fault 이력\n0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Camera 1 Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Reserved (Camera 2~4 미사용)\n2300~2399 = Reserved (Camera 2~4 미사용)\n2400~2499 = Reserved (Camera 2~4 미사용)\n3000~3099 = Tracker (3001 Tracker Lost)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Laser (5001 Laser Communication Fault)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)\n바이패스 장치의 마지막 고장 코드는 0 출력. 내부 이력은 보존",
+          "마지막 Fault 이력\n0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Camera 1 Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Reserved (Camera 2~4 미사용)\n2300~2399 = Reserved (Camera 2~4 미사용)\n2400~2499 = Reserved (Camera 2~4 미사용)\n3000~3099 = Tracker (3001 Tracker Fault; 미검출은 Warning 3000)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Laser (5001 Laser Communication Fault)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)\n바이패스 장치의 마지막 고장 코드는 0 출력. 내부 이력은 보존",
           "UINT16",
           "Code",
           "전체",
@@ -1851,7 +1851,7 @@ window.TRACK_EYE_PLC_MAP = {
           "0~2",
           "BYPASS_STATUS",
           "실제 적용된 바이패스 상태",
-          "bit0 = PTM_BYPASS_ACTIVE\nbit1 = VISION_BYPASS_ACTIVE\nbit2 = LASER_BYPASS_ACTIVE\nbit3~F = Reserved (0)\nPLC 요청 OR 웹 설정의 실제 Core 공정 우회 상태\nPTM 바이패스 시 bit2 자동 1. 모터·레이저 실행 없음\n해당 장치 대표/요약/상세/개수/D+23 오류·경고 제외\n미바이패스 장치 조건, RUN_ENABLE, FORCE_STOP, PLC/Controller 고장 유지",
+          "bit0 = PTM_BYPASS_ACTIVE\nbit1 = VISION_BYPASS_ACTIVE\nbit2 = LASER_BYPASS_ACTIVE\nbit3~F = Reserved (0)\nPLC 요청 OR Core 웹 설정 OR Vision 앱 바이패스의 실제 Core 공정 우회 상태\nPTM 바이패스 시 bit2 자동 1. 모터·레이저 실행 없음\n해당 장치 대표/요약/상세/개수/D+23 오류·경고 제외\n미바이패스 장치 조건, RUN_ENABLE, FORCE_STOP, PLC/Controller 고장 유지",
           "BITMAP",
           "Level",
           "전체",
@@ -2441,9 +2441,9 @@ window.TRACK_EYE_PLC_MAP = {
           "0",
           "CAMERA_DISCONNECTED",
           "Fault",
-          "Latch/Auto 선택",
+          "Auto",
           "예",
-          "Camera 연결 끊김"
+          "Camera 1 미연결. 연결 복구 시 자동 해제"
         ],
         [
           "Camera 1",
@@ -2586,7 +2586,7 @@ window.TRACK_EYE_PLC_MAP = {
           "Fault",
           "Auto/Latch",
           "예",
-          "Camera 1 영상 사용 불가"
+          "Camera 1 미연결 또는 영상 사용 불가. 정상 복구 시 자동 해제"
         ],
         [
           "Vision Common",
@@ -2641,7 +2641,7 @@ window.TRACK_EYE_PLC_MAP = {
           "Fault",
           "Auto/Latch",
           "예",
-          "Vision 결과 생성 Timeout"
+          "Tracking 요청 또는 실행 중 Tracker 검출 + Camera 1 정상에서 결과 미생성/만료 Timeout. 미검출·상태 미보고 시 결과 Timeout 제외. TCP 상태 응답 실패/만료도 이 Bit 사용"
         ],
         [
           "Tracker",
@@ -2696,7 +2696,7 @@ window.TRACK_EYE_PLC_MAP = {
           "Warning",
           "Auto",
           "아니오",
-          "순간 Marker 유실"
+          "Tracker/Marker 미검출 또는 검출 상태 미보고. 경고만 발생; D+61.0은 항상 0"
         ],
         [
           "Tracker",
@@ -2714,11 +2714,11 @@ window.TRACK_EYE_PLC_MAP = {
           "Fault",
           "D+61",
           "0",
-          "TRACKER_LOST",
-          "Fault",
-          "Auto/Latch",
-          "예",
-          "설정 시간 이상 Tracker 유실"
+          "Reserved",
+          "Reserved",
+          "Auto",
+          "아니오",
+          "Tracker 미검출은 D+60.4 Warning으로 표시; 이 Bit는 항상 0"
         ],
         [
           "Tracker",

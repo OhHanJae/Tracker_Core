@@ -32,6 +32,9 @@ class VisionSnapshot:
     tracker_warning_word: int = 0
     tracker_fault_word: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
+    tracker_present: bool | None = None
+    result_ready: bool | None = None
+    result_age_seconds: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -41,6 +44,9 @@ class VisionSnapshot:
             "tracking_bypass_reason": self.tracking_bypass_reason,
             "camera_ip": self.camera_ip,
             "tracker_valid": self.tracker_valid,
+            "tracker_present": self.tracker_present,
+            "result_ready": self.result_ready,
+            "result_age_seconds": self.result_age_seconds,
             "degraded": self.degraded,
             "fault": self.fault,
             "position_error_mm": self.position_error_mm,
@@ -210,6 +216,13 @@ def normalize_vision_snapshot(data: dict[str, Any], camera_count: int) -> Vision
         or data.get("tracking_valid")
     )
     tracking_active = bool(data.get("tracking_active") or tracker.get("active"))
+    result_age = data.get("result_age_seconds", tracker.get("result_age_seconds"))
+    try:
+        valid_age = type(result_age) in (int, float) and math.isfinite(result_age) and result_age >= 0
+    except OverflowError:
+        valid_age = False
+    if not valid_age:
+        result_age = None
 
     return VisionSnapshot(
         online=bool(data.get("online", True)),
@@ -219,6 +232,9 @@ def normalize_vision_snapshot(data: dict[str, Any], camera_count: int) -> Vision
                                 if isinstance(data.get("tracking_bypass_reason"), str) else ""),
         camera_ip=camera_ip.strip() or None if isinstance(camera_ip, str) else None,
         tracker_valid=tracker_valid,
+        tracker_present=_first_bool(data, tracker, "tracker_present"),
+        result_ready=_first_bool(data, tracker, "result_ready"),
+        result_age_seconds=result_age,
         degraded=bool(data.get("degraded") or data.get("vision_degraded")),
         fault=bool(data.get("fault") or data.get("vision_fault")),
         position_error_mm=position_error,
@@ -247,6 +263,14 @@ def _int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _first_bool(primary: dict[str, Any], secondary: dict[str, Any], key: str) -> bool | None:
+    for source in (primary, secondary):
+        value = source.get(key)
+        if isinstance(value, bool):
+            return value
+    return None
 
 
 def _first_number(

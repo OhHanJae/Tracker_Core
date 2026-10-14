@@ -1,6 +1,6 @@
 # Vision 연동 점검 및 수정 지침
 
-점검일: 2026-10-09. Core 연동 추가: 2026-10-10. 대상: Windows 11 x64 / RDK X5 3.5 이미지.
+점검일: 2026-10-09. Core 연동 추가: 2026-10-10. 알람·바이패스 계약 보완: 2026-10-14. 대상: Windows 11 x64 / RDK X5 3.5 이미지.
 
 사용자 요청에 따라 Vision 저장소의 코드·설정·런처는 변경하지 않았다. 아래 항목은 실제 소스에서 확인한 제약과 수정 방향이다. 카메라, RDK, PLC 실장비 성능 검증은 이 Windows 작업 공간에서 수행하지 않았다.
 
@@ -15,19 +15,19 @@ Core와 Vision의 통신 계약은 서로 맞는다. Core는 `src/vision/vision_
 - 지원 운전 명령: `vision.status`, `tracking.start`, `tracking.stop`.
 - Core 설정에 있는 `vision.result`는 현재 Vision이 지원하지 않는다. 현 Core 상태 폴링에서는 호출하지 않지만 별도 호출하면 `UNKNOWN_COMMAND`가 정상 응답이다. 불필요한 명령을 추가하기 전에 소비 경로부터 확정한다.
 - 현재 단일 카메라 계약이다. Core도 첫 카메라와 마스크 bit 0만 처리한다. 복수 카메라를 추가하려면 양쪽 명세와 PLC 맵을 함께 검토해야 한다.
-- Core는 추가 상태 필드 `cameras[0].ip`(또는 `camera_ip`), `tracking_bypass`, `tracking_bypass_reason`을 읽도록 준비했다. 현재 Vision 브리지에는 해당 필드가 없으므로 아래 후속 업데이트를 적용해야 표시된다.
+- Core와 현재 Vision 브리지는 `cameras[0].ip`(또는 `camera_ip`), `tracking_bypass`, `tracking_bypass_reason`을 지원한다. 대상 검출과 결과 생성 상태를 구분하는 추가 계약은 6절을 따른다.
 
 TCP 요청 성공, 카메라 연결, 프레임 유효, 검사 결과 유효는 별개다. 웹이 열리거나 `ok=true`라는 이유만으로 운전 준비 완료로 표시하면 안 된다.
 
-### 1.1 카메라 IP 및 추적 바이패스 후속 계약
+### 1.1 카메라 IP 및 추적 바이패스 계약
 
-Vision 코드는 이번에도 수정하지 않았다. 다음 Vision 업데이트에서는 카메라 IP와 추적 바이패스 설정을 **Vision 웹 서비스**에 추가한다. 상세 계약은 `../../1. 계획,설계/Vision_앱_Core_TCP_HTTP_구현_매뉴얼.md`의 8절이다.
+Vision 코드는 이번에도 수정하지 않았다. 현재 Vision 웹과 TCP 브리지의 카메라 IP·추적 바이패스 응답을 사용한다. Core 공정 바이패스 계약은 [Vision 너트러너 데이터 연동 구현 지침서](../../1.%20계획,설계/Vision_너트러너_데이터_연동_구현_지침서.md)의 6절이며, 이번 알람 보완은 아래 6절이다.
 
 카메라 IP는 Vision 서버의 IP와 다르다. Vision 웹에서 실제 카메라 연결 설정을 적용하고, 실제 적용 주소를 `vision.status.cameras[0].ip`에 반환한다. Core는 이를 `camera_ip`로 노출한다. IP가 없는 카메라는 `null`을 반환한다. 재연결·설정 변경 시 이전 검사 결과는 무효화한다.
 
-추적 바이패스는 `tracking_bypass: true/false`, 사유는 `tracking_bypass_reason: string`으로 반환한다. Core는 바이패스 중 추적 시작을 요청하지 않고 실행 중인 추적에 stop을 요청한다. 해제 시 PLC 운전 허가·추적 요청·고장/정지 조건에 따라 다시 시작한다. 바이패스로 결과 유효, 위치 OK, 생산 승인, 모터/레이저 인터록을 우회하지 않는다. 오래된 Vision은 필드를 생략해도 `false`/빈 사유/`null` 기본값으로 호환된다.
+추적 바이패스는 `tracking_bypass: true/false`, 사유는 `tracking_bypass_reason: string`으로 반환한다. Core는 이 값을 PLC 요청·Core 웹 설정과 함께 Vision 실효 바이패스에 반영한다. 바이패스 중 추적 시작을 요청하지 않고 실행 중인 추적에 stop을 요청하며, Vision·Camera·Tracker 알람을 PLC 공정 출력에서 제외한다. Core는 공정의 Vision 준비·위치 검사를 기존 바이패스 규칙으로 통과시키지만, 실제 `tracker_valid`, 카메라 상태와 측정값은 유효하게 위장하지 않는다. 바이패스 해제 감지를 위해 TCP 상태 폴링은 계속한다. 해제 시 PLC 운전 허가·추적 요청·고장/정지 조건에 따라 다시 시작한다. 생산 승인, PLC 통신, Controller 고장, `FORCE_STOP` 및 `RUN_ENABLE` 조건은 별도로 유지한다. 오래된 Vision은 필드를 생략해도 `false`/빈 사유/`null` 기본값으로 호환된다.
 
-Vision이 업데이트되면 Process Manager의 서버 IP/TCP 8768/실제 웹 포트를 저장하고 Vision 통신 및 프로세스를 활성화한다. `get_devices`의 Vision `status`에서 새 값이 보이는지 확인한 뒤 웹에서 바이패스 적용·해제와 실제 추적 정지·복귀를 검증한다.
+Process Manager의 서버 IP/TCP 8768/실제 웹 포트를 저장하고 Vision 통신 및 프로세스를 활성화한다. `get_devices`의 Vision `status`에서 값이 보이는지 확인한 뒤 웹에서 바이패스 적용·해제와 실제 추적 정지·복귀를 검증한다.
 
 ## 2. 우선 수정하거나 확정할 항목
 
@@ -77,7 +77,7 @@ Vision이 업데이트되면 Process Manager의 서버 IP/TCP 8768/실제 웹 �
 
 ### 2.5 이번에 수정한 Core 추적 시작의 자기 차단
 
-기존 Core는 TRACKER bit 0(결과 무효)을 모든 고장과 함께 추적 시작 차단에 사용했다. 정지 중인 정상 Vision은 `tracker_valid=false`이므로 시작하지 못하고, 일시적인 결과 유실 뒤에는 분석을 정지시켜 복구하지 못하는 순환이 있었다. 이번에 `src/core/orchestration.py`에서 이 비트만 Vision 분석 시작 차단에서 제외했다. 같은 TRACKER의 다른 활성/유지 고장, 다른 모든 장치 고장, FORCE_STOP 및 RUN_ENABLE 해제는 계속 추적을 차단한다. 전체 알람은 그대로 유지하므로 모터·레이저 안전정지와 위치 OK/생산 승인 조건은 완화되지 않는다.
+기존 Core는 TRACKER bit 0(결과 무효)을 모든 고장과 함께 추적 시작 차단에 사용했다. 정지 중인 정상 Vision은 `tracker_valid=false`이므로 시작하지 못하고, 일시적인 결과 유실 뒤에는 분석을 정지시켜 복구하지 못하는 순환이 있었다. `src/core/orchestration.py`는 이 비트를 Vision 분석 시작 차단에서 제외한다. 2026-10-14 보완부터 대상 부재·기존 결과 무효는 D+61.0 고장 대신 D+60.4 경고로 처리한다. Tracker의 다른 고장, 바이패스하지 않은 다른 장치 고장, FORCE_STOP 및 RUN_ENABLE 해제는 계속 추적을 차단한다. 위치 OK와 생산 승인에 실제 유효 결과가 필요한 조건은 유지된다.
 
 시작/정지 응답 수락 후 실제 `tracking_active`가 요청 상태와 다르면 최소 1초 간격으로 재시도한다. 이 조치는 2.4의 Vision 재시작 결함을 Core에서 완화하지만 Vision 자체 워커 종료/재시작 처리의 수정 필요성을 없애지는 않는다.
 
@@ -135,3 +135,53 @@ MIPI 경로의 `tools/start_fvp_single_camera.sh`는 `/opt/tros/humble/setup.bas
 - Core 추적 제어 테스트 6개가 Python 3.10/3.12에서 각각 통과했다. 정지 상태 시작, 마커 유실 복구, 실제 상태 불일치 재시도, 다른 고장 및 정지 조건의 차단을 확인했다.
 - 직접 연관된 Vision Python 파일 11개의 메모리 문법 검사 통과. Vision 저장소에 pycache, 로그, 테스트 파일을 만들지 않았다.
 - Windows 11 실제 카메라, RDK X5 ARM64 3.5의 라이브러리 설치/영상 지연/복구 및 PLC 실장비 통합은 현장에서 추가 확인해야 한다.
+
+## 6. 2026-10-14 Vision 앱 후속 수정 지침
+
+이번 작업은 Core 코드와 이 문서만 수정한다. 아래 Vision 파일은 읽기 전용으로 확인했으며, Vision 앱 개발자가 후속 작업에서 적용한다.
+
+### 6.1 대상 검출과 결과 생성 상태 분리
+
+현재 `web/backend/services/core_vision_bridge.py::CoreVisionBridge.snapshot()`은 `tracker_valid`에 검출 품질, 프레임·결과 신선도, 생산 승인까지 묶는다. `nutrunner_live_tracking_service.py::core_snapshot()`에는 결과 나이가 있지만 TCP 응답에는 반환하지 않는다. 따라서 현재 응답만으로는 대상이 안 보이는 상태와 대상은 보이지만 결과가 생성되지 않는 상태를 구분할 수 없다.
+
+기존 JSON Lines 봉투와 필드를 유지하고 `vision.status.result` 최상위에 다음 필드를 추가한다. Core는 `tracker` 객체 내부의 같은 필드도 호환 처리한다.
+
+| 필드 | 형식 | 의미 |
+|---|---|---|
+| `tracker_present` | boolean 또는 `null` | 최신 영상에서 이번 추적 대상이 실제로 보이는지. 정보 없음·오래된 검출은 `null` |
+| `result_ready` | boolean 또는 `null` | 현재 대상의 필요한 계산 결과가 생성됐는지. 생산 승인 여부와 별개 |
+| `result_age_seconds` | 유한한 0 이상 숫자 또는 `null` | 마지막 해당 계산 결과 생성 후 경과 시간. 결과 없음은 `null` |
+
+예를 들어 대상 부재는 `tracker_present=false`, `result_ready=false`, `tracker_valid=false`, 위치값 `null`이다. 대상이 보이지만 계산 중이면 `tracker_present=true`, `result_ready=false`이다. 진단 계산이 완료됐지만 생산 승인 전이면 `result_ready=true`, `production_approved=false`, `tracker_valid=false`가 함께 가능하다. `result_ready`를 `tracker_valid`나 `production_approved`와 동일한 값으로 만들지 않는다.
+
+검출 사실을 `master_good`/`socket_good`에 그대로 연결하지 않는다. 이 값에는 보정·품질 조건도 포함된다. 등록된 대상의 실제 검출 상태를 사용하고, 다른 마커가 보인다는 이유로 대상 존재를 참으로 만들지 않는다. 검출 단계의 상태는 후속 위치 계산이 완료되기 전에도 갱신되어야 한다. `_last_result`의 과거 검출만 재사용하면 계산이 멈춘 상태를 현재 대상 존재로 오판하므로 입력 프레임의 신선도를 확인한다. 카메라 재연결·대상 변경·추적 재시작 시 이전 검출·결과 상태를 무효화한다.
+
+구버전 Vision의 추가 필드 누락은 `null`로 처리한다. Core는 `tracker_valid=true`에서 대상 존재를 추론할 수 있으나, `tracker_valid=false`만으로 대상 부재나 결과 생성 실패를 확정하지 않는다. **현재 Vision 앱을 그대로 사용하면 대상이 보이지만 결과가 생성되지 않는 경우를 정확히 판별하는 기능은 제한된다. 위 필드의 후속 구현이 필요하다.**
+
+### 6.2 PLC 알람 구분
+
+| 상태 | Core의 PLC 처리 |
+|---|---|
+| 추적 요청 또는 실행 중 대상이 안 보임 | D+61.0 Tracker 고장은 사용하지 않고 D+60.4 경고로 처리. 위치 OK는 해제 |
+| 대상 부재 또는 존재 여부 불명 | 결과 생성 지연으로 D+59.5를 생성하지 않으며 Vision이 보낸 해당 비트도 제외 |
+| 추적 요청 또는 실제 추적 중, 필수 카메라 online·valid, 대상 존재 확인 | `result_ready=false`가 `runtime.vision_status_max_age_ms`를 넘겨 지속되거나 `result_age_seconds`가 이 기준을 넘으면 D+59.5 결과 생성 Timeout |
+| 정상 TCP 응답이지만 필수 카메라 미연결 | D+51.0 Camera 1 고장과 D+59.0 Vision 카메라 누락 고장. TCP 상태 Timeout과 구분 |
+| 실제 TCP 조회 실패 또는 수신 상태 만료 | 기존 D+59.5 통신·상태 Timeout 유지 |
+| Vision 실효 바이패스 | Vision·Camera·Tracker의 활성·래치 Warning/Fault를 PLC 출력·대표 코드에서 제외. 실제 장치 상태는 보존 |
+
+D+59.5는 기존 주소를 유지하므로 통신·상태 Timeout과 대상 존재 중 결과 생성 Timeout을 함께 표현한다. 화면/로그에서 원인을 구분하고 주소를 임의로 새로 배정하지 않는다. 정상 응답의 `online=false`만으로 TCP 조회 실패로 취급하지 않는다. 대상이 사라지면 진행 중인 결과 대기 시간을 취소하고, 다시 검출됐을 때 새 대기를 시작한다.
+
+Vision은 대상 부재만으로 `fault=true`, D+61.0 또는 D+59.5를 보내지 않는다. 카메라 미연결은 `cameras[0].online=false`, `valid=false`, 각 마스크 bit 0 해제로 사실을 반환한다. 마스크와 배열은 서로 일치시킨다. 실제 분석 워커 오류·설정 오류는 대상 부재와 구분해 기존 고장 계약으로 보고한다. 카메라 연결 여부를 웹 접속 성공이나 TCP `ok=true`로 대체하지 않는다.
+
+### 6.3 웹 iframe 점검
+
+현재 Vision 앱 소스에서는 `X-Frame-Options` 또는 CSP `frame-ancestors` 제한을 확인하지 못했다. Core는 설정된 웹 URL이 있으면 TCP 상태와 관계없이 iframe을 로드한다. 현장에서도 새 창만 열리고 iframe이 차단된다면 브라우저 콘솔과 Vision HTTP 응답 헤더를 확인한다. 배포 프록시가 `DENY`/`SAMEORIGIN` 또는 제한적인 `frame-ancestors`를 넣는 경우 실제 Core 웹 origin을 허용하도록 Vision 배포 설정을 수정한다. Core가 HTTPS이고 Vision이 HTTP인 경우에는 브라우저의 혼합 콘텐츠 차단을 확인하고 접속 구성을 맞춘다.
+
+### 6.4 후속 검증
+
+1. 추적 요청 또는 실행 중 카메라 정상·대상 부재 상태를 유지한다. D+60.4만 경고로 켜지고 D+61.0 및 결과 생성 D+59.5는 꺼져야 한다.
+2. 대상 존재 상태에서 계산 결과만 중단한다. 정해진 대기 시간 이후 D+59.5가 켜져야 한다. 계산이 복구되거나 대상이 사라지면 자동 해제되어야 한다.
+3. 정상 TCP 응답을 유지한 채 카메라를 분리한다. D+51.0과 D+59.0이 켜지고 결과 생성 Timeout으로 잘못 분류하지 않아야 한다. 재연결 후 현재 상태에 따라 자동 복구해야 한다.
+4. PLC 요청·Core 웹·Vision 웹 각각에서 바이패스를 적용한다. Vision 계열 알람과 대표 오류/경고가 PLC 출력에서 제외되고 실제 측정값을 만들지 않아야 한다. Vision 웹 바이패스 해제를 Core가 계속되는 상태 폴링으로 감지해야 한다.
+5. Vision TCP 서비스를 끊는다. 바이패스가 없으면 기존 통신 Timeout이 발생해야 한다. 별도로 웹 URL이 살아 있으면 Core 사이드바 iframe은 로드되어야 한다.
+6. 실제 카메라·RDK·PLC에서 같은 조건을 검증한다. Core의 테스트 대역 검증은 실제 검출 상태와 영상 처리 지연의 증거를 대신하지 않는다.

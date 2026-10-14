@@ -100,7 +100,7 @@ async function probeFrame(options, forceReload = false, initial = false) {
       urlLabel.href = url || '#';
       urlLabel.dataset.url = url || '';
     }
-    if (!status?.online || !url) {
+    if (!url) {
       showProbeFailure(options, frame, status?.error || 'Web Server가 실행 중인지 확인하세요.');
       return;
     }

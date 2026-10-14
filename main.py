@@ -33,6 +33,10 @@ def parse_args() -> argparse.Namespace:
         help="Run the managed control worker without the management web server",
     )
     parser.add_argument(
+        "--plc-restart-seq", type=int, default=None,
+        help="Restore the completed PLC restart sequence in a restarted managed worker",
+    )
+    parser.add_argument(
         "--config",
         default=str(DEFAULT_CONFIG_PATH),
         help="Path to global core settings JSON",
@@ -53,7 +57,8 @@ async def main_async() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     settings_path = Path(args.config).expanduser()
-    app = CoreApplication(settings_path, managed_worker=True) if args.worker else CoreWebApplication(settings_path)
+    app = (CoreApplication(settings_path, managed_worker=True, plc_restart_seq=args.plc_restart_seq)
+           if args.worker else CoreWebApplication(settings_path))
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(_windows_connection_reset_handler)

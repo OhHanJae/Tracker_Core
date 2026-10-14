@@ -507,7 +507,8 @@ def _dict(value: Any) -> dict[str, Any]:
 
 
 def _is_local_only_command(command: str) -> bool:
-    return command in {"process.start", "process.stop", "process.restart"}
+    return command in {"process.start", "process.stop", "process.restart",
+                       "controller.restart_request", "controller.restart_failed", "RESTART_CONTROLLER"}
 
 
 def _is_loopback_peer(writer: asyncio.StreamWriter) -> bool:

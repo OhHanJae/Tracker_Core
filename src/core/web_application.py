@@ -23,6 +23,7 @@ class CoreWebApplication(CoreApplication):
         self._worker_sample_ms = 0
         self._worker_poll_task: asyncio.Task[None] | None = None
         self._worker_expected_stop = False
+        self._worker_restart_handled: tuple[Any, ...] | None = None
         super().__init__(*args, **kwargs)
         self.history = EventHistory(resolve_app_path(self.settings.paths.logs_dir) / "events.jsonl")
         self.process_manager.set_diagnostic_callback(self._process_diagnostic)
@@ -162,6 +163,9 @@ class CoreWebApplication(CoreApplication):
                 self._worker_sample_ms = now_ms()
                 previous_error = ""
                 previous_level = ""
+                request = response.result.get("runtime", {}).get("restart_request")
+                if isinstance(request, dict) and request.get("ready") is True:
+                    await self._restart_requested_worker(request)
             else:
                 error = str(response.error)
                 self._worker_snapshot = {}
@@ -173,6 +177,33 @@ class CoreWebApplication(CoreApplication):
                     previous_error = error
                     previous_level = level
             await asyncio.sleep(0.3)
+
+    async def _restart_requested_worker(self, request: dict[str, Any]) -> None:
+        requested_ms = request.get("requested_ms")
+        seq = request.get("plc_command_seq")
+        if type(requested_ms) is not int or (seq is not None and (type(seq) is not int or not 0 <= seq <= 65535)):
+            return
+        async with self._settings_lock:
+            name = self.settings.processes["core"]["process_name"]
+            token = (name, requested_ms, seq)
+            if token == self._worker_restart_handled:
+                return
+            self._worker_restart_handled = token
+            launch = self.process_manager.modules.get(name)
+            previous_args = list(launch.get("launch_args", [])) if launch else []
+            try:
+                if launch is None:
+                    raise RuntimeError("Main Core is not configured in Process Manager")
+                if seq is not None:
+                    launch["launch_args"] = [*previous_args, "--plc-restart-seq", str(seq)]
+                await self.process_manager.command("restart", name)
+                self.history.add(name, "INFO", "Main Core restarted on request", event="controller_restart")
+            except Exception as exc:
+                self.history.add(name, "ERROR", str(exc), event="controller_restart")
+                await self._worker_request("controller.restart_failed", {"requested_ms": requested_ms, "message": str(exc)})
+            finally:
+                if launch is not None and self.process_manager.modules.get(name) is launch:
+                    launch["launch_args"] = previous_args
 
     def status_snapshot(self, processes: dict[str, Any] | None = None) -> dict[str, Any]:
         status = super().status_snapshot(processes, include_shared_memory=False)

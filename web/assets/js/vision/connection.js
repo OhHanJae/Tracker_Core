@@ -46,9 +46,9 @@ export function renderVision() {
 export function startVisionRuntime() {
   if (stopStatus) stopStatus();
   const updateFrame = status => {
-    const active = status?.bypass?.vision?.active;
+    const bypass = status?.bypass?.vision;
+    const active = bypass?.source === 'device' ? false : bypass?.active;
     const pendingEnable = document.getElementById('visionBypass');
-    if (active === undefined && !state.coreConfig?.vision?.bypass) return;
     setExternalWebFrameBypassed(frameOptions,
       Boolean((pendingEnable?.disabled && pendingEnable.checked) || active || (active === undefined && state.coreConfig?.vision?.bypass)));
   };

@@ -5,7 +5,7 @@ let bypassRevision = 0;
 export function bypassStatusText(device) {
   const bypass = state.coreStatus?.bypass?.[device];
   if (!bypass) return 'Core 상태 확인 중';
-  const source = bypass.source === 'plc' ? 'PLC' : bypass.source === 'web' ? '웹' : '없음';
+  const source = bypass.source === 'plc' ? 'PLC' : bypass.source === 'web' ? '웹' : bypass.source === 'device' ? 'Vision 앱' : '없음';
   return `실제 적용: ${bypass.active ? '켜짐' : '꺼짐'} · 우선 설정: ${source}`;
 }
 

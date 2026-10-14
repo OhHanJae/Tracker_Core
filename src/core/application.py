@@ -63,7 +63,8 @@ LOGGER = logging.getLogger("tracker_core")
 
 
 class CoreApplication:
-    def __init__(self, settings_path: Path = DEFAULT_CONFIG_PATH, *, managed_worker: bool = False) -> None:
+    def __init__(self, settings_path: Path = DEFAULT_CONFIG_PATH, *, managed_worker: bool = False,
+                 plc_restart_seq: int | None = None) -> None:
         self._managed_worker = managed_worker
         self._suspended_processes: set[str] = set()
         self.settings_path = settings_path
@@ -76,8 +77,19 @@ class CoreApplication:
         self.alarms = AlarmBook()
         self.command = CommandRuntime()
         self._command_seen = False
+        self._controller_restart_request: dict[str, Any] | None = None
+        if plc_restart_seq is not None:
+            if not managed_worker or type(plc_restart_seq) is not int or not 0 <= plc_restart_seq <= 65535:
+                raise ValueError("PLC restart sequence requires a managed worker and a UINT16 value")
+            self.command.last_code = CommandCode.CONTROLLER_RESTART
+            self.command.last_seq = plc_restart_seq
+            self.command.status = CommandStatus.COMPLETE
+            self.command.result = CommandResult.OK
+            self.command.message = "Main Core restarted"
+            self._command_seen = True
         self.plc_input = PlcInput()
         self.vision_snapshot = VisionSnapshot()
+        self._vision_result_missing_since_ms: int | None = None
         self.output = PlcOutput(alarms=self.alarms, command=self.command)
 
         self._server = JsonLineServer(
@@ -264,6 +276,15 @@ class CoreApplication:
             web = bool(settings.bypass)
             result[name] = {"active": plc or web, "source": "plc" if plc else "web" if web else None,
                             "plc": plc, "web": web}
+        vision_state = self.vision_service.state
+        vision_local = bool(
+            vision_state.enabled and vision_state.last_ok_ms and not vision_state.last_error
+            and now_ms() - vision_state.last_ok_ms <= self.settings.runtime.vision_status_max_age_ms
+            and vision_state.status.get("tracking_bypass") is True
+        )
+        result["vision"]["device"] = vision_local
+        if vision_local and not result["vision"]["active"]:
+            result["vision"].update(active=True, source="device")
         laser_local = bool(
             (self.laser_service.state.online and self.laser_service.state.status.get("bypass") is True)
             or (self.settings.laser.mode.lower() == "ptm" and self.ptm_service.state.online
@@ -326,16 +347,17 @@ class CoreApplication:
         for name, service in self.devices.services.items():
             active = bool(bypass["ptm" if name == "laser" else name]["active"])
             previous = self._last_bypass_state.get(name, active)
-            service.state.bypassed = active
-            service.state.bypass_source = bypass[name]["source"] if active else None
+            # An app-side bypass must keep polling so its release is observed.
+            service.state.bypassed = active and not (name == "vision" and bypass[name]["source"] == "device")
             if active:
                 service.state.last_error = ""
-            elif previous:
+            elif previous and service.state.bypass_source != "device":
                 service.state.online = False
                 service.state.last_ok_ms = 0
                 service.state.status = {}
                 if name == "vision":
                     self.vision_service.snapshot_value = VisionSnapshot(online=False)
+            service.state.bypass_source = bypass[name]["source"] if active else None
             self._last_bypass_state[name] = active
             if name == "vision" and active != previous:
                 self.nutrunner_result = None
@@ -852,10 +874,17 @@ class CoreApplication:
         self._apply_laser_alarms()
 
         if self._device_bypassed("vision"):
-            self.vision_snapshot = VisionSnapshot(online=False)
+            self._vision_result_missing_since_ms = None
+            source = self.vision_service.snapshot_value
+            self.vision_snapshot = VisionSnapshot(
+                online=source.online, camera_ip=source.camera_ip,
+                tracking_bypass=source.tracking_bypass,
+                tracking_bypass_reason=source.tracking_bypass_reason,
+            )
             return
         if not self.vision_service.state.enabled:
             self.vision_snapshot = VisionSnapshot(online=False)
+            self._vision_result_missing_since_ms = None
             self._clear_vision_alarms()
             return
 
@@ -863,8 +892,10 @@ class CoreApplication:
         self.vision_snapshot = self.vision_service.snapshot_value
         stale = bool(vision_state.last_ok_ms and now_ms() - vision_state.last_ok_ms >
                      self.settings.runtime.vision_status_max_age_ms)
-        if (vision_state.ok_count or vision_state.error_count) and (not vision_state.online or stale):
+        transport_failed = bool(vision_state.last_error or (not vision_state.online and not vision_state.last_ok_ms))
+        if (vision_state.ok_count or vision_state.error_count) and (transport_failed or stale):
             self.vision_snapshot = VisionSnapshot(online=False)
+            self._vision_result_missing_since_ms = None
             self.alarms.set_fault_word(
                 DeviceSummaryBit.VISION_COMMON,
                 1 << 5,
@@ -941,8 +972,28 @@ class CoreApplication:
             DeviceSummaryBit.VISION_COMMON,
             snapshot.vision_warning_word | (1 << 2 if snapshot.degraded else 0),
         )
-        required_missing = bool(snapshot.camera_required_mask & ~snapshot.camera_valid_mask)
+        required_missing = bool(snapshot.camera_required_mask & ~(snapshot.camera_online_mask & snapshot.camera_valid_mask))
         vision_fault = snapshot.vision_fault_word
+        tracking_requested = self.plc_input.tracking_enable or snapshot.tracking_active
+        tracker_present = snapshot.tracker_present is True or (snapshot.tracker_present is None and snapshot.tracker_valid)
+        result_expected = tracking_requested and tracker_present and not required_missing
+        timestamp_ms = now_ms()
+        result_timeout_ms = self.settings.runtime.vision_status_max_age_ms
+        if not result_expected:
+            self._vision_result_missing_since_ms = None
+            vision_fault &= ~(1 << 5)
+        elif snapshot.result_ready is False:
+            if getattr(self, "_vision_result_missing_since_ms", None) is None:
+                self._vision_result_missing_since_ms = timestamp_ms
+            if timestamp_ms - self._vision_result_missing_since_ms > result_timeout_ms:
+                vision_fault |= 1 << 5
+        else:
+            self._vision_result_missing_since_ms = None
+            if snapshot.result_ready is True:
+                vision_fault &= ~(1 << 5)
+        if result_expected and snapshot.result_age_seconds is not None:
+            if snapshot.result_age_seconds * 1000 > result_timeout_ms:
+                vision_fault |= 1 << 5
         if required_missing:
             vision_fault |= 1 << 0
         if snapshot.fault:
@@ -953,12 +1004,15 @@ class CoreApplication:
             self.settings.runtime.fault_latch_enabled,
         )
 
-        tracker_fault = snapshot.tracker_fault_word
-        if self.plc_input.tracking_enable and not snapshot.tracker_valid:
-            tracker_fault |= 1 << 0
+        tracker_fault = snapshot.tracker_fault_word & ~1
+        tracker_warning = snapshot.tracker_warning_word
+        if (snapshot.tracker_fault_word & 1 or
+                tracking_requested and (snapshot.tracker_present is False or
+                                        snapshot.tracker_present is None and not snapshot.tracker_valid)):
+            tracker_warning |= 1 << 4
         self.alarms.set_warning_word(
             DeviceSummaryBit.TRACKER,
-            snapshot.tracker_warning_word,
+            tracker_warning,
         )
         self.alarms.set_fault_word(
             DeviceSummaryBit.TRACKER,
@@ -970,9 +1024,12 @@ class CoreApplication:
             DeviceSummaryBit.CAMERA_1,
             snapshot.camera_warning_words.get(1, 0),
         )
+        camera_fault = snapshot.camera_fault_words.get(1, 0)
+        if snapshot.camera_required_mask & 1 and not snapshot.camera_online_mask & 1:
+            camera_fault |= 1 << 0
         self.alarms.set_fault_word(
             DeviceSummaryBit.CAMERA_1,
-            snapshot.camera_fault_words.get(1, 0),
+            camera_fault,
             self.settings.runtime.fault_latch_enabled,
         )
         for device in (
@@ -987,6 +1044,7 @@ class CoreApplication:
             self.plc_input.force_stop
             or not self.plc_input.run_enable
             or bool(self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled))
+            or self._controller_restart_pending()
         )
         if not safe_stop_requested:
             self._safe_stop_applied = False
@@ -996,7 +1054,7 @@ class CoreApplication:
         self._active_point_id = 0
         if (
             self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY}
-            and self.command.last_code != CommandCode.ERROR_RESET
+            and self.command.last_code not in {CommandCode.ERROR_RESET, CommandCode.CONTROLLER_RESTART}
             and (self.command.last_code != CommandCode.NUTRUNNER_DATA_REQUEST
                  or self.plc_input.force_stop or not self.plc_input.run_enable)
         ):
@@ -1022,6 +1080,36 @@ class CoreApplication:
             return
         self._safe_stop_retry_ms = now_ms() + 1000
         self._safe_stop_task = asyncio.create_task(self._perform_safe_stop())
+
+    def _controller_restart_pending(self) -> bool:
+        return self._controller_restart_request is not None or (
+            self.command.last_code == CommandCode.CONTROLLER_RESTART
+            and self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY}
+        )
+
+    async def _request_controller_restart(self, plc_command_seq: int | None = None) -> dict[str, Any]:
+        if not self._managed_worker:
+            raise RuntimeError("Main Core restart requires the management server")
+        if plc_command_seq is None and self.command.last_code == CommandCode.CONTROLLER_RESTART and self.command.status in {
+            CommandStatus.RECEIVED, CommandStatus.BUSY,
+        }:
+            plc_command_seq = self.command.last_seq
+        if self._controller_restart_request is not None:
+            return self._controller_restart_request
+        request = {"requested_ms": now_ms(), "plc_command_seq": plc_command_seq, "ready": False}
+        self._controller_restart_request = request
+        try:
+            await self._apply_safe_stop_if_needed()
+            safe = await asyncio.shield(self._safe_stop_task) if self._safe_stop_task is not None else self._safe_stop_applied
+            if not safe:
+                raise RuntimeError("Safe stop could not be confirmed; Main Core restart cancelled")
+            self.orchestrator.cancel_tracking()
+            request["ready"] = True
+            return request
+        except BaseException:
+            if self._controller_restart_request is request:
+                self._controller_restart_request = None
+            raise
 
     def _abort_active_command(self, result: CommandResult) -> None:
         if self._command_task is not None and not self._command_task.done():
@@ -1090,6 +1178,19 @@ class CoreApplication:
     async def _handle_plc_command(self) -> None:
         self._sync_bypass_state()
         self._progress_motion_command(now_ms())
+        restart_expired = bool(self._controller_restart_request and
+                               now_ms() - self._controller_restart_request["requested_ms"] >
+                               self.settings.runtime.command_timeout_s * 1000)
+        if restart_expired or (self.command.last_code == CommandCode.CONTROLLER_RESTART
+                and self.command.status == CommandStatus.BUSY
+                and now_ms() - self.command.busy_since_ms > self.settings.runtime.command_timeout_s * 1000):
+            self._controller_restart_request = None
+            if self.command.last_code == CommandCode.CONTROLLER_RESTART and self.command.status == CommandStatus.BUSY:
+                self._abort_active_command(CommandResult.INTERNAL_ERROR)
+                self.command.message = "Main Core restart request timed out"
+            LOGGER.warning("Main Core restart request timed out")
+        if self._controller_restart_request is not None:
+            return
         if self._pending_request is not None:
             code, seq, expected, params = self._pending_request
             self._pending_request = None
@@ -1119,12 +1220,12 @@ class CoreApplication:
 
         if code not in {
             CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME, CommandCode.ERROR_RESET,
-            CommandCode.NUTRUNNER_DATA_REQUEST,
+            CommandCode.CONTROLLER_RESTART, CommandCode.NUTRUNNER_DATA_REQUEST,
         }:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.INVALID_COMMAND
             return
-        if code != CommandCode.ERROR_RESET:
+        if code not in {CommandCode.ERROR_RESET, CommandCode.CONTROLLER_RESTART}:
             if self.plc_input.force_stop:
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.FORCE_STOP_ACTIVE
@@ -1180,10 +1281,11 @@ class CoreApplication:
             CommandCode.TARGET_APPLY_MOVE: "point.goto",
             CommandCode.HOME: "home.start",
             CommandCode.ERROR_RESET: "alarm.reset",
+            CommandCode.CONTROLLER_RESTART: "controller.restart_request",
         }[CommandCode(code)]
         if (
             entry is None or entry.get("command") != expected
-            or entry.get("target") != ("core" if code == CommandCode.ERROR_RESET else "motor")
+            or entry.get("target") != ("core" if code in {CommandCode.ERROR_RESET, CommandCode.CONTROLLER_RESTART} else "motor")
         ):
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.INVALID_COMMAND
@@ -1232,6 +1334,10 @@ class CoreApplication:
                 self.alarms.reset_latched_faults()
                 self.command.status = CommandStatus.COMPLETE
                 return
+            if code == CommandCode.CONTROLLER_RESTART:
+                await self._request_controller_restart(seq)
+                self.command.message = "Main Core restart requested; awaiting management server"
+                return
             if code == CommandCode.NUTRUNNER_DATA_REQUEST:
                 response = await self.vision_service.request_nutrunner_data(
                     int(params["recipe_id"]), int(params["point_id"]), seq,
@@ -1273,6 +1379,10 @@ class CoreApplication:
                 LOGGER.warning("PLC command %s/%s failed: %s", code, seq, exc)
                 self.command.status = CommandStatus.ERROR
                 self.command.message = str(exc)
+                if code == CommandCode.CONTROLLER_RESTART:
+                    self._controller_restart_request = None
+                    self.command.result = CommandResult.INTERNAL_ERROR
+                    return
                 if code == CommandCode.NUTRUNNER_DATA_REQUEST:
                     self.nutrunner_result = None
                     vision_error = getattr(exc, "code", None)
@@ -1369,7 +1479,8 @@ class CoreApplication:
         ptm_bypassed = bypass["ptm"]["active"]
         vision_bypassed = bypass["vision"]["active"]
         fault_active = self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled) != 0
-        process_permitted = self.plc_input.run_enable and not self.plc_input.force_stop and not fault_active
+        restart_pending = self._controller_restart_pending()
+        process_permitted = self.plc_input.run_enable and not self.plc_input.force_stop and not fault_active and not restart_pending
         tracking_tolerance = self.plc_input.applied_tracking_tolerance(
             self.settings.runtime.tracking_tolerance_default_mm_x100
         )
@@ -1382,9 +1493,11 @@ class CoreApplication:
         pan_error_x100 = _scale_or_zero(self.vision_snapshot.pan_error_deg)
         tilt_error_x100 = _scale_or_zero(self.vision_snapshot.tilt_error_deg)
 
-        position_ok = self.plc_input.tracking_enable and (
+        position_ok = self.plc_input.tracking_enable and not restart_pending and (
             process_permitted if vision_bypassed else (
                 self.vision_snapshot.tracker_valid
+                and self.vision_snapshot.tracker_present is not False
+                and self.vision_snapshot.result_ready is not False
                 and self.vision_snapshot.position_error_mm is not None
                 and math.isfinite(self.vision_snapshot.position_error_mm)
                 and position_error_x100 <= tracking_tolerance
@@ -1437,11 +1550,11 @@ class CoreApplication:
         )
         tracking_active = (
             self.plc_input.tracking_enable and process_permitted if vision_bypassed
-            else self.vision_snapshot.tracking_active
+            else self.vision_service.state.enabled and not restart_pending and self.vision_snapshot.tracking_active
         )
         if fault_active:
             controller_state = ControllerState.FAULT
-        elif self.plc_input.force_stop or not self.plc_input.run_enable:
+        elif self.plc_input.force_stop or not self.plc_input.run_enable or restart_pending:
             controller_state = ControllerState.STOPPED
         elif self.command.status == CommandStatus.BUSY and self.command.last_code == CommandCode.HOME:
             controller_state = ControllerState.HOMING
@@ -1455,7 +1568,7 @@ class CoreApplication:
             controller_state = ControllerState.STANDBY
 
         tracking_state = TrackingState.OFF
-        if self.plc_input.tracking_enable:
+        if self.plc_input.tracking_enable and not restart_pending and (vision_bypassed or self.vision_service.state.enabled):
             if fault_active:
                 tracking_state = TrackingState.FAULT
             elif vision_bypassed:
@@ -1476,7 +1589,7 @@ class CoreApplication:
                 motion_moving=bool(ptm_status.get("moving") and ptm_status.get("connected", True)),
                 laser_on=bool(laser_status.get("on", ptm_status.get("laser_on", False))),
                 homed=ptm_bypassed or bool(ptm_status.get("homed")),
-                stop_active=self.plc_input.force_stop or not self.plc_input.run_enable,
+                stop_active=self.plc_input.force_stop or not self.plc_input.run_enable or restart_pending,
                 force_stop_active=self.plc_input.force_stop,
                 camera_ready=vision_bypassed or self.vision_service.state.enabled and _mask_ready(
                     self.vision_snapshot.camera_required_mask,
@@ -1590,6 +1703,18 @@ class CoreApplication:
                 self._sync_bypass_state()
             if command == "runtime.snapshot":
                 return JsonTcpResponse(True, self.status_snapshot())
+            if command == "controller.restart_request":
+                request = await self._request_controller_restart()
+                return JsonTcpResponse(True, {"accepted": True, **request})
+            if command == "controller.restart_failed":
+                request = self._controller_restart_request
+                if request is not None and params.get("requested_ms") == request["requested_ms"]:
+                    self._controller_restart_request = None
+                    if self.command.last_code == CommandCode.CONTROLLER_RESTART and self.command.status == CommandStatus.BUSY:
+                        self.command.status = CommandStatus.ERROR
+                        self.command.result = CommandResult.INTERNAL_ERROR
+                        self.command.message = str(params.get("message") or "Main Core restart failed")
+                return JsonTcpResponse(True, {"accepted": True})
             if command == "worker.shutdown" and self._managed_worker:
                 asyncio.get_running_loop().call_later(0.1, self._stop_event.set)
                 return JsonTcpResponse(True, {"accepted": True})
@@ -1920,6 +2045,7 @@ class CoreApplication:
                 "safe_stop_pending": self._safe_stop_task is not None and not self._safe_stop_task.done(),
                 "active_recipe_id": self._active_recipe_id,
                 "active_point_id": self._active_point_id,
+                "restart_request": self._controller_restart_request,
             },
             "command": self.command.to_dict(),
             "bypass": self._bypass_status(),
@@ -1944,6 +2070,9 @@ class CoreApplication:
                 "online": self.vision_snapshot.online,
                 "tracking_active": self.vision_snapshot.tracking_active,
                 "tracker_valid": self.vision_snapshot.tracker_valid,
+                "tracker_present": self.vision_snapshot.tracker_present,
+                "result_ready": self.vision_snapshot.result_ready,
+                "result_age_seconds": self.vision_snapshot.result_age_seconds,
                 "position_error_mm": self.vision_snapshot.position_error_mm,
                 "camera_ip": self.vision_snapshot.camera_ip,
                 "tracking_bypass": self.vision_snapshot.tracking_bypass,
