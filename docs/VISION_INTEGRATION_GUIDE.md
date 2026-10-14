@@ -1,6 +1,11 @@
 # Vision 연동 점검 및 수정 지침
 
-점검일: 2026-10-09. Core 연동 추가: 2026-10-10. 대상: Windows 11 x64 / RDK X5 3.5 이미지.
+점검일: 2026-10-09. Core 연동 추가: 2026-10-10. 계약 갱신: 2026-10-13. 대상: Windows 11 x64 / RDK X5 3.5 이미지.
+
+2026-10-12 Vision PR #20 이후 `vision.result`의 준비 응답과 Vision 소유
+레시피/포인트 저장 기능이 추가됐다. 최신 계약과 실행한 자동화 테스트는
+[Core–Vision 계약 검증](CORE_VISION_CONTRACT_AUDIT.md)에 정리했다.
+아래 2절 이후는 10월 9~10일 점검 기록이며, 이미 수정된 항목을 포함한다.
 
 사용자 요청에 따라 Vision 저장소의 코드·설정·런처는 변경하지 않았다. 아래 항목은 실제 소스에서 확인한 제약과 수정 방향이다. 카메라, RDK, PLC 실장비 성능 검증은 이 Windows 작업 공간에서 수행하지 않았다.
 
@@ -12,16 +17,16 @@ Core와 Vision의 통신 계약은 서로 맞는다. Core는 `src/vision/vision_
 - 프레임: UTF-8 JSON 한 줄 + LF. 길이 접두어 방식이 아니다.
 - 요청: `{"id":"core-request-id","command":"vision.status","params":{}}`.
 - 응답: 같은 `id`, `ok`, `result` 또는 `error`.
-- 지원 운전 명령: `vision.status`, `tracking.start`, `tracking.stop`.
-- Core 설정에 있는 `vision.result`는 현재 Vision이 지원하지 않는다. 현 Core 상태 폴링에서는 호출하지 않지만 별도 호출하면 `UNKNOWN_COMMAND`가 정상 응답이다. 불필요한 명령을 추가하기 전에 소비 경로부터 확정한다.
+- 지원 인터페이스: `vision.status`, `tracking.start`, `tracking.stop`, `vision.result`의 준비 응답.
+- PLC 코드 5는 `vision.result`에 `recipe_id`, `point_id`, `command_seq`를 전송한다. 등록된 ID 쌍은 `ok=true`와 `supported=false`, `data_valid=false`, 측정값 `null`을 반환한다. 없는 레시피/포인트는 각각 `RECIPE_NOT_FOUND`/`POINT_NOT_FOUND`다. 실제 체결 측정은 아직 구현되지 않았다.
 - 현재 단일 카메라 계약이다. Core도 첫 카메라와 마스크 bit 0만 처리한다. 복수 카메라를 추가하려면 양쪽 명세와 PLC 맵을 함께 검토해야 한다.
-- Core는 추가 상태 필드 `cameras[0].ip`(또는 `camera_ip`), `tracking_bypass`, `tracking_bypass_reason`을 읽도록 준비했다. 현재 Vision 브리지에는 해당 필드가 없으므로 아래 후속 업데이트를 적용해야 표시된다.
+- Core와 현재 Vision 브리지는 `cameras[0].ip`(또는 `camera_ip`), `tracking_bypass`, `tracking_bypass_reason`을 지원한다. 카메라 IP는 연결된 실제 장치의 확인된 주소이며 오프라인이면 `null`이다.
 
 TCP 요청 성공, 카메라 연결, 프레임 유효, 검사 결과 유효는 별개다. 웹이 열리거나 `ok=true`라는 이유만으로 운전 준비 완료로 표시하면 안 된다.
 
 ### 1.1 카메라 IP 및 추적 바이패스 후속 계약
 
-Vision 코드는 이번에도 수정하지 않았다. 다음 Vision 업데이트에서는 카메라 IP와 추적 바이패스 설정을 **Vision 웹 서비스**에 추가한다. 상세 계약은 `../../1. 계획,설계/Vision_앱_Core_TCP_HTTP_구현_매뉴얼.md`의 8절이다.
+현재 Vision은 카메라 IP 읽기와 추적 바이패스 설정을 지원한다. 기존 후속 계약의 상세 내용은 `../../1. 계획,설계/Vision_앱_Core_TCP_HTTP_구현_매뉴얼.md`의 8절이다. 아래 운영 조건은 유지된다.
 
 카메라 IP는 Vision 서버의 IP와 다르다. Vision 웹에서 실제 카메라 연결 설정을 적용하고, 실제 적용 주소를 `vision.status.cameras[0].ip`에 반환한다. Core는 이를 `camera_ip`로 노출한다. IP가 없는 카메라는 `null`을 반환한다. 재연결·설정 변경 시 이전 검사 결과는 무효화한다.
 

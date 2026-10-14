@@ -1218,7 +1218,10 @@ class CoreApplication:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.INVALID_COMMAND
             return
-        if not self.vision_service.state.enabled or not self.vision_service.state.online:
+        # vision.status.online describes the camera, not TCP availability.
+        # Recipe lookup and the preparation-only result work without a camera;
+        # the actual TCP exchange determines whether this query can succeed.
+        if not self.vision_service.state.enabled:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.TRACKING_UNAVAILABLE
             return

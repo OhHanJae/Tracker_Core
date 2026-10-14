@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from enum import IntEnum
+from enum import IntEnum, unique
 from typing import Any
 
 
+@unique
 class CommandCode(IntEnum):
     NONE = 0
     TARGET_APPLY_MOVE = 1
@@ -13,7 +14,6 @@ class CommandCode(IntEnum):
     ERROR_RESET = 3
     CONTROLLER_RESTART = 4
     NUTRUNNER_DATA_REQUEST = 5
-    RELOAD_CONFIG = 5
 
 
 class ControllerState(IntEnum):
