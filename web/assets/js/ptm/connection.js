@@ -29,8 +29,7 @@ const frameOptions = {
 let stopStatus = null;
 
 export function renderPTM() {
-  return renderBypassControl('ptm', 'motor', 'PTM', '활성화 시 모터 동작과 PTM 오류를 차단하고 레이저도 자동 바이패스합니다.')
-    + renderExternalWebFrame({ ...frameOptions, url: configuredWebUrl() });
+  return /*renderBypassControl('ptm', 'motor', 'PTM', '활성화 시 모터 동작과 PTM 오류를 차단하고 레이저도 자동 바이패스합니다.')+ */ renderExternalWebFrame({ ...frameOptions, url: configuredWebUrl() });
 }
 
 export function startPtmRuntime() {
