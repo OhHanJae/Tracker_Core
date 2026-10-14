@@ -39,8 +39,7 @@ function nutrunnerResult(status) {
 }
 
 export function renderVision() {
-  return renderBypassControl('vision', 'vision', 'Vision', '활성화 시 Vision 동작과 Vision 오류를 차단합니다.')
-    + `<div class="card" style="flex:none;margin-bottom:12px"><div class="card-body"><strong>최근 너트러너 데이터</strong><p id="visionNutrunnerResult">${esc(nutrunnerResult(state.coreStatus))}</p></div></div>`
+  return /* renderBypassControl('vision', 'vision', 'Vision', '활성화 시 Vision 동작과 Vision 오류를 차단합니다.')+*/ `<div class="card" style="flex:none;margin-bottom:12px"><div class="card-body"><strong>최근 너트러너 데이터</strong><p id="visionNutrunnerResult">${esc(nutrunnerResult(state.coreStatus))}</p></div></div>`
     + renderExternalWebFrame({ ...frameOptions, url: configuredWebUrl() });
 }
 
