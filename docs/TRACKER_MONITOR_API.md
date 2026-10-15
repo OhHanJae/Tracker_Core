@@ -107,3 +107,15 @@ RDK 및 실제 PLC/PTM와 패널의 운전 검증은 별도 수행한다.
 - PLC `D+00.4 WAKE_UP` 상승 에지. 자세한 PLC 확장은 `PLC_WAKEUP_EXTENSION.md` 참조. Gateway 공유메모리 크기/프로토콜 변경은 없다.
 - 절전 시 기존 Vision `tracking.stop`으로 분석을 중지한다. 카메라 acquisition/전원 절전은 미구현이며 Vision 후속 계약으로 남겼다.
 - 포인트 dispatch가 OFF 응답 후 PTM을 움직인다. 허용된 move의 실제 위치 완료 후만 GPIO ON. OFF/정지/허가 해제는 예약 ON generation을 무효화한다. Core PLC 완료는 기존 fresh/matching motion ID 검증을 유지한다.
+
+### 임시 수동 ON·GPIO 알람 정정
+
+`laser.on {"manual":true}`는 자동 OFF/절전 중에도 1800초 한도로 수동 출력을 허용한다.
+FORCE_STOP/Fault/재시작/장치 비활성/바이패스는 우선한다. Core 주기 정책과 조회는
+수동을 취소/연장하지 않으며, 다음 이동/Jog/홈/사용자 정지 또는 만료 시 OFF·자동 모드로 복귀한다.
+`status.laser`에는 control_mode/manual_override/manual_remaining_s가 추가됐다.
+PTM 바이패스는 레이저 탭에서 설정한다. 내부 `laser.power_save`의
+automatic_off/manual_allowed로 일반 자동 OFF와 강제 차단을 원자적으로 구분한다.
+RUN_ENABLE=OFF의 내부 모터 정리만 preserve_laser_manual을 사용한다.
+PLC D+67.0/5001 레이저 통신 알람은 제거했다. GPIO 출력 고장은 D+67.2/5003이며,
+PTM TCP·모터 RS485 통신 알람은 기존대로 유지한다.

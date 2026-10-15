@@ -92,7 +92,7 @@ AUTO_RESET_FAULT_MASKS = {
     DeviceSummaryBit.TRACKER: (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 6),
     DeviceSummaryBit.PAN_TILT_MOTOR: 1 << 0,
     DeviceSummaryBit.TILT_MOTOR: 1 << 0,
-    DeviceSummaryBit.LASER: (1 << 0) | (1 << 3),
+    DeviceSummaryBit.LASER: 1 << 3,
 }
 
 
@@ -106,7 +106,7 @@ FAULT_PRIORITY = [
     (DeviceSummaryBit.CAMERA_4, 2401),
     (DeviceSummaryBit.TRACKER, 3001),
     (DeviceSummaryBit.PAN_TILT_MOTOR, 4001),
-    (DeviceSummaryBit.LASER, 5001),
+    (DeviceSummaryBit.LASER, 5003),
     (DeviceSummaryBit.RECIPE, 6001),
     (DeviceSummaryBit.CALIBRATION, 6101),
 ]
@@ -160,6 +160,9 @@ class AlarmBook:
         self, device: DeviceSummaryBit, word: int, latch_enabled: bool = True
     ) -> None:
         word &= 0xFFFF
+        if device == DeviceSummaryBit.LASER:
+            word &= ~1  # D+67.0 is reserved; GPIO laser has no communication alarm.
+            self.latched_faults[int(device)] = self.latched_faults.get(int(device), 0) & ~1
         self.faults[int(device)] = word
         if latch_enabled:
             previous = self.latched_faults.get(int(device), 0)
@@ -181,6 +184,8 @@ class AlarmBook:
         active = self.faults.get(int(device), 0)
         retained = self.latched_faults.get(int(device), 0) if latch_enabled else 0
         word = active | (retained & ~AUTO_RESET_FAULT_MASKS.get(device, 0))
+        if device == DeviceSummaryBit.LASER:
+            word &= ~1
         if device == DeviceSummaryBit.PAN_TILT_MOTOR:
             word |= self.fault_word(DeviceSummaryBit.TILT_MOTOR, latch_enabled)
         return word & 0xFFFF
@@ -214,6 +219,8 @@ class AlarmBook:
         return 0
 
     def visible_last_fault_code(self) -> int:
+        if self.last_fault_code == 5001:
+            return 0
         for device, code in FAULT_PRIORITY:
             if code == self.last_fault_code and int(device) in self.suppressed_devices:
                 return 0

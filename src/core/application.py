@@ -815,6 +815,22 @@ class CoreApplication:
                     and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
                     and self.laser_service.state.enabled and not self._device_bypassed("laser"))
 
+    def _laser_manual_allowed(self) -> bool:
+        return bool(not self.plc_input.force_stop and not self._controller_restart_pending()
+                    and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
+                    and self.laser_service.state.enabled and not self._device_bypassed("laser"))
+
+    def _laser_manual_active(self) -> bool:
+        state = self.ptm_service.state
+        return bool(state.online and state.status.get("raw", {}).get("laser", {}).get("manual_override")
+                    and now_ms() - state.last_ok_ms <= 1000)
+
+    def _set_laser_command_fault(self, error: Exception) -> None:
+        # Transport loss belongs to the PTM alarm; only GPIO errors are laser faults.
+        if "GPIO" in str(error).upper():
+            self.alarms.set_fault_word(DeviceSummaryBit.LASER, 1 << 2,
+                                       self.settings.runtime.fault_latch_enabled)
+
     def _update_power_save(self) -> None:
         plc = self.plc_input
         if plc.wake_up and not self._wake_up_previous:
@@ -837,9 +853,13 @@ class CoreApplication:
         need_off = (entered or self._laser_permit_previous or
                     self.ptm_service.state.status.get("laser_on") or laser.status.get("on"))
         changed = self._power_sleeping_previous != self.power_save.sleeping
-        actual_sleep = self.ptm_service.state.status.get("raw", {}).get("laser", {}).get("power_saving")
+        raw_laser = self.ptm_service.state.status.get("raw", {}).get("laser", {})
+        actual_sleep = raw_laser.get("power_saving")
         mismatch = isinstance(actual_sleep, bool) and actual_sleep != self.power_save.sleeping
-        if ((changed or mismatch or (not permitted and need_off)) and laser.enabled and not laser.bypassed
+        actual_manual_allowed = raw_laser.get("manual_allowed")
+        mismatch |= isinstance(actual_manual_allowed, bool) and actual_manual_allowed != self._laser_manual_allowed()
+        if ((changed or mismatch or (not permitted and need_off and not (
+                self._laser_manual_active() and self._laser_manual_allowed()))) and laser.enabled and not laser.bypassed
                 and now_ms() >= self._power_laser_retry_ms
                 and (self._power_laser_task is None or self._power_laser_task.done())):
             self._power_laser_retry_ms = now_ms() + 1000
@@ -851,18 +871,15 @@ class CoreApplication:
         try:
             async with self._laser_control_lock:
                 if self.settings.laser.mode.lower() in {"ptm", "gpio"}:
-                    await self.laser_service.command("laser.power_save", {"enabled": self.power_save.sleeping})
-                    try:
-                        await self.laser_service.command("laser.arm", {"enabled": False})
-                    finally:
-                        await self.laser_service.command(self.settings.laser.off_command)
+                    await self.laser_service.command("laser.power_save", {
+                        "enabled": self.power_save.sleeping, "automatic_off": True,
+                        "manual_allowed": self._laser_manual_allowed()})
                 else:
                     await self.laser_service.command(self.settings.laser.off_command)
             self._report_safe_stop_result("laser", "")
         except Exception as exc:
             self._report_safe_stop_result("laser", str(exc))
-            self.alarms.set_fault_word(DeviceSummaryBit.LASER, 1,
-                                       self.settings.runtime.fault_latch_enabled)
+            self._set_laser_command_fault(exc)
 
     def _read_plc_input(self, timestamp_ms: int) -> None:
         if not self._plc_enabled():
@@ -1029,16 +1046,10 @@ class CoreApplication:
         warning = _safe_int(status.get("warning_word"))
         fault = _safe_int(status.get("fault_word"))
         if status.get("fault"):
-            fault |= 1 << 1
-        bypass = (
-            self.settings.laser.mode.lower() in {"ptm", "gpio"}
-            and self.ptm_service.state.online
-            and self.ptm_service.state.status.get("laser_bypass") is True
-        )
-        if bypass:
-            fault &= ~(1 << 0)
-        elif (state.ok_count or state.error_count) and not state.online:
-            fault |= 1 << 0
+            fault |= 1 << 2  # GPIO initialization/write/readback error, not communication.
+        fault &= ~1
+        if self.alarms.last_fault_code == 5001:
+            self.alarms.last_fault_code = 0
         self.alarms.set_warning_word(DeviceSummaryBit.LASER, warning)
         self.alarms.set_fault_word(
             DeviceSummaryBit.LASER,
@@ -1160,16 +1171,18 @@ class CoreApplication:
             self._safe_stop_task = None
         ptm_status = self.ptm_service.state.status
         laser_status = self.laser_service.state.status
+        preserve_manual = self._laser_manual_allowed()
         still_active = bool(
-            ptm_status.get("moving") or ptm_status.get("laser_on")
-            or laser_status.get("on")
+            ptm_status.get("moving") or ((ptm_status.get("laser_on") or laser_status.get("on"))
+                and not (preserve_manual and self._laser_manual_active()))
         )
         if self._safe_stop_applied and not still_active:
             return
         if now_ms() < self._safe_stop_retry_ms:
             return
         self._safe_stop_retry_ms = now_ms() + 1000
-        self._safe_stop_task = asyncio.create_task(self._perform_safe_stop())
+        self._safe_stop_task = asyncio.create_task(
+            self._perform_safe_stop(preserve_manual=True) if preserve_manual else self._perform_safe_stop())
 
     def _controller_restart_pending(self) -> bool:
         return self._controller_restart_request is not None or (
@@ -1214,11 +1227,14 @@ class CoreApplication:
             self.command.status = CommandStatus.ERROR
             self.command.result = result
 
-    async def _perform_safe_stop(self) -> bool:
+    async def _perform_safe_stop(self, *, preserve_manual: bool = False) -> bool:
         success = True
         if self.ptm_service.state.enabled and not self.ptm_service.state.bypassed:
             try:
-                await self.ptm_service.command("motion.stop")
+                if preserve_manual and self._laser_manual_allowed():
+                    await self.ptm_service.command("motion.stop", {"preserve_laser_manual": True})
+                else:
+                    await self.ptm_service.command("motion.stop")
                 self._report_safe_stop_result("motor", "")
             except Exception as exc:
                 if not self.ptm_service.state.bypassed:
@@ -1240,10 +1256,14 @@ class CoreApplication:
             try:
                 if self.laser_service.state.enabled:
                     if self.settings.laser.mode.lower() in {"ptm", "gpio"}:
-                        try:
-                            await self.laser_service.command("laser.arm", {"enabled": False})
-                        finally:
-                            await self.laser_service.command(self.settings.laser.off_command)
+                        if preserve_manual and self._laser_manual_allowed():
+                            await self.laser_service.command("laser.power_save", {
+                                "enabled": self.power_save.sleeping, "automatic_off": True, "manual_allowed": True})
+                        else:
+                            try:
+                                await self.laser_service.command("laser.arm", {"enabled": False})
+                            finally:
+                                await self.laser_service.command(self.settings.laser.off_command)
                     else:
                         await self.laser_service.command(self.settings.laser.off_command)
                 else:
@@ -1253,11 +1273,7 @@ class CoreApplication:
                 if not self.laser_service.state.bypassed:
                     success = False
                     self._report_safe_stop_result("laser", str(exc))
-                    self.alarms.set_fault_word(
-                        DeviceSummaryBit.LASER,
-                        1 << 0,
-                        self.settings.runtime.fault_latch_enabled,
-                    )
+                    self._set_laser_command_fault(exc)
         return success
 
     def _report_safe_stop_result(self, device: str, error: str) -> None:
@@ -1427,6 +1443,12 @@ class CoreApplication:
     ) -> None:
         preparing_laser = False
         try:
+            if code in {CommandCode.ERROR_RESET, CommandCode.NUTRUNNER_DATA_REQUEST} and self._laser_manual_active():
+                try:
+                    await self.laser_service.command(self.settings.laser.off_command)
+                except Exception as exc:
+                    self._report_safe_stop_result("laser", str(exc))
+                    self._set_laser_command_fault(exc)
             if code == CommandCode.ERROR_RESET:
                 self.alarm_history.capture(self.alarms, self.settings.runtime.fault_latch_enabled)
                 self.alarms.reset_latched_faults()
@@ -1515,10 +1537,11 @@ class CoreApplication:
                     self.command.result = CommandResult.POINT_NOT_FOUND
                 else:
                     self.command.result = CommandResult.INTERNAL_ERROR
-                    self.alarms.set_fault_word(
-                        DeviceSummaryBit.LASER if preparing_laser else DeviceSummaryBit.PAN_TILT_MOTOR, 1 << 0,
-                        self.settings.runtime.fault_latch_enabled,
-                    )
+                    if preparing_laser:
+                        self._set_laser_command_fault(exc)
+                    else:
+                        self.alarms.set_fault_word(DeviceSummaryBit.PAN_TILT_MOTOR, 1,
+                                                   self.settings.runtime.fault_latch_enabled)
 
     def _progress_motion_command(self, timestamp_ms: int) -> None:
         motion = self._active_motion
@@ -1554,7 +1577,7 @@ class CoreApplication:
                 else 2 if motion["code"] == CommandCode.HOME else 6
             )
             if str(raw_motion.get("last_error", "")).startswith("LASER_"):
-                self.alarms.set_fault_word(DeviceSummaryBit.LASER, 1,
+                self.alarms.set_fault_word(DeviceSummaryBit.LASER, 1 << 2,
                                            self.settings.runtime.fault_latch_enabled)
             else:
                 self._set_motion_fault(fault_bit)
@@ -2036,7 +2059,10 @@ class CoreApplication:
                     return JsonTcpResponse(True, {"accepted": False, "bypassed": True})
                 if service is not None and not service.state.enabled:
                     return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": f"device is disabled: {device_id}"})
-                if self.power_save.sleeping and (device_command in {"laser.on", "laser.pulse"}
+                manual_on = device_command == "laser.on" and device_params.get("manual") is True
+                if manual_on and not self._laser_manual_allowed():
+                    return JsonTcpResponse(False, error={"code": "LASER_INTERLOCK", "message": "Safety interlock blocks manual laser output"})
+                if self.power_save.sleeping and not manual_on and (device_command in {"laser.on", "laser.pulse"}
                         or (device_command == "laser.arm" and device_params.get("enabled"))):
                     return JsonTcpResponse(False, error={"code": "POWER_SAVING", "message": "Wake Core before enabling laser output"})
                 result = await self.devices.command(device_id, device_command, device_params)
@@ -2091,13 +2117,16 @@ class CoreApplication:
                 await self.ptm_service.command("motion.stop")
                 return JsonTcpResponse(True, {"accepted": True})
             if command == "laser.on":
-                if self.power_save.sleeping:
+                manual_on = params.get("manual") is True
+                if manual_on and not self._laser_manual_allowed():
+                    return JsonTcpResponse(False, error={"code": "LASER_INTERLOCK", "message": "Safety interlock blocks manual laser output"})
+                if self.power_save.sleeping and not manual_on:
                     return JsonTcpResponse(False, error={"code": "POWER_SAVING", "message": "Wake Core before enabling laser output"})
                 if self._device_bypassed("laser"):
                     return JsonTcpResponse(True, {"accepted": False, "bypassed": True})
                 if not self.laser_service.state.enabled:
                     return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": "Laser is disabled"})
-                result = await self.laser_service.command(self.settings.laser.on_command)
+                result = await self.laser_service.command(self.settings.laser.on_command, params)
                 return JsonTcpResponse(True, result or {"accepted": True})
             if command == "laser.off":
                 if self._device_bypassed("laser"):

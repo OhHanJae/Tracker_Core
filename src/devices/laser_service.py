@@ -84,6 +84,7 @@ class LaserService(DeviceService):
 
 def normalize_laser_status(data: dict[str, Any], mode: str) -> dict[str, Any]:
     laser = _dict(data.get("laser")) or _dict(_dict(data.get("raw")).get("laser"))
+    alarm_source = laser or data
     state_text = str(
         _first_value(data, laser, keys=("state", "status", "emission_state")) or ""
     ).lower()
@@ -98,13 +99,16 @@ def normalize_laser_status(data: dict[str, Any], mode: str) -> dict[str, Any]:
         "backend": laser.get("backend", data.get("backend")),
         "pin": laser.get("pin", data.get("pin")),
         "numbering": laser.get("numbering", data.get("numbering")),
+        "control_mode": laser.get("control_mode", "auto"),
+        "manual_override": laser.get("manual_override", False),
+        "manual_remaining_s": laser.get("manual_remaining_s", 0),
         "bypass": _bool_first(False, data, laser, "laser_bypass", "bypass"),
         "on": on,
         "power_percent": _first_number(data, laser, "power_percent", "power"),
         "temperature_c": _first_number(data, laser, "temperature_c", "temperature"),
-        "warning_word": _first_int(0, data, laser, "warning_word", "warnings"),
-        "fault_word": _first_int(0, data, laser, "fault_word", "faults"),
-        "fault": _bool_first(False, data, laser, "fault", "error"),
+        "warning_word": _first_int(0, alarm_source, "warning_word", "warnings"),
+        "fault_word": _first_int(0, alarm_source, "fault_word", "faults") & ~1,
+        "fault": _bool_first(False, alarm_source, "fault") or bool(alarm_source.get("error")),
         "raw": data,
     }
 
@@ -112,7 +116,7 @@ def normalize_laser_status(data: dict[str, Any], mode: str) -> dict[str, Any]:
 def _protocol(mode: str) -> str:
     mode = mode.lower()
     if mode in {"ptm", "gpio"}:
-        return "PTM TCP JSON / GPIO" if mode == "gpio" else "PTM TCP JSON"
+        return "GPIO (PTM)"
     return "TCP JSON"
 
 
