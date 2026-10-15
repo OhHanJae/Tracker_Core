@@ -92,7 +92,6 @@ AUTO_RESET_FAULT_MASKS = {
     DeviceSummaryBit.TRACKER: (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 6),
     DeviceSummaryBit.PAN_TILT_MOTOR: 1 << 0,
     DeviceSummaryBit.TILT_MOTOR: 1 << 0,
-    DeviceSummaryBit.LASER: 1 << 3,
 }
 
 
@@ -106,7 +105,6 @@ FAULT_PRIORITY = [
     (DeviceSummaryBit.CAMERA_4, 2401),
     (DeviceSummaryBit.TRACKER, 3001),
     (DeviceSummaryBit.PAN_TILT_MOTOR, 4001),
-    (DeviceSummaryBit.LASER, 5003),
     (DeviceSummaryBit.RECIPE, 6001),
     (DeviceSummaryBit.CALIBRATION, 6101),
 ]
@@ -121,7 +119,6 @@ WARNING_PRIORITY = [
     (DeviceSummaryBit.CAMERA_4, 2400),
     (DeviceSummaryBit.TRACKER, 3000),
     (DeviceSummaryBit.PAN_TILT_MOTOR, 4000),
-    (DeviceSummaryBit.LASER, 5000),
     (DeviceSummaryBit.RECIPE, 6000),
     (DeviceSummaryBit.CALIBRATION, 6100),
 ]
@@ -149,7 +146,7 @@ class AlarmBook:
     suppressed_devices: set[int] = field(default_factory=set)
 
     def set_warning_word(self, device: DeviceSummaryBit, word: int) -> None:
-        self.warnings[int(device)] = word & 0xFFFF
+        self.warnings[int(device)] = 0 if device == DeviceSummaryBit.LASER else word & 0xFFFF
 
     def clear_device(self, device: DeviceSummaryBit) -> None:
         self.warnings.pop(int(device), None)
@@ -161,8 +158,8 @@ class AlarmBook:
     ) -> None:
         word &= 0xFFFF
         if device == DeviceSummaryBit.LASER:
-            word &= ~1  # D+67.0 is reserved; GPIO laser has no communication alarm.
-            self.latched_faults[int(device)] = self.latched_faults.get(int(device), 0) & ~1
+            word = 0  # GPIO output only; no laser warning/fault feedback exists.
+            self.latched_faults[int(device)] = 0
         self.faults[int(device)] = word
         if latch_enabled:
             previous = self.latched_faults.get(int(device), 0)
@@ -179,18 +176,20 @@ class AlarmBook:
         self.latched_faults.clear()
 
     def fault_word(self, device: DeviceSummaryBit, latch_enabled: bool = True) -> int:
+        if device == DeviceSummaryBit.LASER:
+            return 0
         if int(device) in self.suppressed_devices:
             return 0
         active = self.faults.get(int(device), 0)
         retained = self.latched_faults.get(int(device), 0) if latch_enabled else 0
         word = active | (retained & ~AUTO_RESET_FAULT_MASKS.get(device, 0))
-        if device == DeviceSummaryBit.LASER:
-            word &= ~1
         if device == DeviceSummaryBit.PAN_TILT_MOTOR:
             word |= self.fault_word(DeviceSummaryBit.TILT_MOTOR, latch_enabled)
         return word & 0xFFFF
 
     def warning_word(self, device: DeviceSummaryBit) -> int:
+        if device == DeviceSummaryBit.LASER:
+            return 0
         if int(device) in self.suppressed_devices:
             return 0
         word = self.warnings.get(int(device), 0)
@@ -219,7 +218,7 @@ class AlarmBook:
         return 0
 
     def visible_last_fault_code(self) -> int:
-        if self.last_fault_code == 5001:
+        if 5000 <= self.last_fault_code < 5100:
             return 0
         for device, code in FAULT_PRIORITY:
             if code == self.last_fault_code and int(device) in self.suppressed_devices:

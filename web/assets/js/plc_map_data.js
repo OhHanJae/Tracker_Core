@@ -1,7 +1,7 @@
 window.TRACK_EYE_PLC_MAP = {
   "sourceFile": "트래커 PLC 통신 맵 v4.2 Core 반영.xlsx",
   "sourceTitle": "Tracker Project PLC Communication Map v4.2 + WakeUp extension 2026-10-15",
-  "note": "v4.2 + WakeUp/GPIO 확장. D+00.4 WAKE_UP; D+67.0 Reserved(0), 레이저 통신 알람 제거; GPIO 출력 오류 D+67.2/5003.",
+  "note": "v4.2 + WakeUp/GPIO 확장. D+00.4 WAKE_UP; 레이저 검출 입력 없음: D+66/D+67 및 레이저 경고/고장 요약 Reserved(0). LASER_ON은 마지막 GPIO 명령값.",
   "sheets": [
     {
       "key": "01_PLC_to_Controller",
@@ -902,8 +902,8 @@ window.TRACK_EYE_PLC_MAP = {
           "D+00",
           "6",
           "LASER_ON",
-          "Laser 실제 출력 상태",
-          "가능하면 Feedback 기준",
+          "마지막 GPIO ON/OFF 명령 상태",
+          "실제 광 방출/출력 검출 상태가 아님",
           "BOOL",
           "Level",
           "전체",
@@ -1489,13 +1489,13 @@ window.TRACK_EYE_PLC_MAP = {
           "알람 요약",
           "D+20",
           "5",
-          "LASER_FAULT",
-          "Laser 기능 이상",
-          "",
+          "Reserved",
+          "레이저 피드백 없음",
+          "항상 0",
           "BOOL",
           "Level",
           "전체",
-          "0/1"
+          "0"
         ],
         [
           "알람 요약",
@@ -1623,7 +1623,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "PRIMARY_FAULT_CODE",
           "현재 가장 우선순위 높은 Fault Code",
-          "0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Camera 1 Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Reserved (Camera 2~4 미사용)\n2300~2399 = Reserved (Camera 2~4 미사용)\n2400~2499 = Reserved (Camera 2~4 미사용)\n3000~3099 = Tracker (3001 Tracker Fault; 미검출은 Warning 3000)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Laser (5003 GPIO Output Fault)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)\n바이패스 장치 코드 제외. 내부 고장 기록은 보존",
+          "0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Camera 1 Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Reserved (Camera 2~4 미사용)\n2300~2399 = Reserved (Camera 2~4 미사용)\n2400~2499 = Reserved (Camera 2~4 미사용)\n3000~3099 = Tracker (3001 Tracker Fault; 미검출은 Warning 3000)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Reserved (레이저 피드백 없음)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)\n바이패스 장치 코드 제외. 내부 고장 기록은 보존",
           "UINT16",
           "Code",
           "전체",
@@ -1635,7 +1635,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "PRIMARY_WARNING_CODE",
           "현재 가장 우선순위 높은 Warning Code",
-          "0 = 없음\n1000 = Controller Warning\n1100 = PLC Communication Warning\n2000 = Vision Common Warning\n2100 = Camera 1 Warning\n2200~2499 = Reserved\n3000 = Tracker Warning\n4000 = Pan/Tilt 공통 Warning\n4100~4199 = Reserved\n5000 = Laser Warning\n6000 = Recipe Warning\n6100 = Calibration Warning\n바이패스 장치 코드 제외",
+          "0 = 없음\n1000 = Controller Warning\n1100 = PLC Communication Warning\n2000 = Vision Common Warning\n2100 = Camera 1 Warning\n2200~2499 = Reserved\n3000 = Tracker Warning\n4000 = Pan/Tilt 공통 Warning\n4100~4199 = Reserved\n5000 = Reserved (레이저 피드백 없음)\n6000 = Recipe Warning\n6100 = Calibration Warning\n바이패스 장치 코드 제외",
           "UINT16",
           "Code",
           "전체",
@@ -1647,7 +1647,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "LAST_FAULT_CODE",
           "마지막 발생 Fault Code",
-          "마지막 Fault 이력\n0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Camera 1 Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Reserved (Camera 2~4 미사용)\n2300~2399 = Reserved (Camera 2~4 미사용)\n2400~2499 = Reserved (Camera 2~4 미사용)\n3000~3099 = Tracker (3001 Tracker Fault; 미검출은 Warning 3000)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Laser (5003 GPIO Output Fault)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)\n바이패스 장치의 마지막 고장 코드는 0 출력. 내부 이력은 보존",
+          "마지막 Fault 이력\n0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Camera 1 Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Reserved (Camera 2~4 미사용)\n2300~2399 = Reserved (Camera 2~4 미사용)\n2400~2499 = Reserved (Camera 2~4 미사용)\n3000~3099 = Tracker (3001 Tracker Fault; 미검출은 Warning 3000)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Reserved (레이저 피드백 없음)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)\n바이패스 장치의 마지막 고장 코드는 0 출력. 내부 이력은 보존",
           "UINT16",
           "Code",
           "전체",
@@ -1671,7 +1671,7 @@ window.TRACK_EYE_PLC_MAP = {
           "0~C",
           "DEVICE_FAULT_SUMMARY",
           "Fault 발생 장치 Summary",
-          "bit0 = Controller\nbit1 = PLC Communication\nbit2 = Vision Common\nbit3 = Camera 1\nbit4~6 = Reserved\nbit7 = Tracker\nbit8 = Pan/Tilt (Pan OR Tilt)\nbit9 = Reserved\nbitA = Laser\nbitB = Recipe\nbitC = Calibration\nbitD~F = Reserved\n바이패스 장치의 Summary 비트는 0",
+          "bit0 = Controller\nbit1 = PLC Communication\nbit2 = Vision Common\nbit3 = Camera 1\nbit4~6 = Reserved\nbit7 = Tracker\nbit8 = Pan/Tilt (Pan OR Tilt)\nbit9 = Reserved\nbitA = Reserved (레이저 피드백 없음)\nbitB = Recipe\nbitC = Calibration\nbitD~F = Reserved\n바이패스 장치의 Summary 비트는 0",
           "BITMAP",
           "Level",
           "전체",
@@ -1683,7 +1683,7 @@ window.TRACK_EYE_PLC_MAP = {
           "0~C",
           "DEVICE_WARNING_SUMMARY",
           "Warning 발생 장치 Summary",
-          "bit0 = Controller\nbit1 = PLC Communication\nbit2 = Vision Common\nbit3 = Camera 1\nbit4~6 = Reserved\nbit7 = Tracker\nbit8 = Pan/Tilt (Pan OR Tilt)\nbit9 = Reserved\nbitA = Laser\nbitB = Recipe\nbitC = Calibration\nbitD~F = Reserved\n바이패스 장치의 Summary 비트는 0",
+          "bit0 = Controller\nbit1 = PLC Communication\nbit2 = Vision Common\nbit3 = Camera 1\nbit4~6 = Reserved\nbit7 = Tracker\nbit8 = Pan/Tilt (Pan OR Tilt)\nbit9 = Reserved\nbitA = Reserved (레이저 피드백 없음)\nbitB = Recipe\nbitC = Calibration\nbitD~F = Reserved\n바이패스 장치의 Summary 비트는 0",
           "BITMAP",
           "Level",
           "전체",
@@ -2161,25 +2161,25 @@ window.TRACK_EYE_PLC_MAP = {
           "상세 진단",
           "D+66",
           "0~F",
-          "LASER_WARNING",
-          "Laser Warning",
-          "03_Device_Alarm_Detail 시트 참조",
+          "Reserved",
+          "GPIO 출력 전용: 레이저 피드백 없음",
+          "항상 0",
           "BITMAP",
           "Level",
           "전체",
-          "Bit Map"
+          "0"
         ],
         [
           "상세 진단",
           "D+67",
           "0~F",
-          "LASER_FAULT",
-          "Laser Fault",
-          "03_Device_Alarm_Detail 시트 참조",
+          "Reserved",
+          "GPIO 출력 전용: 레이저 피드백 없음",
+          "항상 0",
           "BITMAP",
           "Level",
           "전체",
-          "Bit Map"
+          "0"
         ],
         [
           "상세 진단",
@@ -2945,22 +2945,22 @@ window.TRACK_EYE_PLC_MAP = {
           "Warning",
           "D+66",
           "0",
-          "LASER_LIFETIME_WARN",
-          "Warning",
-          "Auto",
-          "아니오",
-          "사용시간 기준이 있을 때 사용"
+          "Reserved",
+          "-",
+          "-",
+          "-",
+          "미사용: 레이저 피드백 없음. 항상 0"
         ],
         [
           "Laser",
           "Warning",
           "D+66",
           "1",
-          "LASER_TEMP_HIGH",
-          "Warning",
-          "Auto",
-          "아니오",
-          "온도 정보 지원 시 사용"
+          "Reserved",
+          "-",
+          "-",
+          "-",
+          "미사용: 레이저 피드백 없음. 항상 0"
         ],
         [
           "Laser",
@@ -2971,40 +2971,40 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "-",
           "-",
-          "미사용: GPIO 레이저 통신 알람 없음. 항상 0"
+          "미사용: 레이저 피드백 없음. 항상 0"
         ],
         [
           "Laser",
           "Fault",
           "D+67",
           "1",
-          "LASER_FEEDBACK_MISMATCH",
-          "Fault",
-          "Latch",
-          "예",
-          "출력 명령과 Feedback 불일치"
+          "Reserved",
+          "-",
+          "-",
+          "-",
+          "미사용: 레이저 피드백 없음. 항상 0"
         ],
         [
           "Laser",
           "Fault",
           "D+67",
           "2",
-          "LASER_OUTPUT_FAULT",
-          "Fault",
-          "Latch",
-          "예",
-          "GPIO 초기화·출력·readback 오류. 실제 광 방출 검출과 별개"
+          "Reserved",
+          "-",
+          "-",
+          "-",
+          "미사용: 레이저 피드백 없음. 항상 0"
         ],
         [
           "Laser",
           "Fault",
           "D+67",
           "3",
-          "LASER_INTERLOCK",
-          "Fault",
-          "Auto/Latch",
-          "예",
-          "Laser Interlock 활성"
+          "Reserved",
+          "-",
+          "-",
+          "-",
+          "미사용: 레이저 피드백 없음. 항상 0"
         ],
         [
           "Controller",

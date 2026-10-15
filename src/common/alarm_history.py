@@ -121,9 +121,8 @@ class AlarmHistory:
                     if severity == "Fault" and latch_enabled:
                         retained |= (book.latched_faults.get(int(DeviceSummaryBit.TILT_MOTOR), 0)
                                      & ~AUTO_RESET_FAULT_MASKS.get(DeviceSummaryBit.TILT_MOTOR, 0))
-                if device == int(DeviceSummaryBit.LASER) and severity == "Fault":
-                    active &= ~1
-                    retained &= ~1
+                if device == int(DeviceSummaryBit.LASER):
+                    active = retained = 0
                 for bit in range(16):
                     key = f"{device}:{severity}:{bit}"
                     cause, latched = bool(active & (1 << bit)), bool(retained & (1 << bit))

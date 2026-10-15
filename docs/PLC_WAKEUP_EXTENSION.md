@@ -19,8 +19,11 @@ PLC 프로젝트 적용 시 이 확장 계약을 반영해야 WakeUp 비트를 �
 
 ## GPIO 레이저 알람 변경
 
-Controller→PLC `D+67.0 LASER_COMM_FAULT`는 제거하고 Reserved(항상 0)로 둔다.
-레이저 대표 오류 `5001`도 사용하지 않는다. GPIO 초기화/쓰기/readback 오류는
-기존 `D+67.2 LASER_OUTPUT_FAULT`, 대표 오류 `5003`으로 보고한다.
+레이저는 출력 검출 입력이 없는 GPIO ON/OFF 장치다. Controller→PLC `D+66`, `D+67` 전체와
+`D+20.5`, 경고/고장 요약의 레이저 비트, 대표 코드 `5000~5099`는 Reserved(항상 0)로 둔다.
+GPIO 입력/readback을 읽거나 통신·출력 검출·온도·보호 알람을 생성하지 않는다.
+GPIO 초기화/쓰기 예외는 API 오류와 로그의 소프트웨어 진단으로만 보고한다.
+OFF 호출이 실패하면 이동은 실행하지 않으며, 모터 STOP은 GPIO 예외와 별개로 시도한다.
+`LASER_ON` 비트는 마지막 성공한 GPIO 명령 상태이며 실제 광 방출 검출값이 아니다.
 PTM 서버 TCP·모터 RS485 통신 알람은 기존 PTM 영역에 유지한다.
-과거 알람 DB 이력은 삭제하지 않는다. GPIO 출력 readback은 실제 광 방출 검출과 별개다.
+과거 알람 DB 이력은 삭제하지 않는다.

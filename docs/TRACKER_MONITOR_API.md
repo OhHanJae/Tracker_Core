@@ -110,12 +110,17 @@ RDK 및 실제 PLC/PTM와 패널의 운전 검증은 별도 수행한다.
 
 ### 임시 수동 ON·GPIO 알람 정정
 
-`laser.on {"manual":true}`는 자동 OFF/절전 중에도 1800초 한도로 수동 출력을 허용한다.
+`laser.on {}` / `laser.off {}`만으로 ON/OFF한다. ARM/DISARM API와 화면 조작은 제거했다.
+ON은 자동 OFF/절전 중에도 1800초 한도로 수동 출력을 허용한다. 구형 `manual:true` 추가값은 허용하지만 필요하지 않다.
 FORCE_STOP/Fault/재시작/장치 비활성/바이패스는 우선한다. Core 주기 정책과 조회는
 수동을 취소/연장하지 않으며, 다음 이동/Jog/홈/사용자 정지 또는 만료 시 OFF·자동 모드로 복귀한다.
 `status.laser`에는 control_mode/manual_override/manual_remaining_s가 추가됐다.
 PTM 바이패스는 레이저 탭에서 설정한다. 내부 `laser.power_save`의
 automatic_off/manual_allowed로 일반 자동 OFF와 강제 차단을 원자적으로 구분한다.
 RUN_ENABLE=OFF의 내부 모터 정리만 preserve_laser_manual을 사용한다.
-PLC D+67.0/5001 레이저 통신 알람은 제거했다. GPIO 출력 고장은 D+67.2/5003이며,
-PTM TCP·모터 RS485 통신 알람은 기존대로 유지한다.
+레이저는 출력 검출이 없으며 GPIO 입력/readback을 읽지 않는다.
+PLC D+66/D+67, D+20.5, 레이저 경고/고장 요약과 대표 코드 5000~5099는 Reserved/0이다.
+`laser.on` 상태값과 PLC LASER_ON은 마지막 성공한 GPIO 명령을 뜻한다. 실제 방출을 보증하지 않는다.
+`system.status.laser`는 `feedback_available=false`, `on_source=commanded_gpio_level`을 제공하고 armed 필드는 없다.
+GPIO 호출 오류는 `laser.error`/Core `command_error`와 API 응답·로그에 남긴다.
+PTM TCP·모터 RS485 통신 알람은 기존대로 유지한다. 자세한 계약은 Monitor 지침서 18절을 따른다.
