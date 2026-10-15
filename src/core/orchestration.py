@@ -28,6 +28,7 @@ class CoreOrchestrator:
         core._read_plc_input(timestamp_ms)
         core._update_plc_heartbeat_alarm(timestamp_ms)
         core._sync_device_snapshots()
+        core._update_power_save()
         await core._apply_safe_stop_if_needed()
         latch_enabled = core.settings.runtime.fault_latch_enabled
         tracking_blockers = core.alarms.fault_summary(latch_enabled)
@@ -39,12 +40,13 @@ class CoreOrchestrator:
         self.tick(
             core.plc_input,
             bool(tracking_blockers) or core._controller_restart_pending(),
+            power_saving=core.power_save.sleeping,
         )
         await core._handle_plc_command()
         core._build_output(timestamp_ms)
         core._write_plc_output()
 
-    def tick(self, plc: PlcInput, fault_active: bool = False) -> None:
+    def tick(self, plc: PlcInput, fault_active: bool = False, *, power_saving: bool = False) -> None:
         if getattr(self.vision.state, "bypassed", False):
             self.cancel_tracking()
             return
@@ -52,13 +54,14 @@ class CoreOrchestrator:
         desired = bool(
             plc.run_enable and plc.tracking_enable
             and not plc.force_stop and not fault_active
+            and not power_saving
             and status.get("tracking_bypass") is not True
         )
         timestamp_ms = now_ms()
         actual = status.get("tracking_active")
         mismatch = actual is not None and bool(actual) != desired
         retry = bool(self.last_error or mismatch) and timestamp_ms - self._last_attempt_ms >= 1000
-        if desired == self._requested_tracking and not retry:
+        if desired == self._requested_tracking and not retry and not (power_saving and self.last_command != "tracking.stop"):
             return
         if self._task is not None and not self._task.done():
             return

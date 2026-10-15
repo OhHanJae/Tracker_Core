@@ -130,6 +130,7 @@ class LaserSettings:
 @dataclass
 class RuntimeSettings:
     orchestration_enabled: bool = True
+    power_save_timeout_s: float = 1800.0
     vision_status_max_age_ms: int = 1500
     plc_heartbeat_warn_ms: int = 1000
     plc_heartbeat_fault_ms: int = 3000

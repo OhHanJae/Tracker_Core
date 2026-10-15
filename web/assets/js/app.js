@@ -48,7 +48,7 @@ function render() {
   document.body.classList.toggle('external-frame-view', externalFrameView);
   const [title, desc] = titles[state.view];
   pageTitle.textContent = title;
-  pageActions.innerHTML = state.view === 'services' ? `<button class="secondary" data-action="restart-all">전체 재시작</button>` : '';
+  pageActions.innerHTML = `<button class="secondary" data-action="wake-up">절전 해제</button>` + (state.view === 'services' ? `<button class="secondary" data-action="restart-all">전체 재시작</button>` : '');
 
   if (state.view === 'dashboard') viewRoot.innerHTML = renderDashboard();
   else if (state.view === 'monitor') viewRoot.innerHTML = renderRuntimeMonitor();
@@ -131,6 +131,7 @@ async function applyModuleConfig(module) {
 }
 
 function bindDynamicEvents() {
+  document.querySelector('[data-action="wake-up"]')?.addEventListener('click', () => pushCommand('power_save.wake'));
   document.querySelectorAll('[data-controller-tab]').forEach(btn => btn.addEventListener('click', () => {
     state.activeSubgroup.controller = btn.dataset.controllerTab;
     render();
@@ -332,6 +333,7 @@ function renderOperationalSettings() {
       configField('PLC 경고 (ms)', `<input id="plcWarnMs" type="number" min="100" max="60000" required value="${esc(runtime.plc_heartbeat_warn_ms ?? 1000)}">`),
       configField('PLC 장애 (ms)', `<input id="plcFaultMs" type="number" min="101" max="60000" required value="${esc(runtime.plc_heartbeat_fault_ms ?? 3000)}">`, '경고 시간보다 커야 합니다.'),
       configField('Vision 상태 만료 (ms)', `<input id="visionMaxAgeMs" type="number" min="100" max="60000" required value="${esc(runtime.vision_status_max_age_ms ?? 1500)}">`),
+      configField('PLC 무요청 절전 (초)', `<input id="powerSaveTimeout" type="number" min="1" max="86400" required value="${esc(runtime.power_save_timeout_s ?? 1800)}">`),
       configField('장애 유지', `<label class="switch"><input id="faultLatch" type="checkbox" ${runtime.fault_latch_enabled ? 'checked' : ''}><span class="slider"></span></label>`, '수동 리셋 전까지 장애 표시 유지'),
     ], '<button class="primary" id="saveOperationalSettings">Alarm 적용</button>');
   }
@@ -379,6 +381,7 @@ async function saveOperationalSettings() {
       plc_heartbeat_warn_ms: warn,
       plc_heartbeat_fault_ms: fault,
       vision_status_max_age_ms: Number(document.getElementById('visionMaxAgeMs').value),
+      power_save_timeout_s: Number(document.getElementById('powerSaveTimeout').value),
       fault_latch_enabled: document.getElementById('faultLatch').checked,
     } };
   } else if (state.view === 'system') {

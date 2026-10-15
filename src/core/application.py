@@ -25,6 +25,7 @@ from src.common.network import client_connect_host
 from src.common.discovery import DiscoveryService, validate_discovery
 from src.common.network_manager import NetworkManager
 from src.core.orchestration import CoreOrchestrator
+from src.core.power_save import PowerSaveState
 from src.common.system_resources import SystemResourceMonitor
 from src.common.alarm_history import AlarmHistory, MAP_VERSION
 from src.common.status import (
@@ -153,6 +154,13 @@ class CoreApplication:
         self._safe_stop_task: asyncio.Task[bool] | None = None
         self._safe_stop_retry_ms = 0
         self._safe_stop_errors: dict[str, str] = {}
+        self.power_save = PowerSaveState(self.settings.runtime.power_save_timeout_s)
+        self._wake_up_previous = False
+        self._power_laser_task: asyncio.Task[None] | None = None
+        self._power_laser_retry_ms = 0
+        self._laser_permit_previous = False
+        self._power_sleeping_previous = False
+        self._laser_control_lock = asyncio.Lock()
         self._command_task: asyncio.Task[None] | None = None
         self._command_request_params: dict[str, Any] = {}
         self._pending_request: tuple[int, int, str, dict[str, Any]] | None = None
@@ -179,6 +187,9 @@ class CoreApplication:
 
     @staticmethod
     def _validate_operator_settings(settings: AppSettings) -> None:
+        timeout = settings.runtime.power_save_timeout_s
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 1 <= timeout <= 86400:
+            raise ValueError("Power-save timeout must be between 1 and 86400 seconds")
         for key in ("core", "plc_gateway", "ptm", "vision"):
             module = settings.processes.get(key, {})
             if not 1 <= int(module.get("health_port", 1)) <= 65535:
@@ -271,7 +282,7 @@ class CoreApplication:
     def _laser_enabled(self) -> bool:
         return (
             self.settings.laser.enabled
-            and (self.settings.laser.mode.lower() != "ptm" or self._motor_enabled())
+            and (self.settings.laser.mode.lower() not in {"ptm", "gpio"} or self._motor_enabled())
         )
 
     def _vision_enabled(self) -> bool:
@@ -295,7 +306,7 @@ class CoreApplication:
             result["vision"].update(active=True, source="device")
         laser_local = bool(
             (self.laser_service.state.online and self.laser_service.state.status.get("bypass") is True)
-            or (self.settings.laser.mode.lower() == "ptm" and self.ptm_service.state.online
+            or (self.settings.laser.mode.lower() in {"ptm", "gpio"} and self.ptm_service.state.online
                 and self.ptm_service.state.status.get("laser_bypass") is True)
         )
         result["laser"] = {"active": result["ptm"]["active"] or laser_local,
@@ -393,7 +404,7 @@ class CoreApplication:
             if not service.state.enabled:
                 if (device == "ptm" and service is self.laser_service
                         and self.ptm_service.state.enabled
-                        and (self.settings.laser.mode.lower() == "ptm"
+                        and (self.settings.laser.mode.lower() in {"ptm", "gpio"}
                              or self.ptm_service.state.status.get("laser_on")
                              or self.ptm_service.state.status.get("laser_connected") is True)):
                     try:
@@ -477,6 +488,9 @@ class CoreApplication:
     async def _replace_settings_locked(self, settings: AppSettings) -> None:
         validate_discovery(settings.discovery)
         self._validate_operator_settings(settings)
+        if self._power_laser_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._power_laser_task
         plc_was_enabled = self._plc_enabled()
         gateway_reconfigure = (
             settings.xgt.control != self.settings.xgt.control
@@ -492,7 +506,7 @@ class CoreApplication:
         disabling_laser = self.laser_service.state.enabled and not (
             settings.laser.enabled
             and (
-                settings.laser.mode.lower() != "ptm"
+                settings.laser.mode.lower() not in {"ptm", "gpio"}
                 or (
                     settings.motor.enabled
                     and settings.processes.get("ptm", {}).get("enabled", True)
@@ -631,7 +645,7 @@ class CoreApplication:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._gateway_config_task
             self._gateway_config_task = None
-        for task in (self._run_task, self._server_task, self._http_server_task):
+        for task in (self._run_task, self._server_task, self._http_server_task, self._power_laser_task):
             if task:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -786,10 +800,69 @@ class CoreApplication:
         self._read_plc_input(now)
         self._update_plc_heartbeat_alarm(now)
         self._sync_device_snapshots()
+        self._update_power_save()
+        if self.power_save.sleeping:
+            self.orchestrator.tick(self.plc_input, power_saving=True)
         await self._apply_safe_stop_if_needed()
         await self._handle_plc_command()
         self._build_output(now)
         self._write_plc_output()
+
+    def _laser_permitted(self) -> bool:
+        return bool(self.plc_input.run_enable and self.plc_input.laser_enable
+                    and not self.plc_input.force_stop and not self.power_save.sleeping
+                    and not self._controller_restart_pending()
+                    and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
+                    and self.laser_service.state.enabled and not self._device_bypassed("laser"))
+
+    def _update_power_save(self) -> None:
+        plc = self.plc_input
+        if plc.wake_up and not self._wake_up_previous:
+            self.power_save.wake("plc.wake_up")
+        self._wake_up_previous = plc.wake_up
+        if (plc.command_code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.NUTRUNNER_DATA_REQUEST}
+                and (not self._command_seen or plc.command_seq != self.command.last_seq)
+                and self.command.status != CommandStatus.BUSY):
+            self.power_save.observe_request(plc.command_code, plc.command_seq,
+                                            plc.req_recipe_id, plc.req_point_id)
+        self.power_save.timeout_s = self.settings.runtime.power_save_timeout_s
+        entered = self.power_save.tick(busy=bool(
+            self.command.status == CommandStatus.BUSY or self._pending_request
+            or self.ptm_service.state.status.get("moving")))
+        if entered:
+            LOGGER.info("PLC work requests idle: entering Vision/laser power saving")
+            self._active_recipe_id = self._active_point_id = 0
+        permitted = self._laser_permitted()
+        laser = self.laser_service.state
+        need_off = (entered or self._laser_permit_previous or
+                    self.ptm_service.state.status.get("laser_on") or laser.status.get("on"))
+        changed = self._power_sleeping_previous != self.power_save.sleeping
+        actual_sleep = self.ptm_service.state.status.get("raw", {}).get("laser", {}).get("power_saving")
+        mismatch = isinstance(actual_sleep, bool) and actual_sleep != self.power_save.sleeping
+        if ((changed or mismatch or (not permitted and need_off)) and laser.enabled and not laser.bypassed
+                and now_ms() >= self._power_laser_retry_ms
+                and (self._power_laser_task is None or self._power_laser_task.done())):
+            self._power_laser_retry_ms = now_ms() + 1000
+            self._power_laser_task = asyncio.create_task(self._power_laser_off())
+            self._power_sleeping_previous = self.power_save.sleeping
+        self._laser_permit_previous = permitted
+
+    async def _power_laser_off(self) -> None:
+        try:
+            async with self._laser_control_lock:
+                if self.settings.laser.mode.lower() in {"ptm", "gpio"}:
+                    await self.laser_service.command("laser.power_save", {"enabled": self.power_save.sleeping})
+                    try:
+                        await self.laser_service.command("laser.arm", {"enabled": False})
+                    finally:
+                        await self.laser_service.command(self.settings.laser.off_command)
+                else:
+                    await self.laser_service.command(self.settings.laser.off_command)
+            self._report_safe_stop_result("laser", "")
+        except Exception as exc:
+            self._report_safe_stop_result("laser", str(exc))
+            self.alarms.set_fault_word(DeviceSummaryBit.LASER, 1,
+                                       self.settings.runtime.fault_latch_enabled)
 
     def _read_plc_input(self, timestamp_ms: int) -> None:
         if not self._plc_enabled():
@@ -958,7 +1031,7 @@ class CoreApplication:
         if status.get("fault"):
             fault |= 1 << 1
         bypass = (
-            self.settings.laser.mode.lower() == "ptm"
+            self.settings.laser.mode.lower() in {"ptm", "gpio"}
             and self.ptm_service.state.online
             and self.ptm_service.state.status.get("laser_bypass") is True
         )
@@ -1166,7 +1239,13 @@ class CoreApplication:
         ):
             try:
                 if self.laser_service.state.enabled:
-                    await self.laser_service.command(self.settings.laser.off_command)
+                    if self.settings.laser.mode.lower() in {"ptm", "gpio"}:
+                        try:
+                            await self.laser_service.command("laser.arm", {"enabled": False})
+                        finally:
+                            await self.laser_service.command(self.settings.laser.off_command)
+                    else:
+                        await self.laser_service.command(self.settings.laser.off_command)
                 else:
                     await self.ptm_service.command("laser.off")
                 self._report_safe_stop_result("laser", "")
@@ -1346,6 +1425,7 @@ class CoreApplication:
     async def _dispatch_plc_command(
         self, code: int, seq: int, command: str, params: dict[str, Any]
     ) -> None:
+        preparing_laser = False
         try:
             if code == CommandCode.ERROR_RESET:
                 self.alarm_history.capture(self.alarms, self.settings.runtime.fault_latch_enabled)
@@ -1376,7 +1456,22 @@ class CoreApplication:
                 self.command.status = CommandStatus.COMPLETE
                 self.command.result = CommandResult.OK
                 return
-            response = await self.ptm_service.command(command, params)
+            if code == CommandCode.TARGET_APPLY_MOVE and self.laser_service.state.enabled:
+                async with self._laser_control_lock:
+                    preparing_laser = True
+                    await self.laser_service.command(self.settings.laser.off_command)
+                    permitted = self._laser_permitted()
+                    move_params = {**params, "laser_after_move": permitted}
+                    if self.settings.laser.mode.lower() in {"ptm", "gpio"}:
+                        await self.laser_service.command("laser.power_save", {"enabled": self.power_save.sleeping})
+                        arm = await self.laser_service.command("laser.arm", {"enabled": permitted})
+                        if isinstance(arm, dict) and "permit_token" in arm:
+                            move_params["laser_permit_token"] = arm["permit_token"]
+                    preparing_laser = False
+                    response = await self.ptm_service.command(command, move_params)
+            else:
+                response = await self.ptm_service.command(command, {
+                    **params, **({"laser_after_move": False} if code == CommandCode.TARGET_APPLY_MOVE else {})})
             if seq != self.command.last_seq or self.command.status != CommandStatus.BUSY:
                 return
             motion_id = response.get("motion_id") if isinstance(response, dict) else None
@@ -1421,7 +1516,7 @@ class CoreApplication:
                 else:
                     self.command.result = CommandResult.INTERNAL_ERROR
                     self.alarms.set_fault_word(
-                        DeviceSummaryBit.PAN_TILT_MOTOR, 1 << 0,
+                        DeviceSummaryBit.LASER if preparing_laser else DeviceSummaryBit.PAN_TILT_MOTOR, 1 << 0,
                         self.settings.runtime.fault_latch_enabled,
                     )
 
@@ -1458,7 +1553,11 @@ class CoreApplication:
                 3 if self.command.result == CommandResult.MOTION_TIMEOUT
                 else 2 if motion["code"] == CommandCode.HOME else 6
             )
-            self._set_motion_fault(fault_bit)
+            if str(raw_motion.get("last_error", "")).startswith("LASER_"):
+                self.alarms.set_fault_word(DeviceSummaryBit.LASER, 1,
+                                           self.settings.runtime.fault_latch_enabled)
+            else:
+                self._set_motion_fault(fault_bit)
             self._active_motion = None
             return
         ptm_timeout = (
@@ -1937,6 +2036,9 @@ class CoreApplication:
                     return JsonTcpResponse(True, {"accepted": False, "bypassed": True})
                 if service is not None and not service.state.enabled:
                     return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": f"device is disabled: {device_id}"})
+                if self.power_save.sleeping and (device_command in {"laser.on", "laser.pulse"}
+                        or (device_command == "laser.arm" and device_params.get("enabled"))):
+                    return JsonTcpResponse(False, error={"code": "POWER_SAVING", "message": "Wake Core before enabling laser output"})
                 result = await self.devices.command(device_id, device_command, device_params)
                 return JsonTcpResponse(True, result)
             if command.startswith("process."):
@@ -1976,6 +2078,9 @@ class CoreApplication:
                 return JsonTcpResponse(True, self.ptm_service.snapshot())
             if command == "vision.status":
                 return JsonTcpResponse(True, self.vision_service.snapshot())
+            if command == "power_save.wake":
+                self.power_save.wake("api")
+                return JsonTcpResponse(True, self.power_save.snapshot())
             if command == "laser.status":
                 return JsonTcpResponse(True, self.laser_service.snapshot())
             if command == "motion.stop":
@@ -1986,6 +2091,8 @@ class CoreApplication:
                 await self.ptm_service.command("motion.stop")
                 return JsonTcpResponse(True, {"accepted": True})
             if command == "laser.on":
+                if self.power_save.sleeping:
+                    return JsonTcpResponse(False, error={"code": "POWER_SAVING", "message": "Wake Core before enabling laser output"})
                 if self._device_bypassed("laser"):
                     return JsonTcpResponse(True, {"accepted": False, "bypassed": True})
                 if not self.laser_service.state.enabled:
@@ -2098,6 +2205,7 @@ class CoreApplication:
                 "write": self._plc_write_snapshot(memory_header),
             },
             "runtime": {
+                "power_save": self.power_save.snapshot(),
                 "sampled_ms": now_ms(),
                 "loop_running": self._run_task is not None and not self._run_task.done(),
                 "cycle_count": self._cycle_count,
@@ -2186,7 +2294,9 @@ class CoreApplication:
                 "http": {"host": module.get("http_host"), "port": module.get("http_port")},
             }
         return {"schema_version": 1, "commands": ["monitor.snapshot", "monitor.capabilities", "monitor.config.apply", "alarms.active",
-                                                         "alarms.history", "alarms.export"],
+                                                         "alarms.history", "alarms.export", "power_save.wake"],
+                "power_save": {"timeout_s": self.settings.runtime.power_save_timeout_s,
+                               "plc_wake_bit": "D+00.4", "edge": "rising"},
                 "alarm_retention_days": 30, "map_version": MAP_VERSION, "endpoints": endpoints,
                 "allow_remote_process_control": self.settings.core.allow_remote_process_control,
                 "unsupported": ["camera_2_plc_alarms", "vision_frame_contract", "vision_calibration_contract"]}

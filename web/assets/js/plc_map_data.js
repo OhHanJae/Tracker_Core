@@ -1,7 +1,7 @@
 window.TRACK_EYE_PLC_MAP = {
   "sourceFile": "트래커 PLC 통신 맵 v4.2 Core 반영.xlsx",
-  "sourceTitle": "Tracker Project PLC to Controller Communication Map v4.2",
-  "note": "웹에서는 PLC 기준 주소를 적용하여 Dnnn 형식으로 표시합니다.",
+  "sourceTitle": "Tracker Project PLC Communication Map v4.2 + WakeUp extension 2026-10-15",
+  "note": "v4.2 기준 + D+00.4 WAKE_UP 상승 에지 확장. 원본 XLSX는 v4.2 유지; PLC_WAKEUP_EXTENSION.md 참조.",
   "sheets": [
     {
       "key": "01_PLC_to_Controller",
@@ -75,13 +75,13 @@ window.TRACK_EYE_PLC_MAP = {
           "시스템",
           "D+00",
           "4",
-          "Reserved",
-          "예약",
-          "항상 0",
-          "-",
-          "-",
-          "-",
-          "0"
+          "WAKE_UP",
+          "Vision/레이저 절전 해제 요청",
+          "0→1 에지. 유지 HIGH는 타이머를 반복 초기화하지 않음",
+          "BOOL",
+          "Rising edge",
+          "수동/자동",
+          "0/1"
         ],
         [
           "시스템",

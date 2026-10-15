@@ -37,6 +37,7 @@ function details(title, rows, note = '') {
 export function renderRuntimeMonitor() {
   const status = state.coreStatus || {};
   const runtime = status.runtime || {};
+  const power = runtime.power_save || {};
   const plc = status.plc || {};
   const write = plc.write || {};
   const header = plc.shared_memory_header || {};
@@ -51,6 +52,7 @@ export function renderRuntimeMonitor() {
   const writeHealthy = fresh && ['confirmed', 'transmitting'].includes(write.state);
   const controller = controllerLabels[runtime.controller_state] || runtime.controller_state || 'N/A';
   const blockers = [];
+  if (power.sleeping) blockers.push('Vision / 레이저 절전 중');
   if (runtime.force_stop) blockers.push('FORCE_STOP');
   if (runtime.run_enable === false) blockers.push('RUN_ENABLE 꺼짐');
   if (alarms.fault_summary) blockers.push(`Fault ${alarms.primary_fault_code}`);
@@ -76,6 +78,7 @@ export function renderRuntimeMonitor() {
     <div class="grid two section-gap">
       ${details('Core 처리 상태', [
         ['처리 단계', controller], ['추적 상태', runtime.tracking_state],
+        ['Vision / 레이저 절전', `${power.sleeping ? '절전 중' : '활성'} · PLC 요청 없음 ${power.idle_seconds ?? '-'} / ${power.timeout_s ?? 1800}초`],
         ['주기 / 최근 소요 시간', `${age(runtime.cycle_interval_ms)} / ${age(runtime.last_cycle_duration_ms)}`],
         ['마지막 주기 이후', age(runtime.last_cycle_age_ms)], ['누적 처리 주기', runtime.cycle_count],
         ['운전 제한 조건', blockers.join(' · ') || (runtime.system_ready ? '없음' : '대기')],

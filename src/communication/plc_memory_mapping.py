@@ -65,6 +65,7 @@ class PlcInput:
     run_enable: bool = False
     tracking_enable: bool = False
     laser_enable: bool = False
+    wake_up: bool = False
     force_stop: bool = False
     heartbeat: int = 0
     tracking_tolerance_mm_x100: int = 0
@@ -90,6 +91,7 @@ class PlcInput:
             run_enable=get_word_bit(padded, 0, 0),
             tracking_enable=get_word_bit(padded, 0, 2),
             laser_enable=get_word_bit(padded, 0, 3),
+            wake_up=get_word_bit(padded, 0, 4),
             force_stop=get_word_bit(padded, 0, 15),
             heartbeat=padded[7],
             tracking_tolerance_mm_x100=padded[8],

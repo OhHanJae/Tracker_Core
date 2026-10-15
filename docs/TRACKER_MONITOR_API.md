@@ -96,3 +96,14 @@ JSON 숫자는 정수/실수 표현이 같으면 동등하게 비교하지만 bo
 장치 probe 부재, 발생/복구/latch/reset/재발, 바이패스, Pan/Tilt 합산, restart unknown,
 cursor/filter, storage failure, 설정 stopped-state/conflict 조건을 확인한다.
 RDK 및 실제 PLC/PTM와 패널의 운전 검증은 별도 수행한다.
+
+## GPIO 레이저·절전 추가 (2026-10-15)
+
+- PTM이 RDK X5 GPIO BOARD 물리 핀 31을 소유한다. Core `laser.mode=ptm`은 기존 전송 설정을 유지하고 `gpio`도 PTM 전달 별칭으로 지원한다. 실제 backend/pin/numbering은 레이저 상태에 추가된다.
+- `runtime.power_save_timeout_s` 기본 1800초. 새 PLC command_seq의 명령 1/5와 유효 Recipe/Point ID를 작업 요청으로 인정한다. 반복 상태 조회/heartbeat는 타이머를 연장하지 않는다. BUSY/이동 중 진입은 보류한다.
+- `power_save.wake` params `{}`: 타이머 초기화·절전 해제. 기존 TCP JSON Lines와 HTTP `/api/command`를 사용한다. 레이저 ON 명령은 아니다.
+- `runtime.power_save`: sleeping, timeout_s, idle_seconds, remaining_s, last_plc_request, last_wake_source. 기존 status 및 `monitor.snapshot`에 포함한다.
+- `monitor.capabilities.commands`에 wake 명령, `power_save`에 timeout과 PLC wake 주소를 추가했다.
+- PLC `D+00.4 WAKE_UP` 상승 에지. 자세한 PLC 확장은 `PLC_WAKEUP_EXTENSION.md` 참조. Gateway 공유메모리 크기/프로토콜 변경은 없다.
+- 절전 시 기존 Vision `tracking.stop`으로 분석을 중지한다. 카메라 acquisition/전원 절전은 미구현이며 Vision 후속 계약으로 남겼다.
+- 포인트 dispatch가 OFF 응답 후 PTM을 움직인다. 허용된 move의 실제 위치 완료 후만 GPIO ON. OFF/정지/허가 해제는 예약 ON generation을 무효화한다. Core PLC 완료는 기존 fresh/matching motion ID 검증을 유지한다.

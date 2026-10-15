@@ -30,7 +30,7 @@ class LaserService(DeviceService):
 
     async def poll_once(self) -> None:
         ptm = self.ptm_service.state
-        if (self.state.enabled and self.settings.mode.lower() == "ptm"
+        if (self.state.enabled and self.settings.mode.lower() in {"ptm", "gpio"}
                 and not ptm.online and not (ptm.ok_count or ptm.error_count)):
             self.state.online = False
             self.state.last_error = ""
@@ -39,11 +39,11 @@ class LaserService(DeviceService):
 
     async def read_status(self) -> dict[str, Any]:
         mode = self.settings.mode.lower()
-        if mode == "ptm":
+        if mode in {"ptm", "gpio"}:
             ptm = self.ptm_service.state
             if not ptm.online:
                 raise JsonTcpError(ptm.last_error or "PTM status is offline")
-            status = normalize_laser_status(ptm.status, mode="ptm")
+            status = normalize_laser_status(ptm.status, mode=mode)
             if ptm.status.get("laser_connected") is not None:
                 status["online"] = bool(ptm.status["laser_connected"])
             return status
@@ -59,13 +59,6 @@ class LaserService(DeviceService):
                 raise JsonTcpError(str(response.error))
             data = response.result if isinstance(response.result, dict) else {}
             return normalize_laser_status(data, mode="tcp")
-        if mode == "gpio":
-            return {
-                "online": False,
-                "mode": "gpio",
-                "configured": False,
-                "message": "GPIO laser mode is reserved but not implemented",
-            }
         raise JsonTcpError(f"unsupported laser mode: {self.settings.mode}")
 
     async def command(self, command: str, params: dict[str, Any] | None = None) -> Any:
@@ -73,7 +66,7 @@ class LaserService(DeviceService):
         mode = self.settings.mode.lower()
         if command in {"laser.status", self.settings.status_command}:
             return self.snapshot()
-        if mode == "ptm":
+        if mode in {"ptm", "gpio"}:
             return await self.motor_client.request(command, params)
         if mode == "tcp":
             response = await send_json_request(
@@ -86,13 +79,11 @@ class LaserService(DeviceService):
             if not response.ok:
                 raise JsonTcpError(str(response.error))
             return response.result
-        if mode == "gpio":
-            raise JsonTcpError("GPIO laser mode is not implemented yet")
         raise JsonTcpError(f"unsupported laser mode: {self.settings.mode}")
 
 
 def normalize_laser_status(data: dict[str, Any], mode: str) -> dict[str, Any]:
-    laser = _dict(data.get("laser"))
+    laser = _dict(data.get("laser")) or _dict(_dict(data.get("raw")).get("laser"))
     state_text = str(
         _first_value(data, laser, keys=("state", "status", "emission_state")) or ""
     ).lower()
@@ -104,6 +95,9 @@ def normalize_laser_status(data: dict[str, Any], mode: str) -> dict[str, Any]:
     return {
         "online": _bool_first(True, data, laser, "online", "connected", "ready"),
         "mode": mode,
+        "backend": laser.get("backend", data.get("backend")),
+        "pin": laser.get("pin", data.get("pin")),
+        "numbering": laser.get("numbering", data.get("numbering")),
         "bypass": _bool_first(False, data, laser, "laser_bypass", "bypass"),
         "on": on,
         "power_percent": _first_number(data, laser, "power_percent", "power"),
@@ -117,19 +111,17 @@ def normalize_laser_status(data: dict[str, Any], mode: str) -> dict[str, Any]:
 
 def _protocol(mode: str) -> str:
     mode = mode.lower()
-    if mode == "ptm":
-        return "PTM TCP JSON"
-    if mode == "gpio":
-        return "GPIO"
+    if mode in {"ptm", "gpio"}:
+        return "PTM TCP JSON / GPIO" if mode == "gpio" else "PTM TCP JSON"
     return "TCP JSON"
 
 
 def _endpoint(settings: LaserSettings) -> str:
     mode = settings.mode.lower()
+    if mode == "gpio":
+        return "ptm://attached/GPIO/BOARD/31"
     if mode == "ptm":
         return "ptm://attached"
-    if mode == "gpio":
-        return "gpio://local"
     return f"{settings.host}:{settings.port}"
 
 
