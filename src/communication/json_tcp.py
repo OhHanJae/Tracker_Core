@@ -47,7 +47,7 @@ async def send_json_request(
 
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(connect_host, port), timeout=timeout_s
+            asyncio.open_connection(connect_host, port, limit=2 * 1024 * 1024), timeout=timeout_s
         )
     except OSError as exc:
         raise JsonTcpError(f"connect failed: {connect_host}:{port}: {exc}") from exc

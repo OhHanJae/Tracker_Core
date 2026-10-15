@@ -7,8 +7,9 @@ import logging
 from typing import Any
 
 from src.common.event_history import EventHistory
+from src.common.alarm_history import AlarmHistory
 from src.common.discovery import DiscoveryService
-from src.common.settings import AppSettings, resolve_app_path
+from src.common.settings import AppSettings, load_settings, resolve_app_path
 from src.common.status import now_ms
 from src.communication.json_tcp import JsonTcpResponse, send_json_request
 from src.core.application import CoreApplication, _normalize_command
@@ -225,6 +226,38 @@ class CoreWebApplication(CoreApplication):
     async def handle_tcp_command(self, command: str, params: dict[str, Any]) -> JsonTcpResponse:
         command = _normalize_command(command)
         try:
+            if command == "monitor.capabilities":
+                return JsonTcpResponse(True, self.monitor_capabilities())
+            if command == "monitor.config.apply":
+                response = await self._worker_request(command, params)
+                if response.ok:
+                    # The worker guarded and persisted the shared settings file.
+                    # Refresh management-owned settings without a second mutation.
+                    await self._replace_settings(load_settings(self.settings_path))
+                return response
+            if command == "monitor.snapshot":
+                status = self.status_snapshot()
+                fresh = bool(self._worker_sample_ms and now_ms() - self._worker_sample_ms < 2000)
+                if not fresh:
+                    status["monitor"] = {"schema_version": 1, "state_age_ms": None,
+                                         "endpoints": self.monitor_capabilities()["endpoints"]}
+                    status["plc_memory"] = {"connected": False, "error": "Main Core state unavailable"}
+                    status["alarm_history"] = {"schema_version": 1, "entries": [], "total": 0,
+                                               "recording": {"running": False, "last_error": "Main Core state unavailable"}}
+                return JsonTcpResponse(True, status)
+            if command in {"alarms.history", "alarms.export"}:
+                response = await self._worker_request(command, params)
+                if response.ok:
+                    return response
+                result = await asyncio.to_thread(AlarmHistory.read_database, self.alarm_history.path, params)
+                return JsonTcpResponse(True, {"schema_version": 1, **result,
+                                              "recording": {"running": False, "last_error": response.error,
+                                                            "retention_days": 30}})
+            if command == "alarms.active":
+                status = self.status_snapshot()
+                if self._worker_sample_ms and now_ms() - self._worker_sample_ms < 2000:
+                    return JsonTcpResponse(True, status.get("alarm_history", {"entries": [], "total": 0}))
+                return JsonTcpResponse(False, error={"code": "CORE_UNAVAILABLE", "message": "Current alarms require a fresh Core snapshot"})
             if command in {"logs.history", "logs.export"}:
                 result = self.history.query(limit=5000 if command == "logs.export" else int(params.get("limit", 500)),
                                             level=str(params.get("level", "")), source=str(params.get("source", "")))

@@ -48,10 +48,16 @@ class PtmService(DeviceService):
                 int(params.get("point_id", 0)),
             )
         elif command == "motion.stop":
-            await self.client.stop()
+            if "jog_token" in params:
+                response = await self.client.request(command, params)
+                if isinstance(response, dict) and response.get("accepted") is False:
+                    return response
+            else:
+                await self.client.stop()
+                response = {"accepted": True}
             self._poll_motion_id = None
             self.state.poll_interval_ms = 200
-            return {"accepted": True}
+            return response
         else:
             response = await self.client.request(command, params)
         if command in {"point.goto", "home.start"} and isinstance(response, dict):

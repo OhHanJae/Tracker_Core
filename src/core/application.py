@@ -4,6 +4,8 @@ import asyncio
 import contextlib
 import logging
 import math
+import time
+from datetime import datetime, timezone
 from dataclasses import replace
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -24,6 +26,7 @@ from src.common.discovery import DiscoveryService, validate_discovery
 from src.common.network_manager import NetworkManager
 from src.core.orchestration import CoreOrchestrator
 from src.common.system_resources import SystemResourceMonitor
+from src.common.alarm_history import AlarmHistory, MAP_VERSION
 from src.common.status import (
     AlarmBook,
     CommandCode,
@@ -75,6 +78,11 @@ class CoreApplication:
         self._log_handler: RotatingFileHandler | None = None
 
         self.alarms = AlarmBook()
+        self.alarm_history = AlarmHistory(
+            resolve_app_path(self.settings.paths.logs_dir) / "alarms.sqlite3",
+            ROOT_DIR / "web/assets/js/plc_map_data.js",
+        )
+        self._monitor_plc_cache: dict[str, Any] = {}
         self.command = CommandRuntime()
         self._command_seen = False
         self._controller_restart_request: dict[str, Any] | None = None
@@ -585,6 +593,7 @@ class CoreApplication:
     async def start(self) -> None:
         self._validate_operator_settings(self.settings)
         self._configure_logging()
+        await self.alarm_history.start()
         await self._server.start()
         self._server_task = asyncio.create_task(self._server.serve_forever())
         if self._http_server is not None:
@@ -646,6 +655,7 @@ class CoreApplication:
         if self._http_server is not None:
             await self._http_server.stop()
         self.plc_memory.close()
+        await self.alarm_history.close()
         if self._log_handler is not None:
             logging.getLogger().removeHandler(self._log_handler)
             self._log_handler.close()
@@ -734,6 +744,7 @@ class CoreApplication:
                     self.settings.runtime.fault_latch_enabled,
                 )
             self._report_diagnostics()
+            self.alarm_history.capture(self.alarms, self.settings.runtime.fault_latch_enabled)
             elapsed = now_ms() - started
             self._cycle_count += 1
             self._last_cycle_ms = now_ms()
@@ -805,6 +816,12 @@ class CoreApplication:
                     f"PLC input length {len(payload)} != {BYTE_COUNT}"
                 )
             self.plc_input = PlcInput.from_bytes(payload)
+            self._monitor_plc_cache.update(
+                name=self.plc_memory.connected_name or self.plc_memory.name,
+                header=header.to_dict() if hasattr(header, "to_dict") else dict(vars(header)),
+                read_words=list(self.plc_input.raw_words),
+                read_sample_ms=timestamp_ms,
+            )
             self._plc_read_error = ""
             self.alarms.set_fault_word(
                 DeviceSummaryBit.PLC_COMMUNICATION,
@@ -1331,7 +1348,9 @@ class CoreApplication:
     ) -> None:
         try:
             if code == CommandCode.ERROR_RESET:
+                self.alarm_history.capture(self.alarms, self.settings.runtime.fault_latch_enabled)
                 self.alarms.reset_latched_faults()
+                self.alarm_history.capture(self.alarms, self.settings.runtime.fault_latch_enabled, reset=True)
                 self.command.status = CommandStatus.COMPLETE
                 return
             if code == CommandCode.CONTROLLER_RESTART:
@@ -1659,6 +1678,7 @@ class CoreApplication:
                 self._plc_write_ack_seen = bool(header.last_write_time_ns)
             self._plc_write_sequence = self.plc_memory.write_plc_data(payload)
             self._plc_write_payload = payload
+            self._monitor_plc_cache.update(write_words=words_from_bytes(payload), write_sample_ms=timestamp)
             self._plc_write_last_commit_ms = timestamp
             self._plc_write_commit_count += 1
             timeout_ms = max(
@@ -1701,8 +1721,55 @@ class CoreApplication:
             command = _normalize_command(command)
             if command in {"device.command", "motion.stop", "laser.on", "laser.off"}:
                 self._sync_bypass_state()
-            if command == "runtime.snapshot":
-                return JsonTcpResponse(True, self.status_snapshot())
+            if command in {"runtime.snapshot", "monitor.snapshot"}:
+                return JsonTcpResponse(True, self.monitor_snapshot())
+            if command == "monitor.capabilities":
+                return JsonTcpResponse(True, self.monitor_capabilities())
+            if command == "monitor.config.apply":
+                patch = params.get("patch")
+                expected = params.get("expected")
+                if not isinstance(patch, dict) or not isinstance(expected, dict):
+                    return JsonTcpResponse(False, error={"code": "BAD_REQUEST", "message": "patch and expected objects are required"})
+                async with self._config_request_lock:
+                    age = now_ms() - self._last_cycle_ms if self._last_cycle_ms else None
+                    if age is None or age > 2000 or self._run_task is None or self._run_task.done():
+                        return JsonTcpResponse(False, error={"code": "STATE_UNAVAILABLE", "message": "A fresh running Main Core loop is required"})
+                    if self.plc_input.run_enable or bool(self.ptm_service.state.status.get("moving")) or (
+                        self._safe_stop_task is not None and not self._safe_stop_task.done()
+                    ):
+                        return JsonTcpResponse(False, error={"code": "RUNNING", "message": "Stop PLC operation and motion before applying configuration"})
+                    latest = load_settings(self.settings_path)
+                    changed = _settings_patch_paths(patch)
+                    actual = latest.to_dict()
+                    missing = [key for key in changed if key not in expected]
+                    if missing:
+                        return JsonTcpResponse(False, error={"code": "BAD_REQUEST", "message": "expected must include every changed setting path", "paths": missing})
+                    conflicts = []
+                    for key in changed:
+                        value: Any = actual
+                        for part in key.split("."):
+                            value = value.get(part) if isinstance(value, dict) else None
+                        same_number = (type(value) in (int, float) and type(expected[key]) in (int, float))
+                        if value != expected[key] or (type(value) is not type(expected[key]) and not same_number):
+                            conflicts.append(key)
+                    if conflicts:
+                        return JsonTcpResponse(False, error={"code": "CONFLICT", "message": "Settings changed since they were read", "paths": conflicts})
+                    new_settings = apply_settings_patch(latest, patch)
+                    validate_discovery(new_settings.discovery)
+                    self._validate_operator_settings(new_settings)
+                    ensure_data_directories(new_settings)
+                    old_settings = self.settings
+                    try:
+                        await self._replace_settings(new_settings)
+                        save_settings(new_settings, self.settings_path)
+                    except Exception:
+                        await self._replace_settings(old_settings)
+                        raise
+                return JsonTcpResponse(True, self.settings.to_dict())
+            if command == "alarms.active":
+                return JsonTcpResponse(True, self.alarm_history.active())
+            if command in {"alarms.history", "alarms.export"}:
+                return JsonTcpResponse(True, await self.alarm_history.query(params))
             if command == "controller.restart_request":
                 request = await self._request_controller_restart()
                 return JsonTcpResponse(True, {"accepted": True, **request})
@@ -1933,7 +2000,9 @@ class CoreApplication:
                 result = await self.laser_service.command(self.settings.laser.off_command)
                 return JsonTcpResponse(True, {"accepted": True})
             if command == "alarm.reset":
+                self.alarm_history.capture(self.alarms, self.settings.runtime.fault_latch_enabled)
                 self.alarms.reset_latched_faults()
+                self.alarm_history.capture(self.alarms, self.settings.runtime.fault_latch_enabled, reset=True)
                 return JsonTcpResponse(True, {"accepted": True})
             return JsonTcpResponse(
                 False,
@@ -2104,6 +2173,52 @@ class CoreApplication:
             self._last_status["plc"]["shared_memory_header"] = header
         return self._last_status
 
+    def monitor_capabilities(self) -> dict[str, Any]:
+        endpoints = {}
+        for key, module_key in (("ptm", "ptm"), ("vision", "vision"), ("plc", "plc_gateway")):
+            module = self.settings.processes.get(module_key, {})
+            process = self.process_manager.snapshot().get(str(module.get("process_name", "")), {})
+            runtime = process.get("runtime_endpoint") or {}
+            endpoints[key] = {
+                "enabled": bool(module.get("enabled", True)),
+                "tcp": {"host": runtime.get("host", module.get("health_host")),
+                        "port": runtime.get("port", module.get("health_port"))},
+                "http": {"host": module.get("http_host"), "port": module.get("http_port")},
+            }
+        return {"schema_version": 1, "commands": ["monitor.snapshot", "monitor.capabilities", "monitor.config.apply", "alarms.active",
+                                                         "alarms.history", "alarms.export"],
+                "alarm_retention_days": 30, "map_version": MAP_VERSION, "endpoints": endpoints,
+                "allow_remote_process_control": self.settings.core.allow_remote_process_control,
+                "unsupported": ["camera_2_plc_alarms", "vision_frame_contract", "vision_calibration_contract"]}
+
+    def monitor_snapshot(self) -> dict[str, Any]:
+        status = self.status_snapshot(include_shared_memory=False)
+        sampled = now_ms()
+        cache = self._monitor_plc_cache
+        header = cache.get("header", {})
+        connected = bool(self._plc_enabled() and self.plc_memory.connected and not self._plc_read_error)
+        memory = {"connected": connected, "disabled": not self._plc_enabled(),
+                  "name": cache.get("name", self.plc_memory.name), "byte_order": "little", "refresh_ms": 500,
+                  "header": dict(header), "error": self._plc_read_error or self._gateway_config_error,
+                  "read": {"base_address": self._plc_area_value("read", "address"),
+                           "offset": header.get("read_offset"), "word_count": len(cache.get("read_words", [])),
+                           "words": list(cache.get("read_words", [])),
+                           "age_ms": sampled - cache["read_sample_ms"] if cache.get("read_sample_ms") else None},
+                  "write": {"base_address": self._plc_area_value("write", "address"),
+                            "offset": header.get("write_offset"), "word_count": len(cache.get("write_words", [])),
+                            "words": list(cache.get("write_words", [])),
+                            "age_ms": sampled - cache["write_sample_ms"] if cache.get("write_sample_ms") else None}}
+        source_ns = header.get("last_read_time_ns")
+        memory["read"]["source_age_ms"] = max(0, (time.time_ns() - source_ns) // 1000000) if source_ns else None
+        status["plc_memory"] = memory
+        status["alarm_history"] = self.alarm_history.active()
+        status["monitor"] = {"schema_version": 1, "captured_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                             "state_age_ms": sampled - self._last_cycle_ms if self._last_cycle_ms else None,
+                             "endpoints": self.monitor_capabilities()["endpoints"]}
+        for device in status.get("devices", {}).values():
+            device["age_ms"] = sampled - device["last_ok_ms"] if device.get("last_ok_ms") else None
+        return status
+
     async def _xgt_web_status(self) -> dict[str, Any]:
         web = self.settings.xgt.web
         host = client_connect_host(web.host)
@@ -2255,6 +2370,17 @@ def _normalize_command(command: str) -> str:
         "RESTART_CONTROLLER": "controller.restart_request",
     }
     return aliases.get(command, command)
+
+
+def _settings_patch_paths(patch: dict[str, Any], prefix: str = "") -> list[str]:
+    paths = []
+    for key, value in patch.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict) and value:
+            paths.extend(_settings_patch_paths(value, path))
+        else:
+            paths.append(path)
+    return paths
 
 
 async def run_core(settings_path: Path = DEFAULT_CONFIG_PATH) -> None:
