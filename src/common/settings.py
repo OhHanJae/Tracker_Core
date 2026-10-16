@@ -311,7 +311,9 @@ def settings_from_dict(data: dict[str, Any]) -> AppSettings:
         process["http_port"] = supplied.get("http_port", web[port_key])
         tcp["host"], tcp["port"] = process["health_host"], int(process["health_port"])
         web[host_key], web[port_key] = process["http_host"], int(process["http_port"])
-    merged["vision"]["camera_count"] = 1
+    camera_count = merged["vision"]["camera_count"]
+    if type(camera_count) is not int or not 1 <= camera_count <= 2:
+        raise ValueError("vision.camera_count must be an integer from 1 to 2")
     for section in ("motor", "vision"):
         if not isinstance(merged[section]["bypass"], bool):
             raise ValueError(f"{section}.bypass must be a boolean")

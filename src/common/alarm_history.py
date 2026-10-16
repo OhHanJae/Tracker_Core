@@ -18,8 +18,8 @@ from typing import Any
 from src.common.status import AUTO_RESET_FAULT_MASKS, FAULT_PRIORITY, WARNING_PRIORITY, AlarmBook, DeviceSummaryBit
 
 
-MAP_VERSION = "v4.2"
-ALARM_OFFSETS = {3: 50, 2: 58, 7: 60, 8: 62, 10: 66, 0: 68, 1: 70, 11: 72, 12: 74}
+MAP_VERSION = "v5"
+ALARM_OFFSETS = {3: 50, 4: 52, 2: 58, 7: 60, 8: 62, 10: 66, 0: 68, 1: 70, 11: 72, 12: 74}
 
 
 def utc_stamp() -> str:

@@ -42,6 +42,12 @@ export function renderRuntimeMonitor() {
   const write = plc.write || {};
   const header = plc.shared_memory_header || {};
   const command = status.command || {};
+  const targetContext = runtime.target_context;
+  const hasTargetContext = targetContext?.schema_version === 1;
+  const requested = targetContext?.requested;
+  const applied = targetContext?.applied;
+  const appliedRecipe = hasTargetContext ? applied?.recipe_id : runtime.active_recipe_id;
+  const appliedPoint = hasTargetContext ? applied?.point_id : runtime.active_point_id;
   const ptm = status.ptm || {};
   const vision = status.vision || {};
   const alarms = status.alarms || {};
@@ -88,7 +94,11 @@ export function renderRuntimeMonitor() {
         ['명령 / 순번', `${command.last_code ?? '-'} / ${command.last_seq ?? '-'}`],
         ['진행 상태', commandLabels[command.status] || command.status], ['처리 중 경과 시간', age(busyAge)],
         ['결과', command.result], ['상세', command.message || '없음'],
-        ['적용 Recipe / Point', `${runtime.active_recipe_id ?? '-'} / ${runtime.active_point_id ?? '-'}`],
+        ['PLC 요청값 Recipe / Point', requested ? `${requested.recipe_id} / ${requested.point_id} · CODE ${requested.command_code} / SEQ ${requested.command_seq}`
+          : targetContext?.schema_version === 1 ? '없음' : '조회 미지원'],
+        ['Core 적용 Recipe / Point', appliedRecipe > 0 && appliedPoint > 0
+          ? `${appliedRecipe} / ${appliedPoint}${applied?.ptm_bypassed ? ' · PTM 바이패스' : ''}`
+          : appliedRecipe === 0 || appliedPoint === 0 || targetContext?.applied === null ? '없음' : '미보고'],
         ['현재 오류 / 경고 코드', `${alarms.primary_fault_code ?? '-'} / ${alarms.primary_warning_code ?? '-'}`],
       ])}
     </div>

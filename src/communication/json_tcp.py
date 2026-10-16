@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 import json
 import mimetypes
@@ -58,13 +59,17 @@ async def send_json_request(
         writer.write(json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n")
         await asyncio.wait_for(writer.drain(), timeout=timeout_s)
 
+        deadline = asyncio.get_running_loop().time() + timeout_s
         while True:
-            raw_line = await asyncio.wait_for(reader.readline(), timeout=timeout_s)
+            remaining = deadline - asyncio.get_running_loop().time()
+            raw_line = await asyncio.wait_for(reader.readline(), timeout=max(0.0, remaining))
             if not raw_line:
                 raise JsonTcpError("connection closed before response")
             try:
                 message = json.loads(raw_line.decode("utf-8"))
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(message, dict):
                 continue
             if message.get("id") != request_id:
                 continue
@@ -105,16 +110,37 @@ class JsonLineServer:
         self.banner = banner
         self.allow_remote_process_control = allow_remote_process_control
         self._server: asyncio.AbstractServer | None = None
+        self._clients: set[asyncio.StreamWriter] = set()
+        self._client_tasks: set[asyncio.Task[None]] = set()
+        self._closing = False
 
     async def start(self) -> None:
+        self._closing = False
         self._server = await asyncio.start_server(self._handle_client, self.host, self.port)
 
     async def stop(self) -> None:
-        if self._server is None:
-            return
-        self._server.close()
-        await self._server.wait_closed()
-        self._server = None
+        self._closing = True
+        server, self._server = self._server, None
+        if server is not None:
+            server.close()
+        current_task = asyncio.current_task()
+        tasks = tuple(task for task in self._client_tasks if task is not current_task)
+        for task in tasks:
+            task.cancel()
+        clients = tuple(self._clients)
+        for writer in clients:
+            writer.close()
+        if clients:
+            try:
+                await asyncio.wait_for(asyncio.gather(
+                    *(writer.wait_closed() for writer in clients), return_exceptions=True), timeout=1.0)
+            except asyncio.TimeoutError:
+                for writer in clients:
+                    writer.transport.abort()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if server is not None:
+            await server.wait_closed()
 
     async def serve_forever(self) -> None:
         if self._server is None:
@@ -124,6 +150,30 @@ class JsonLineServer:
             await self._server.serve_forever()
 
     async def _handle_client(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            self._client_tasks.add(task)
+        self._clients.add(writer)
+        try:
+            if not self._closing:
+                await self._serve_client(reader, writer)
+        except (ConnectionError, asyncio.IncompleteReadError, UnicodeError, ValueError):
+            pass
+        finally:
+            self._clients.discard(writer)
+            try:
+                writer.close()
+                with contextlib.suppress(OSError):
+                    await writer.wait_closed()
+            finally:
+                if task is not None:
+                    self._client_tasks.discard(task)
+
+    async def _serve_client(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
@@ -189,12 +239,6 @@ class JsonLineServer:
                 writer.write(json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n")
                 await writer.drain()
         except (ConnectionResetError, BrokenPipeError):
-            pass
-
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except OSError:
             pass
 
     def _requires_local_process_control(
@@ -436,11 +480,6 @@ class JsonLineServer:
             await writer.drain()
         except (ConnectionResetError, BrokenPipeError):
             return
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except OSError:
-            pass
 
 
 def _render_tcp_help_page(status_json: str) -> str:

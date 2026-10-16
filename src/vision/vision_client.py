@@ -183,20 +183,28 @@ def normalize_vision_snapshot(data: dict[str, Any], camera_count: int) -> Vision
     if not isinstance(cameras, list):
         cameras = []
 
-    required_mask = 1
-    online_mask = _int(data.get("camera_online_mask"), 0) & 1
-    valid_mask = _int(data.get("camera_valid_mask"), 0) & 1
+    camera_count = 2 if camera_count == 2 else 1
+    required_mask = (1 << camera_count) - 1
+    online_mask = _int(data.get("camera_online_mask"), 0) & required_mask
+    valid_mask = _int(data.get("camera_valid_mask"), 0) & required_mask
     camera_warning_words: dict[int, int] = {}
     camera_fault_words: dict[int, int] = {}
     camera_ip = data.get("camera_ip")
 
-    if cameras:
-        camera_data = _dict(cameras[0])
-        online_mask = int(bool(camera_data.get("online") or camera_data.get("connected")))
-        valid_mask = int(bool(camera_data.get("valid") or camera_data.get("ready")))
-        camera_warning_words[1] = _int(camera_data.get("warning_word"), 0)
-        camera_fault_words[1] = _int(camera_data.get("fault_word"), 0)
-        camera_ip = camera_data.get("ip", camera_ip)
+    for index, camera in enumerate(cameras[:camera_count]):
+        camera_data = _dict(camera)
+        bit = 1 << index
+        if "online" in camera_data or "connected" in camera_data:
+            online = bool(camera_data.get("online") or camera_data.get("connected"))
+            online_mask = online_mask | bit if online else online_mask & ~bit
+        if "valid" in camera_data or "ready" in camera_data:
+            valid = bool(camera_data.get("valid") or camera_data.get("ready"))
+            valid_mask = valid_mask | bit if valid else valid_mask & ~bit
+        camera_warning_words[index + 1] = _int(camera_data.get("warning_word"), 0)
+        camera_fault_words[index + 1] = _int(camera_data.get("fault_word"), 0)
+        if index == 0:
+            camera_ip = camera_data.get("ip", camera_ip)
+    valid_mask &= online_mask
 
     position_error = _first_number(
         data,

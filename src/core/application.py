@@ -10,6 +10,7 @@ from dataclasses import replace
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from src.common.settings import (
     DEFAULT_CONFIG_PATH,
@@ -70,6 +71,7 @@ class CoreApplication:
     def __init__(self, settings_path: Path = DEFAULT_CONFIG_PATH, *, managed_worker: bool = False,
                  plc_restart_seq: int | None = None) -> None:
         self._managed_worker = managed_worker
+        self._instance_id = uuid4().hex
         self._suspended_processes: set[str] = set()
         self.settings_path = settings_path
         self.settings = load_settings(settings_path)
@@ -132,6 +134,7 @@ class CoreApplication:
         self._gateway_config_task: asyncio.Task[None] | None = None
         self._server_task: asyncio.Task[None] | None = None
         self._http_server_task: asyncio.Task[None] | None = None
+        self._http_server_error = ""
         self._stop_event = asyncio.Event()
         self._started = False
         self.system_resources = SystemResourceMonitor(ROOT_DIR)
@@ -255,6 +258,7 @@ class CoreApplication:
         )
         self.vision_service = VisionDeviceService(vision_settings, self.vision_api)
         self.orchestrator = CoreOrchestrator(self.vision_service)
+        self._power_save_tracking_resume_pending = False
         self.devices = DeviceRegistry(
             [self.ptm_service, self.laser_service, self.vision_service]
         )
@@ -576,8 +580,8 @@ class CoreApplication:
         if self._started:
             self._configure_logging()
         if restart_discovery:
-            self.discovery = DiscoveryService(settings.discovery, settings.core.port,
-                                              settings.core.http_port or settings.core.port)
+            self.discovery = DiscoveryService(settings.discovery, self._server.port,
+                                              self.discovery.web_port)
         self._server.static_root = None if self._managed_worker else resolve_app_path(self.settings.paths.web_dir)
         self._server.allow_remote_process_control = settings.core.allow_remote_process_control
         if self._http_server is not None:
@@ -604,17 +608,39 @@ class CoreApplication:
             if restart_discovery and not self._managed_worker:
                 await self.discovery.start()
 
+    async def _start_servers(self) -> None:
+        await self._server.start()
+        self._server_task = asyncio.create_task(self._server.serve_forever())
+        self._http_server_error = ""
+        if self._http_server is not None:
+            try:
+                await self._http_server.start()
+            except OSError as exc:
+                self._http_server_error = str(exc)
+                LOGGER.warning("Optional HTTP listener unavailable; primary port remains active: %s", exc)
+            else:
+                self._http_server_task = asyncio.create_task(self._http_server.serve_forever())
+        self.discovery.web_port = self._http_server.port if self._http_server_task is not None else self._server.port
+
+    async def _stop_servers(self) -> None:
+        tasks = (self._server_task, self._http_server_task)
+        for task in tasks:
+            if task is not None:
+                task.cancel()
+        await self._server.stop()
+        if self._http_server is not None:
+            await self._http_server.stop()
+        for task in tasks:
+            if task is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        self._server_task = self._http_server_task = None
+
     async def start(self) -> None:
         self._validate_operator_settings(self.settings)
         self._configure_logging()
         await self.alarm_history.start()
-        await self._server.start()
-        self._server_task = asyncio.create_task(self._server.serve_forever())
-        if self._http_server is not None:
-            await self._http_server.start()
-            self._http_server_task = asyncio.create_task(
-                self._http_server.serve_forever()
-            )
+        await self._start_servers()
         await self.process_manager.reconcile()
         if self._plc_enabled():
             self._gateway_config_task = asyncio.create_task(self._configure_gateway_on_start())
@@ -629,7 +655,7 @@ class CoreApplication:
             self.settings.core.host,
             self.settings.core.port,
         )
-        if self._http_server is not None:
+        if self._http_server_task is not None:
             LOGGER.info(
                 "Tracker Core Web started on http://%s:%s",
                 self.settings.core.host,
@@ -645,11 +671,12 @@ class CoreApplication:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._gateway_config_task
             self._gateway_config_task = None
-        for task in (self._run_task, self._server_task, self._http_server_task, self._power_laser_task):
+        for task in (self._run_task, self._power_laser_task):
             if task:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+        await self._stop_servers()
         if was_started:
             self.plc_input = PlcInput()
             self._abort_active_command(CommandResult.SYSTEM_NOT_READY)
@@ -665,9 +692,6 @@ class CoreApplication:
         await self.network_manager.cancel()
         with contextlib.suppress(Exception):
             await self.process_manager.shutdown()
-        await self._server.stop()
-        if self._http_server is not None:
-            await self._http_server.stop()
         self.plc_memory.close()
         await self.alarm_history.close()
         if self._log_handler is not None:
@@ -801,12 +825,36 @@ class CoreApplication:
         self._update_plc_heartbeat_alarm(now)
         self._sync_device_snapshots()
         self._update_power_save()
-        if self.power_save.sleeping:
-            self.orchestrator.tick(self.plc_input, power_saving=True)
+        self._update_power_save_tracking()
         await self._apply_safe_stop_if_needed()
         await self._handle_plc_command()
         self._build_output(now)
         self._write_plc_output()
+
+    def _update_power_save_tracking(self) -> None:
+        state = self.vision_service.state
+        if (not state.enabled or state.bypassed or self._device_bypassed("vision")
+                or state.status.get("tracking_bypass") is True):
+            self._power_save_tracking_resume_pending = False
+            return
+        if self.power_save.sleeping:
+            # With orchestration disabled, resume only tracking interrupted by sleep.
+            self._power_save_tracking_resume_pending |= state.status.get("tracking_active") is True
+            self.orchestrator.tick(self.plc_input, power_saving=True)
+            return
+        if not self._power_save_tracking_resume_pending:
+            return
+        latch_enabled = self.settings.runtime.fault_latch_enabled
+        blockers = self.alarms.fault_summary(latch_enabled)
+        if not self.alarms.fault_word(DeviceSummaryBit.TRACKER, latch_enabled) & ~1:
+            blockers &= ~(1 << int(DeviceSummaryBit.TRACKER))
+        self.orchestrator.tick(
+            self.plc_input, bool(blockers) or self._controller_restart_pending())
+        tracking = self.orchestrator.snapshot()
+        if (state.status.get("tracking_active") is True
+                and tracking["requested_tracking"] and not tracking["busy"]
+                and tracking["last_command"] == "tracking.start" and not tracking["last_error"]):
+            self._power_save_tracking_resume_pending = False
 
     def _laser_permitted(self) -> bool:
         return bool(self.plc_input.run_enable and self.plc_input.laser_enable
@@ -1049,7 +1097,9 @@ class CoreApplication:
             DeviceSummaryBit.VISION_COMMON,
             snapshot.vision_warning_word | (1 << 2 if snapshot.degraded else 0),
         )
-        required_missing = bool(snapshot.camera_required_mask & ~(snapshot.camera_online_mask & snapshot.camera_valid_mask))
+        camera_count = 2 if self.settings.vision.camera_count == 2 else 1
+        required_mask = snapshot.camera_required_mask & ((1 << camera_count) - 1)
+        required_missing = bool(required_mask & ~(snapshot.camera_online_mask & snapshot.camera_valid_mask))
         vision_fault = snapshot.vision_fault_word
         tracking_requested = self.plc_input.tracking_enable or snapshot.tracking_active
         tracker_present = snapshot.tracker_present is True or (snapshot.tracker_present is None and snapshot.tracker_valid)
@@ -1097,23 +1147,17 @@ class CoreApplication:
             self.settings.runtime.fault_latch_enabled,
         )
 
-        self.alarms.set_warning_word(
-            DeviceSummaryBit.CAMERA_1,
-            snapshot.camera_warning_words.get(1, 0),
-        )
-        camera_fault = snapshot.camera_fault_words.get(1, 0)
-        if snapshot.camera_required_mask & 1 and not snapshot.camera_online_mask & 1:
-            camera_fault |= 1 << 0
-        self.alarms.set_fault_word(
-            DeviceSummaryBit.CAMERA_1,
-            camera_fault,
-            self.settings.runtime.fault_latch_enabled,
-        )
-        for device in (
-            DeviceSummaryBit.CAMERA_2,
-            DeviceSummaryBit.CAMERA_3,
-            DeviceSummaryBit.CAMERA_4,
-        ):
+        cameras = (DeviceSummaryBit.CAMERA_1, DeviceSummaryBit.CAMERA_2)
+        for index, device in enumerate(cameras[:camera_count]):
+            bit = 1 << index
+            self.alarms.set_warning_word(device, snapshot.camera_warning_words.get(index + 1, 0))
+            camera_fault = snapshot.camera_fault_words.get(index + 1, 0)
+            if required_mask & bit and not snapshot.camera_online_mask & bit:
+                camera_fault |= 1 << 0
+            self.alarms.set_fault_word(
+                device, camera_fault, self.settings.runtime.fault_latch_enabled,
+            )
+        for device in cameras[camera_count:] + (DeviceSummaryBit.CAMERA_3, DeviceSummaryBit.CAMERA_4):
             self.alarms.clear_device(device)
 
     async def _apply_safe_stop_if_needed(self) -> None:
@@ -2170,6 +2214,22 @@ class CoreApplication:
                 header = memory_header.to_dict()
         plc_words = self.plc_input.raw_words[:20]
         output_words = self.output.to_words()[:80]
+        target_context = {"schema_version": 1, "requested": None, "applied": None}
+        if (self.plc_input.command_code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.NUTRUNNER_DATA_REQUEST}
+                and 1 <= self.plc_input.req_recipe_id <= 65535
+                and 1 <= self.plc_input.req_point_id <= 65535):
+            target_context["requested"] = {
+                "recipe_id": self.plc_input.req_recipe_id,
+                "point_id": self.plc_input.req_point_id,
+                "command_code": self.plc_input.command_code,
+                "command_seq": self.plc_input.command_seq,
+            }
+        if 1 <= self._active_recipe_id <= 65535 and 1 <= self._active_point_id <= 65535:
+            target_context["applied"] = {
+                "recipe_id": self._active_recipe_id,
+                "point_id": self._active_point_id,
+                "ptm_bypassed": self._device_bypassed("ptm"),
+            }
         self._last_status = {
             "core": {
                 "running": not self._stop_event.is_set(),
@@ -2197,6 +2257,8 @@ class CoreApplication:
                 "write": self._plc_write_snapshot(memory_header),
             },
             "runtime": {
+                "instance_id": self._instance_id,
+                "target_context": target_context,
                 "power_save": self.power_save.snapshot(),
                 "sampled_ms": now_ms(),
                 "loop_running": self._run_task is not None and not self._run_task.done(),
@@ -2291,7 +2353,7 @@ class CoreApplication:
                                "plc_wake_bit": "D+00.4", "edge": "rising"},
                 "alarm_retention_days": 30, "map_version": MAP_VERSION, "endpoints": endpoints,
                 "allow_remote_process_control": self.settings.core.allow_remote_process_control,
-                "unsupported": ["camera_2_plc_alarms", "vision_frame_contract", "vision_calibration_contract"]}
+                "unsupported": ["vision_frame_contract", "vision_calibration_contract"]}
 
     def monitor_snapshot(self) -> dict[str, Any]:
         status = self.status_snapshot(include_shared_memory=False)

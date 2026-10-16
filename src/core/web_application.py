@@ -90,8 +90,8 @@ class CoreWebApplication(CoreApplication):
             self._configure_logging()
             await self.process_manager.reconcile(start_missing=False)
         if restart_discovery:
-            self.discovery = DiscoveryService(settings.discovery, settings.core.port,
-                                              settings.core.http_port or settings.core.port)
+            self.discovery = DiscoveryService(settings.discovery, self._server.port,
+                                              self.discovery.web_port)
             if self._started:
                 await self.discovery.start()
 
@@ -99,11 +99,7 @@ class CoreWebApplication(CoreApplication):
         self._validate_operator_settings(self.settings)
         self._configure_logging()
         logging.getLogger().addHandler(self.history)
-        await self._server.start()
-        self._server_task = asyncio.create_task(self._server.serve_forever())
-        if self._http_server is not None:
-            await self._http_server.start()
-            self._http_server_task = asyncio.create_task(self._http_server.serve_forever())
+        await self._start_servers()
         await self.discovery.start()
         self._started = True
         await self.process_manager.reconcile(start_order=[
@@ -121,17 +117,10 @@ class CoreWebApplication(CoreApplication):
             self._worker_poll_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_poll_task
+        await self._stop_servers()
         await self.process_manager.shutdown()
         await self.discovery.stop()
         await self.network_manager.cancel()
-        for task in (self._server_task, self._http_server_task):
-            if task is not None:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-        await self._server.stop()
-        if self._http_server is not None:
-            await self._http_server.stop()
         self.plc_memory.close()
         self.history.add("web", "INFO", "Core management server stopped", event="stopped")
         logging.getLogger().removeHandler(self.history)
@@ -219,7 +208,9 @@ class CoreWebApplication(CoreApplication):
             status["core"]["tcp"] = {"host": module["health_host"], "port": module["health_port"]}
         status["processes"] = processes if processes is not None else self.process_manager.snapshot()
         status["web_server"] = {"running": self._started, "host": self._server.host,
-                                "port": self.settings.core.http_port or self._server.port}
+                                "port": self.discovery.web_port, "primary_port": self._server.port,
+                                "configured_http_port": self.settings.core.http_port,
+                                "error": self._http_server_error}
         status["core"]["status_age_ms"] = now_ms() - self._worker_sample_ms if self._worker_sample_ms else None
         return status
 

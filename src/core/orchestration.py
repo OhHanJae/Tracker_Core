@@ -61,7 +61,8 @@ class CoreOrchestrator:
         actual = status.get("tracking_active")
         mismatch = actual is not None and bool(actual) != desired
         retry = bool(self.last_error or mismatch) and timestamp_ms - self._last_attempt_ms >= 1000
-        if desired == self._requested_tracking and not retry and not (power_saving and self.last_command != "tracking.stop"):
+        if desired == self._requested_tracking and not retry and not (
+                power_saving and self.last_command != "tracking.stop" and not self.last_error):
             return
         if self._task is not None and not self._task.done():
             return
@@ -79,7 +80,9 @@ class CoreOrchestrator:
                 except Exception:
                     pass
             try:
-                await self.vision.command(command)
+                result = await self.vision.command(command)
+                if isinstance(result, dict) and result.get("accepted") is False:
+                    raise RuntimeError(str(result.get("reason") or f"{command} was rejected"))
                 self.last_command = command
                 self.last_error = ""
             except Exception as exc:

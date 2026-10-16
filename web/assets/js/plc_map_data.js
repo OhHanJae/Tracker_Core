@@ -1,7 +1,7 @@
 window.TRACK_EYE_PLC_MAP = {
-  "sourceFile": "트래커 PLC 통신 맵 v4.2 Core 반영.xlsx",
-  "sourceTitle": "Tracker Project PLC Communication Map v4.2 + WakeUp extension 2026-10-15",
-  "note": "v4.2 + WakeUp/GPIO 확장. D+00.4 WAKE_UP; 레이저 검출 입력 없음: D+66/D+67 및 레이저 경고/고장 요약 Reserved(0). LASER_ON은 마지막 GPIO 명령값.",
+  "sourceFile": "트래커 PLC 통신 맵 v5 Core 반영.xlsx",
+  "sourceTitle": "Tracker Project PLC Communication Map v5 + GPIO/WakeUp 2026-10-16",
+  "note": "v5 기준 Camera 1~2 지원. camera_count=1/2에 따라 필수 마스크 0x1/0x3. D+00.4 WAKE_UP; 레이저 출력 검출 없음: D+66/D+67 및 레이저 요약 Reserved(0). LASER_ON은 마지막 GPIO 명령값.",
   "sheets": [
     {
       "key": "01_PLC_to_Controller",
@@ -1382,12 +1382,12 @@ window.TRACK_EYE_PLC_MAP = {
           "D+16",
           "0",
           "CAMERA_REQUIRED_MASK",
-          "고정 사용 Camera 1 Mask",
-          "bit0 = Camera 1; bit1~3 = 0",
+          "설정된 필수 Camera Mask (기본 1대, 최대 2대)",
+          "bit0 = Camera 1; bit1 = Camera 2 (camera_count=2); bit2~3 = 0",
           "BITMAP",
           "Level",
           "자동",
-          "0x0001"
+          "0x0001 또는 0x0003"
         ],
         [
           "Camera 상태",
@@ -1395,11 +1395,11 @@ window.TRACK_EYE_PLC_MAP = {
           "0",
           "CAMERA_ONLINE_MASK",
           "현재 Online Camera Mask",
-          "bit0 = Camera 1; bit1~3 = 0",
+          "bit0 = Camera 1; bit1 = Camera 2 (camera_count=2); bit2~3 = 0",
           "BITMAP",
           "Level",
           "전체",
-          "0x0000~0x0001"
+          "0x0000~0x0003"
         ],
         [
           "Camera 상태",
@@ -1407,11 +1407,11 @@ window.TRACK_EYE_PLC_MAP = {
           "0",
           "CAMERA_VALID_MASK",
           "Vision 계산에 사용 가능한 Camera Mask",
-          "bit0 = Camera 1; bit1~3 = 0",
+          "bit0 = Camera 1; bit1 = Camera 2 (camera_count=2); bit2~3 = 0",
           "BITMAP",
           "Level",
           "자동",
-          "0x0000~0x0001"
+          "0x0000~0x0003"
         ],
         [
           "명령 응답",
@@ -1623,7 +1623,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "PRIMARY_FAULT_CODE",
           "현재 가장 우선순위 높은 Fault Code",
-          "0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Camera 1 Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Reserved (Camera 2~4 미사용)\n2300~2399 = Reserved (Camera 2~4 미사용)\n2400~2499 = Reserved (Camera 2~4 미사용)\n3000~3099 = Tracker (3001 Tracker Fault; 미검출은 Warning 3000)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Reserved (레이저 피드백 없음)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)\n바이패스 장치 코드 제외. 내부 고장 기록은 보존",
+          "0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Required Camera Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Camera 2 (2201 Camera 2 Disconnected)\n2300~2399 = Reserved (Camera 3~4 미사용)\n2400~2499 = Reserved (Camera 3~4 미사용)\n3000~3099 = Tracker (3001 Tracker Fault; 미검출은 Warning 3000)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Reserved (레이저 피드백 없음)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)\n바이패스 장치 코드 제외. 내부 고장 기록은 보존",
           "UINT16",
           "Code",
           "전체",
@@ -1635,7 +1635,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "PRIMARY_WARNING_CODE",
           "현재 가장 우선순위 높은 Warning Code",
-          "0 = 없음\n1000 = Controller Warning\n1100 = PLC Communication Warning\n2000 = Vision Common Warning\n2100 = Camera 1 Warning\n2200~2499 = Reserved\n3000 = Tracker Warning\n4000 = Pan/Tilt 공통 Warning\n4100~4199 = Reserved\n5000 = Reserved (레이저 피드백 없음)\n6000 = Recipe Warning\n6100 = Calibration Warning\n바이패스 장치 코드 제외",
+          "0 = 없음\n1000 = Controller Warning\n1100 = PLC Communication Warning\n2000 = Vision Common Warning\n2100 = Camera 1 Warning\n2200 = Camera 2 Warning\n2300~2499 = Reserved\n3000 = Tracker Warning\n4000 = Pan/Tilt 공통 Warning\n4100~4199 = Reserved\n5000 = Reserved (레이저 피드백 없음)\n6000 = Recipe Warning\n6100 = Calibration Warning\n바이패스 장치 코드 제외",
           "UINT16",
           "Code",
           "전체",
@@ -1647,7 +1647,7 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "LAST_FAULT_CODE",
           "마지막 발생 Fault Code",
-          "마지막 Fault 이력\n0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Camera 1 Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Reserved (Camera 2~4 미사용)\n2300~2399 = Reserved (Camera 2~4 미사용)\n2400~2499 = Reserved (Camera 2~4 미사용)\n3000~3099 = Tracker (3001 Tracker Fault; 미검출은 Warning 3000)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Reserved (레이저 피드백 없음)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)\n바이패스 장치의 마지막 고장 코드는 0 출력. 내부 이력은 보존",
+          "마지막 Fault 이력\n0 = 없음\n1000~1099 = Controller (1001 Main Task Fault)\n1100~1199 = PLC Communication (1101 PLC Disconnected)\n2000~2099 = Vision Common (2001 Required Camera Unavailable)\n2100~2199 = Camera 1 (2101 Camera 1 Disconnected)\n2200~2299 = Camera 2 (2201 Camera 2 Disconnected)\n2300~2399 = Reserved (Camera 3~4 미사용)\n2400~2499 = Reserved (Camera 3~4 미사용)\n3000~3099 = Tracker (3001 Tracker Fault; 미검출은 Warning 3000)\n4000~4099 = PTM (Pan/Tilt 공통) (4001 PTM Communication Fault)\n4100~4199 = Reserved (미사용; Pan/Tilt 공통 4000~4099 사용)\n5000~5099 = Reserved (레이저 피드백 없음)\n6000~6099 = Recipe (6001 Recipe Not Found)\n6100~6199 = Calibration (6101 Camera Calibration Missing)\n바이패스 장치의 마지막 고장 코드는 0 출력. 내부 이력은 보존",
           "UINT16",
           "Code",
           "전체",
@@ -1671,7 +1671,7 @@ window.TRACK_EYE_PLC_MAP = {
           "0~C",
           "DEVICE_FAULT_SUMMARY",
           "Fault 발생 장치 Summary",
-          "bit0 = Controller\nbit1 = PLC Communication\nbit2 = Vision Common\nbit3 = Camera 1\nbit4~6 = Reserved\nbit7 = Tracker\nbit8 = Pan/Tilt (Pan OR Tilt)\nbit9 = Reserved\nbitA = Reserved (레이저 피드백 없음)\nbitB = Recipe\nbitC = Calibration\nbitD~F = Reserved\n바이패스 장치의 Summary 비트는 0",
+          "bit0 = Controller\nbit1 = PLC Communication\nbit2 = Vision Common\nbit3 = Camera 1\nbit4 = Camera 2 (camera_count=2)\nbit5~6 = Reserved\nbit7 = Tracker\nbit8 = Pan/Tilt (Pan OR Tilt)\nbit9 = Reserved\nbitA = Reserved (레이저 피드백 없음)\nbitB = Recipe\nbitC = Calibration\nbitD~F = Reserved\n바이패스 장치의 Summary 비트는 0",
           "BITMAP",
           "Level",
           "전체",
@@ -1683,7 +1683,7 @@ window.TRACK_EYE_PLC_MAP = {
           "0~C",
           "DEVICE_WARNING_SUMMARY",
           "Warning 발생 장치 Summary",
-          "bit0 = Controller\nbit1 = PLC Communication\nbit2 = Vision Common\nbit3 = Camera 1\nbit4~6 = Reserved\nbit7 = Tracker\nbit8 = Pan/Tilt (Pan OR Tilt)\nbit9 = Reserved\nbitA = Reserved (레이저 피드백 없음)\nbitB = Recipe\nbitC = Calibration\nbitD~F = Reserved\n바이패스 장치의 Summary 비트는 0",
+          "bit0 = Controller\nbit1 = PLC Communication\nbit2 = Vision Common\nbit3 = Camera 1\nbit4 = Camera 2 (camera_count=2)\nbit5~6 = Reserved\nbit7 = Tracker\nbit8 = Pan/Tilt (Pan OR Tilt)\nbit9 = Reserved\nbitA = Reserved (레이저 피드백 없음)\nbitB = Recipe\nbitC = Calibration\nbitD~F = Reserved\n바이패스 장치의 Summary 비트는 0",
           "BITMAP",
           "Level",
           "전체",
@@ -1992,33 +1992,33 @@ window.TRACK_EYE_PLC_MAP = {
         [
           "상세 진단",
           "D+52",
-          "-",
-          "Reserved",
-          "Camera 2~4 미사용 (항상 0)",
-          "PLC 주소 유지",
+          "0~F",
+          "CAMERA_2_WARNING",
+          "Camera 2 Warning",
+          "camera_count=2일 때 사용; 03_Device_Alarm_Detail 참조",
           "BITMAP",
-          "Reserved",
+          "Level",
           "전체",
-          "0"
+          "Bit Map"
         ],
         [
           "상세 진단",
           "D+53",
-          "-",
-          "Reserved",
-          "Camera 2~4 미사용 (항상 0)",
-          "PLC 주소 유지",
+          "0~F",
+          "CAMERA_2_FAULT",
+          "Camera 2 Fault",
+          "camera_count=2일 때 사용; 03_Device_Alarm_Detail 참조",
           "BITMAP",
-          "Reserved",
+          "Level",
           "전체",
-          "0"
+          "Bit Map"
         ],
         [
           "상세 진단",
           "D+54",
           "-",
           "Reserved",
-          "Camera 2~4 미사용 (항상 0)",
+          "Camera 3~4 미사용 (항상 0)",
           "PLC 주소 유지",
           "BITMAP",
           "Reserved",
@@ -2030,7 +2030,7 @@ window.TRACK_EYE_PLC_MAP = {
           "D+55",
           "-",
           "Reserved",
-          "Camera 2~4 미사용 (항상 0)",
+          "Camera 3~4 미사용 (항상 0)",
           "PLC 주소 유지",
           "BITMAP",
           "Reserved",
@@ -2042,7 +2042,7 @@ window.TRACK_EYE_PLC_MAP = {
           "D+56",
           "-",
           "Reserved",
-          "Camera 2~4 미사용 (항상 0)",
+          "Camera 3~4 미사용 (항상 0)",
           "PLC 주소 유지",
           "BITMAP",
           "Reserved",
@@ -2054,7 +2054,7 @@ window.TRACK_EYE_PLC_MAP = {
           "D+57",
           "-",
           "Reserved",
-          "Camera 2~4 미사용 (항상 0)",
+          "Camera 3~4 미사용 (항상 0)",
           "PLC 주소 유지",
           "BITMAP",
           "Reserved",
@@ -2452,7 +2452,7 @@ window.TRACK_EYE_PLC_MAP = {
           "1",
           "FRAME_TIMEOUT",
           "Fault",
-          "Auto 또는 Latch",
+          "Auto",
           "예",
           "설정 시간 이상 Frame 미수신"
         ],
@@ -2507,7 +2507,7 @@ window.TRACK_EYE_PLC_MAP = {
           "6",
           "TIMESTAMP_INVALID",
           "Fault",
-          "Auto/Latch",
+          "Auto",
           "조건부",
           "Timestamp 비정상"
         ],
@@ -2515,6 +2515,182 @@ window.TRACK_EYE_PLC_MAP = {
           "Camera 1",
           "Fault",
           "D+51",
+          "7",
+          "CAMERA_DRIVER_FAULT",
+          "Fault",
+          "Latch",
+          "예",
+          "Driver/SDK 오류"
+        ],
+        [
+          "Camera 2",
+          "Warning",
+          "D+52",
+          "0",
+          "FPS_LOW",
+          "Warning",
+          "Auto",
+          "아니오",
+          "설정 FPS 대비 지속 저하"
+        ],
+        [
+          "Camera 2",
+          "Warning",
+          "D+52",
+          "1",
+          "FRAME_DROP_HIGH",
+          "Warning",
+          "Auto",
+          "아니오",
+          "Frame Drop 비율 증가"
+        ],
+        [
+          "Camera 2",
+          "Warning",
+          "D+52",
+          "2",
+          "FRAME_LATENCY_HIGH",
+          "Warning",
+          "Auto",
+          "아니오",
+          "Frame 처리/수신 지연 증가"
+        ],
+        [
+          "Camera 2",
+          "Warning",
+          "D+52",
+          "3",
+          "EXPOSURE_BAD",
+          "Warning",
+          "Auto",
+          "아니오",
+          "과노출/저노출 등 영상 상태 불량"
+        ],
+        [
+          "Camera 2",
+          "Warning",
+          "D+52",
+          "4",
+          "IMAGE_QUALITY_LOW",
+          "Warning",
+          "Auto",
+          "아니오",
+          "Blur/Contrast 등 영상 품질 저하"
+        ],
+        [
+          "Camera 2",
+          "Warning",
+          "D+52",
+          "5",
+          "CAMERA_TEMP_HIGH",
+          "Warning",
+          "Auto",
+          "아니오",
+          "온도 정보 지원 시 사용"
+        ],
+        [
+          "Camera 2",
+          "Warning",
+          "D+52",
+          "6",
+          "VISION_CONFIDENCE_LOW",
+          "Warning",
+          "Auto",
+          "아니오",
+          "Vision Confidence 기준 미달"
+        ],
+        [
+          "Camera 2",
+          "Warning",
+          "D+52",
+          "7",
+          "FRAME_TIMEOUT_TRANSIENT",
+          "Warning",
+          "Auto",
+          "아니오",
+          "순간적 Frame Timeout"
+        ],
+        [
+          "Camera 2",
+          "Fault",
+          "D+53",
+          "0",
+          "CAMERA_DISCONNECTED",
+          "Fault",
+          "Auto",
+          "예",
+          "Camera 2 미연결. 연결 복구 시 자동 해제"
+        ],
+        [
+          "Camera 2",
+          "Fault",
+          "D+53",
+          "1",
+          "FRAME_TIMEOUT",
+          "Fault",
+          "Auto",
+          "예",
+          "설정 시간 이상 Frame 미수신"
+        ],
+        [
+          "Camera 2",
+          "Fault",
+          "D+53",
+          "2",
+          "CAMERA_INIT_FAIL",
+          "Fault",
+          "Latch",
+          "예",
+          "Camera 초기화 실패"
+        ],
+        [
+          "Camera 2",
+          "Fault",
+          "D+53",
+          "3",
+          "CALIBRATION_DATA_MISSING",
+          "Fault",
+          "Latch",
+          "예",
+          "해당 Camera Calibration 없음"
+        ],
+        [
+          "Camera 2",
+          "Fault",
+          "D+53",
+          "4",
+          "CALIBRATION_DATA_INVALID",
+          "Fault",
+          "Latch",
+          "예",
+          "Calibration 데이터 오류"
+        ],
+        [
+          "Camera 2",
+          "Fault",
+          "D+53",
+          "5",
+          "FORMAT_INVALID",
+          "Fault",
+          "Latch",
+          "예",
+          "해상도/Pixel Format 불일치"
+        ],
+        [
+          "Camera 2",
+          "Fault",
+          "D+53",
+          "6",
+          "TIMESTAMP_INVALID",
+          "Fault",
+          "Auto",
+          "조건부",
+          "Timestamp 비정상"
+        ],
+        [
+          "Camera 2",
+          "Fault",
+          "D+53",
           "7",
           "CAMERA_DRIVER_FAULT",
           "Fault",
@@ -2531,7 +2707,7 @@ window.TRACK_EYE_PLC_MAP = {
           "Reserved",
           "Auto",
           "아니오",
-          "Camera 1대 고정; 항상 0"
+          "현재 미구현 진단; 항상 0"
         ],
         [
           "Vision Common",
@@ -2564,7 +2740,7 @@ window.TRACK_EYE_PLC_MAP = {
           "Reserved",
           "Auto",
           "아니오",
-          "Camera 1대 고정; 항상 0"
+          "현재 미구현 진단; 항상 0"
         ],
         [
           "Vision Common",
@@ -2582,11 +2758,11 @@ window.TRACK_EYE_PLC_MAP = {
           "Fault",
           "D+59",
           "0",
-          "CAMERA_1_UNAVAILABLE",
+          "REQUIRED_CAMERA_UNAVAILABLE",
           "Fault",
           "Auto/Latch",
           "예",
-          "Camera 1 미연결 또는 영상 사용 불가. 정상 복구 시 자동 해제"
+          "필수 Camera 중 미연결 또는 영상 사용 불가. 정상 복구 시 자동 해제"
         ],
         [
           "Vision Common",
@@ -2597,7 +2773,7 @@ window.TRACK_EYE_PLC_MAP = {
           "Reserved",
           "Latch",
           "예",
-          "Camera 1대 고정; 항상 0"
+          "현재 미구현 진단; 항상 0"
         ],
         [
           "Vision Common",

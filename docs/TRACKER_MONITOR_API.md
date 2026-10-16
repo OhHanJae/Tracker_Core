@@ -28,6 +28,28 @@ Camera 2 PLC 알람 및 새 Vision frame/calibration 계약은 미지원으로 �
 300ms worker polling에서 최신 캐시를 전달한다. Main Core가 오래되거나 정지되면
 관리 서버는 `plc_memory.connected:false`와 상태 불가 이유를 반환한다.
 
+### 레시피·체결점 컨텍스트 (2026-10-15)
+
+기존 `status`와 `monitor.snapshot`/worker `runtime.snapshot`의 `runtime`에 아래 읽기 전용 필드를 추가한다.
+캐시를 읽어 구성하며, 조회 때문에 장치 I/O·이동·Vision 지정/시뮬레이션 명령을 실행하지 않는다.
+
+```json
+{
+  "instance_id": "1d6adfd11b234d7eb14596ef35b4bfac",
+  "target_context": {
+    "schema_version": 1,
+    "requested": {"recipe_id": 3, "point_id": 4, "command_code": 1, "command_seq": 0},
+    "applied": {"recipe_id": 1, "point_id": 2, "ptm_bypassed": false}
+  }
+}
+```
+
+- `instance_id`는 `CoreApplication` 생성 시 한 번 생성한 UUID4 hex다. 같은 인스턴스의 조회에서는 유지되며 Core 재시작 경계를 구분한다. 개별 작업/사이클 ID나 command_seq의 고유성을 보장하지 않는다.
+- `requested`는 마지막 캐시 PLC 입력이다. 명령 1(`TARGET_APPLY_MOVE`)/5(`NUTRUNNER_DATA_REQUEST`)이며 recipe/point가 각각 1~65535이면 반환하고, 나머지는 null이다. 수락/검증/완료를 뜻하지 않는다. `command_seq=0`도 유효하며 같은 신호가 유지되면 계속 보인다.
+- `applied`는 기존 `runtime.active_recipe_id/active_point_id`가 유효할 때 같은 값을 반환하고, 없으면 null이다. 기존 성공/초기화 시점은 바꾸지 않는다. `ptm_bypassed`는 조회 당시 Core의 PTM 바이패스 캐시다. true이면 실제 이동 확인으로 해석하지 않는다.
+- 요청과 적용이 서로 다른 체결점일 수 있다. 처리 결과는 기존 최상위 `command`를, 운전 제약은 `runtime.run_enable/force_stop/tracking_enable/restart_request` 등을 함께 확인한다. 새 상태 머신이나 생산 체결 허가를 추가한 것이 아니다.
+- Vision Run에서 이 컨텍스트를 표시하는 후속 작업은 Monitor 구현 지침서를 따른다. 기존 Vision DEV arrival/simulation API를 생산 타깃 설정으로 호출하지 않는다.
+
 ## 알람
 
 `alarms.active`는 현재 원인 또는 latch가 남은 사건을 반환한다.
@@ -106,6 +128,7 @@ RDK 및 실제 PLC/PTM와 패널의 운전 검증은 별도 수행한다.
 - `monitor.capabilities.commands`에 wake 명령, `power_save`에 timeout과 PLC wake 주소를 추가했다.
 - PLC `D+00.4 WAKE_UP` 상승 에지. 자세한 PLC 확장은 `PLC_WAKEUP_EXTENSION.md` 참조. Gateway 공유메모리 크기/프로토콜 변경은 없다.
 - 절전 시 기존 Vision `tracking.stop`으로 분석을 중지한다. 카메라 acquisition/전원 절전은 미구현이며 Vision 후속 계약으로 남겼다.
+- `runtime.orchestration_enabled=false`여도 절전으로 실제 활성 추적을 중지했다면 Wake 뒤 PLC RUN_ENABLE/TRACKING_ENABLE 및 기존 Fault/FORCE_STOP/재시작 조건을 통과할 때만 추적을 재개한다. 원래 정지 상태·일반 시작에서는 자동 추적을 시작하지 않는다. 장치 비활성/바이패스는 재개 예약을 취소한다.
 - 포인트 dispatch가 OFF 응답 후 PTM을 움직인다. 허용된 move의 실제 위치 완료 후만 GPIO ON. OFF/정지/허가 해제는 예약 ON generation을 무효화한다. Core PLC 완료는 기존 fresh/matching motion ID 검증을 유지한다.
 
 ### 임시 수동 ON·GPIO 알람 정정
