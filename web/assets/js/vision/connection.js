@@ -2,7 +2,7 @@ import { state, esc, coreCommand } from '../global.js';
 import { renderBypassControl, bindBypassControl, startBypassStatus } from '../device_bypass.js';
 import {
   renderExternalWebFrame,
-  setExternalWebFrameBypassed,
+  startExternalWebFrame,
   stopExternalWebFrame,
 } from '../external_web_frame.js';
 
@@ -45,17 +45,9 @@ export function renderVision() {
 
 export function startVisionRuntime() {
   if (stopStatus) stopStatus();
-  const updateFrame = status => {
-    const bypass = status?.bypass?.vision;
-    const active = bypass?.source === 'device' ? false : bypass?.active;
-    const pendingEnable = document.getElementById('visionBypass');
-    setExternalWebFrameBypassed(frameOptions,
-      Boolean((pendingEnable?.disabled && pendingEnable.checked) || active || (active === undefined && state.coreConfig?.vision?.bypass)));
-  };
-  bindBypassControl('vision', 'vision', () => setExternalWebFrameBypassed(frameOptions, true));
-  updateFrame(state.coreStatus);
+  bindBypassControl('vision', 'vision');
+  startExternalWebFrame(frameOptions);
   stopStatus = startBypassStatus('vision', status => {
-    updateFrame(status);
     const result = document.getElementById('visionNutrunnerResult');
     if (result) result.textContent = nutrunnerResult(status);
   });

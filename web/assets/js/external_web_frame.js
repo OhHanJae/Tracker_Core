@@ -172,36 +172,3 @@ export function stopExternalWebFrame(id) {
   closeExternalWebModal();
   runtimes.delete(id);
 }
-
-export function setExternalWebFrameBypassed(options, active) {
-  const { id, name } = options;
-  const frame = document.getElementById(`${id}Frame`);
-  if (!frame) return;
-  const wasBypassed = frame.dataset.bypassed === '1';
-  if (active && wasBypassed) return;
-  const refresh = document.getElementById(`${id}FrameRefresh`);
-  const link = document.getElementById(`${id}WebUrl`);
-  frame.dataset.bypassed = active ? '1' : '0';
-  frame.style.pointerEvents = active ? 'none' : '';
-  frame.inert = active;
-  frame.tabIndex = active ? -1 : 0;
-  if (refresh) refresh.disabled = active;
-  if (link) {
-    link.style.pointerEvents = active ? 'none' : '';
-    link.tabIndex = active ? -1 : 0;
-    link.href = active ? '#' : link.dataset.url || '#';
-    link.setAttribute('aria-disabled', active ? 'true' : 'false');
-  }
-  if (active) {
-    stopExternalWebFrame(id);
-    closeExternalWebModal();
-    frame.onload = null;
-    frame.onerror = null;
-    frame.src = 'about:blank';
-    delete frame.dataset.loadedUrl;
-    delete frame.dataset.requestedUrl;
-    showFrameState(id, `${name} 바이패스 활성화`, '바이패스를 해제하면 장치 Web UI를 다시 연결합니다.');
-  } else if (wasBypassed || !runtimes.has(id)) {
-    startExternalWebFrame(options);
-  }
-}

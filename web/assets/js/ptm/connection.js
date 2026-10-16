@@ -2,7 +2,7 @@ import { state, coreCommand } from '../global.js';
 import { renderBypassControl, bindBypassControl, startBypassStatus } from '../device_bypass.js';
 import {
   renderExternalWebFrame,
-  setExternalWebFrameBypassed,
+  startExternalWebFrame,
   stopExternalWebFrame,
 } from '../external_web_frame.js';
 
@@ -34,16 +34,9 @@ export function renderPTM() {
 
 export function startPtmRuntime() {
   if (stopStatus) stopStatus();
-  const updateFrame = status => {
-    const active = status?.bypass?.ptm?.active;
-    const pendingEnable = document.getElementById('ptmBypass');
-    if (active === undefined && !state.coreConfig?.motor?.bypass) return;
-    setExternalWebFrameBypassed(frameOptions,
-      Boolean((pendingEnable?.disabled && pendingEnable.checked) || active || (active === undefined && state.coreConfig?.motor?.bypass)));
-  };
-  bindBypassControl('ptm', 'motor', () => setExternalWebFrameBypassed(frameOptions, true));
-  updateFrame(state.coreStatus);
-  stopStatus = startBypassStatus('ptm', updateFrame);
+  bindBypassControl('ptm', 'motor');
+  startExternalWebFrame(frameOptions);
+  stopStatus = startBypassStatus('ptm');
 }
 
 export function stopPtmRuntime() {
