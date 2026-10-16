@@ -47,6 +47,17 @@ class CoreWebApplication(CoreApplication):
             response = await self._worker_request("runtime.prepare_stop", {"process_name": process_name})
             if not response.ok:
                 self.history.add(process_name, "ERROR", f"Could not prepare worker for stop: {response.error}", event="safe_stop")
+        module = self.settings.processes["ptm"]
+        if process_name == module["process_name"]:
+            # PTM owns the laser output even when the control worker is stopped or bypassed.
+            runtime = self.process_manager.snapshot().get(process_name, {}).get("runtime_endpoint") or {}
+            response = await send_json_request(
+                str(runtime.get("host", module["health_host"])),
+                int(runtime.get("port", module["health_port"])),
+                "laser.off", timeout_s=2.0,
+            )
+            if not response.ok:
+                self.history.add(process_name, "ERROR", f"Could not switch laser off before PTM stop: {response.error}", event="safe_stop")
 
     async def _after_process_start(self, process_name: str) -> None:
         if process_name == self.settings.processes["core"]["process_name"]:
