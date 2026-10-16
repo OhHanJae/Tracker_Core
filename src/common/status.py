@@ -13,6 +13,7 @@ class CommandCode(IntEnum):
     ERROR_RESET = 3
     CONTROLLER_RESTART = 4
     NUTRUNNER_DATA_REQUEST = 5
+    FASTENING_COMPLETE = 6
     RELOAD_CONFIG = 5
 
 

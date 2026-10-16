@@ -1,6 +1,6 @@
 # Vision 연동 점검 및 수정 지침
 
-점검일: 2026-10-09. Core 연동 추가: 2026-10-10. 알람·바이패스 계약 보완: 2026-10-14. 대상: Windows 11 x64 / RDK X5 3.5 이미지.
+점검일: 2026-10-09. Core 연동 추가: 2026-10-10. 알람·바이패스 계약 보완: 2026-10-14. 체결 완료 명령 6 추가: 2026-10-16. 대상: Windows 11 x64 / RDK X5 3.5 이미지.
 
 사용자 요청에 따라 Vision 저장소의 코드·설정·런처는 변경하지 않았다. 아래 항목은 실제 소스에서 확인한 제약과 수정 방향이다. 카메라, RDK, PLC 실장비 성능 검증은 이 Windows 작업 공간에서 수행하지 않았다.
 
@@ -12,8 +12,8 @@ Core와 Vision의 통신 계약은 서로 맞는다. Core는 `src/vision/vision_
 - 프레임: UTF-8 JSON 한 줄 + LF. 길이 접두어 방식이 아니다.
 - 요청: `{"id":"core-request-id","command":"vision.status","params":{}}`.
 - 응답: 같은 `id`, `ok`, `result` 또는 `error`.
-- 지원 운전 명령: `vision.status`, `tracking.start`, `tracking.stop`.
-- Core 설정에 있는 `vision.result`는 현재 Vision이 지원하지 않는다. 현 Core 상태 폴링에서는 호출하지 않지만 별도 호출하면 `UNKNOWN_COMMAND`가 정상 응답이다. 불필요한 명령을 추가하기 전에 소비 경로부터 확정한다.
+- Vision 지원 운전 명령: `vision.status`, `tracking.start`, `tracking.stop`, `vision.result`.
+- 현재 Vision의 `vision.result`는 레시피/포인트 조회와 미지원 응답(`supported=false`, `data_valid=false`)까지만 구현되어 있다. 실제 체결 좌표는 만들지 않는다. Core의 PLC 명령 5는 이 결과 조회를 사용한다.
 - 현재 단일 카메라 계약이다. Core도 첫 카메라와 마스크 bit 0만 처리한다. 복수 카메라를 추가하려면 양쪽 명세와 PLC 맵을 함께 검토해야 한다.
 - Core와 현재 Vision 브리지는 `cameras[0].ip`(또는 `camera_ip`), `tracking_bypass`, `tracking_bypass_reason`을 지원한다. 대상 검출과 결과 생성 상태를 구분하는 추가 계약은 6절을 따른다.
 
@@ -185,3 +185,44 @@ Vision은 대상 부재만으로 `fault=true`, D+61.0 또는 D+59.5를 보내지
 4. PLC 요청·Core 웹·Vision 웹 각각에서 바이패스를 적용한다. Vision 계열 알람과 대표 오류/경고가 PLC 출력에서 제외되고 실제 측정값을 만들지 않아야 한다. Vision 웹 바이패스 해제를 Core가 계속되는 상태 폴링으로 감지해야 한다.
 5. Vision TCP 서비스를 끊는다. 바이패스가 없으면 기존 통신 Timeout이 발생해야 한다. 별도로 웹 URL이 살아 있으면 Core 사이드바 iframe은 로드되어야 한다.
 6. 실제 카메라·RDK·PLC에서 같은 조건을 검증한다. Core의 테스트 대역 검증은 실제 검출 상태와 영상 처리 지연의 증거를 대신하지 않는다.
+
+## 7. 현재 레시피/포인트와 체결 완료 연동 (2026-10-16)
+
+Core 구현은 추가되었다. 현재 Vision의 `CoreVisionBridge.handle()`에는 아래 `vision.target.set`, `vision.fastening_complete` 수신부가 없어 Vision에서 구현해야 한다. Vision 앱 코드는 이번 변경에 포함하지 않았다.
+
+### 7.1 PLC 명령과 처리 순서
+
+- D+0.A는 Reserved를 유지한다. 체결 완료에는 비트를 할당하지 않는다.
+- D+12 `COMMAND_CODE=6` = `FASTENING_COMPLETE`. D+10/11 `REQ_RECIPE_ID`/`REQ_POINT_ID`에 체결 대상 ID(1~65535)를 넣고, D+13 `COMMAND_SEQ`(0~65535)를 이전 요청과 다르게 갱신한다. 명령 5 `NUTRUNNER_DATA_REQUEST`는 유지한다.
+- 명령 1의 PTM 이동 완료를 확인하면 Core는 적용된 레시피/포인트와 이동 명령 SEQ를 `vision.target.set`으로 백그라운드 전송한다. ACK 실패는 상태 `vision.work.last_error`에 표시하고 약 1초 간격으로 재시도한다. 통신 단절을 관측한 뒤 재연결하면 다시 전송한다.
+- 명령 6은 요청 ID를 먼저 `vision.target.set`으로 전달한 후 `vision.fastening_complete`를 전송한다. 이때 `command_seq`는 PLC 명령 6의 SEQ이다. 현재 적용 포인트를 체결하려면 PLC는 명령 1에 사용한 동일한 레시피/포인트 ID를 넣는다.
+- Core는 레시피/포인트/SEQ/체결 이벤트 ID가 일치하는 유효 좌표를 받자마자 `laser.off`를 전송한다. 각도·기울기가 없어도 좌표를 수신한다. 통신 응답 처리에 따른 소프트웨어 OFF 요청이며 실제 GPIO 지연은 실장비에서 측정한다.
+- 레이저 OFF 응답까지 확인하면 명령 `COMPLETE/OK`. OFF 실패는 `ERROR/INTERNAL_ERROR`와 레이저 오류로 기록하며 측정값을 보존한다. 다음 유효한 명령 1 수락 전까지 Core의 자동·수동 레이저 ON/PULSE를 차단한다.
+- 기존 명령 5도 유효 체결 데이터를 받으면 같은 OFF 처리를 한다. 지원하지 않는 결과는 `REJECTED/TRACKING_UNAVAILABLE`, 잘못된 식별자/통신 실패/대기 시간 초과는 `ERROR/TRACKING_UNAVAILABLE`이다. Vision이 보낸 `RECIPE_NOT_FOUND`/`POINT_NOT_FOUND`는 해당 PLC 결과로 반환한다.
+- 같은 SEQ를 유지한 명령 6은 재실행하지 않는다. RUN_ENABLE 해제/FORCE_STOP은 진행 중 요청을 취소한다. Vision 바이패스에서는 통신·가짜 측정 없이 `COMPLETE/OK`로 끝난다. 바이패스에서도 기존 안전 인터록은 적용한다.
+
+### 7.2 Vision이 추가할 TCP JSON Lines 계약
+
+대상 설정 요청과 응답:
+
+```json
+{"id":"core-target-1","command":"vision.target.set","params":{"recipe_id":2,"point_id":7,"command_seq":100}}
+{"id":"core-target-1","ok":true,"result":{"accepted":true,"recipe_id":2,"point_id":7,"command_seq":100}}
+```
+
+Vision은 ID를 검증하고 실제 검사 대상에 반영한 후 ACK한다. 다른 대상에서 계산한 캐시 결과를 재사용하지 않는다. `accepted=true`와 동일한 정수 식별자를 모두 반환해야 한다. 대상 변경 시 진행 중 분석 결과도 대상 버전으로 구분한다.
+
+체결 완료 요청과 좌표 응답:
+
+```json
+{"id":"core-complete-1","command":"vision.fastening_complete","params":{"recipe_id":2,"point_id":7,"command_seq":101,"event_id":"unique-fastening-event"}}
+{"id":"core-complete-1","ok":true,"result":{"recipe_id":2,"point_id":7,"command_seq":101,"event_id":"unique-fastening-event","supported":true,"data_valid":true,"fastening_coordinate_mm":{"x":10.0,"y":-20.5,"z":30.0},"tightening_angle_deg":null,"inclination_deg":null,"timestamp_ms":1792110000123,"coordinate_frame":"workpiece"}}
+```
+
+Core가 요청한 같은 TCP 연결에서 한 줄 JSON 응답으로 반환한다. 식별자와 `event_id`를 그대로 반환하고, 좌표 x/y/z는 유한한 실측 수치, `timestamp_ms`는 양의 정수인 측정 시각으로 보낸다. 각도·기울기는 추후 구현 전 `null` 또는 생략 가능하다. 나중에 제공하면 유한한 각도(도)로 보낸다. 좌표계 이름은 확인된 경우에만 문자열로 보낸다.
+
+계산 중에는 식별자/이벤트 ID와 함께 `supported=true`, `data_valid=false`, 미확정 측정값 `null`로 응답한다. Core는 명령 제한 시간(`runtime.command_timeout_s`) 안에서 약 200ms 간격으로 같은 이벤트를 재조회한다. Vision은 동일한 `event_id`를 동일한 체결 사건으로 처리해 다시 측정 트리거하지 않고, 준비되면 그 사건의 결과를 반환한다. TCP 오류는 성공으로 간주하지 않는다. 기능 미구현 상태는 `supported=false`, `data_valid=false`로 명확히 반환한다.
+
+### 7.3 확인 항목
+
+Core의 TCP 테스트 서버로 대상 전달, 명령 6(SEQ 0 포함), 중복 SEQ 방지, 지연/잘못된 결과 거부, 좌표만 수신, OFF 실패 및 취소 중 OFF 유지, 재점등 차단을 검증한다. 배포 시 Vision에 위 두 명령을 구현한 후 Core를 재시작하고 실제 카메라/PLC/PTM에서 좌표 대상 일치와 레이저 OFF 지연을 확인한다.

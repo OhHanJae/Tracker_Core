@@ -239,6 +239,15 @@ def _default_command_map() -> dict[str, dict[str, Any]]:
                 "point_id": "$req_point_id",
             },
         },
+        "6": {
+            "name": "FASTENING_COMPLETE",
+            "target": "vision",
+            "command": "vision.fastening_complete",
+            "params": {
+                "recipe_id": "$req_recipe_id",
+                "point_id": "$req_point_id",
+            },
+        },
     }
 
 

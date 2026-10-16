@@ -31,6 +31,14 @@ class VisionDeviceService(DeviceService):
     ) -> dict[str, Any]:
         return await self.client.request_nutrunner_data(recipe_id, point_id, command_seq)
 
+    async def set_target(self, recipe_id: int, point_id: int, command_seq: int) -> None:
+        await self.client.set_target(recipe_id, point_id, command_seq)
+
+    async def notify_fastening_complete(
+        self, recipe_id: int, point_id: int, command_seq: int, event_id: str
+    ) -> dict[str, Any]:
+        return await self.client.notify_fastening_complete(recipe_id, point_id, command_seq, event_id)
+
     async def command(self, command: str, params: dict[str, Any] | None = None) -> Any:
         params = params or {}
         if command in {"vision.status", self.settings.status_command}:

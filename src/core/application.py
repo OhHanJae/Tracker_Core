@@ -180,6 +180,14 @@ class CoreApplication:
         self._bypass_stop_tasks: set[asyncio.Task[None]] = set()
         self._last_bypass_state: dict[str, bool] = {}
         self.nutrunner_result: dict[str, Any] | None = None
+        self._active_target_seq = 0
+        self._vision_target: dict[str, int] | None = None
+        self._vision_target_synced = False
+        self._vision_work_task: asyncio.Task[None] | None = None
+        self._vision_laser_off_task: asyncio.Task[None] | None = None
+        self._vision_work_retry_ms = 0
+        self._vision_work_error = ""
+        self._fastening_laser_inhibit = False
         self._sync_bypass_state(initial=True)
         if managed_worker:
             endpoint = self.settings.processes["core"]
@@ -322,7 +330,7 @@ class CoreApplication:
 
     def _complete_bypassed_command(self, device: str) -> None:
         codes = ({CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME} if device == "ptm"
-                 else {CommandCode.NUTRUNNER_DATA_REQUEST})
+                 else {CommandCode.NUTRUNNER_DATA_REQUEST, CommandCode.FASTENING_COMPLETE})
         if self.command.last_code not in codes or self.command.status not in {
             CommandStatus.RECEIVED, CommandStatus.BUSY, CommandStatus.ERROR, CommandStatus.REJECTED,
         }:
@@ -350,6 +358,7 @@ class CoreApplication:
             if self.command.last_code == CommandCode.TARGET_APPLY_MOVE:
                 self._active_recipe_id = int(params.get("recipe_id", self.plc_input.req_recipe_id))
                 self._active_point_id = int(params.get("point_id", self.plc_input.req_point_id))
+                self._active_target_seq = self.command.last_seq
         else:
             self.nutrunner_result = None
         self.command.status = CommandStatus.COMPLETE
@@ -541,6 +550,7 @@ class CoreApplication:
         if not (ptm_bypass and self.command.status == CommandStatus.COMPLETE
                 and self.command.last_code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME}):
             self._abort_active_command(CommandResult.SYSTEM_NOT_READY)
+        await self._stop_vision_work()
         if self._safe_stop_task is not None:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._safe_stop_task
@@ -676,6 +686,9 @@ class CoreApplication:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+        if was_started:
+            self._abort_active_command(CommandResult.SYSTEM_NOT_READY)
+        await self._stop_vision_work()
         await self._stop_servers()
         if was_started:
             self.plc_input = PlcInput()
@@ -858,6 +871,7 @@ class CoreApplication:
 
     def _laser_permitted(self) -> bool:
         return bool(self.plc_input.run_enable and self.plc_input.laser_enable
+                    and not self._fastening_laser_inhibit
                     and not self.plc_input.force_stop and not self.power_save.sleeping
                     and not self._controller_restart_pending()
                     and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
@@ -865,6 +879,7 @@ class CoreApplication:
 
     def _laser_manual_allowed(self) -> bool:
         return bool(not self.plc_input.force_stop and not self._controller_restart_pending()
+                    and not self._fastening_laser_inhibit
                     and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
                     and self.laser_service.state.enabled and not self._device_bypassed("laser"))
 
@@ -878,7 +893,8 @@ class CoreApplication:
         if plc.wake_up and not self._wake_up_previous:
             self.power_save.wake("plc.wake_up")
         self._wake_up_previous = plc.wake_up
-        if (plc.command_code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.NUTRUNNER_DATA_REQUEST}
+        if (plc.command_code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.NUTRUNNER_DATA_REQUEST,
+                                 CommandCode.FASTENING_COMPLETE}
                 and (not self._command_seen or plc.command_seq != self.command.last_seq)
                 and self.command.status != CommandStatus.BUSY):
             self.power_save.observe_request(plc.command_code, plc.command_seq,
@@ -1176,7 +1192,7 @@ class CoreApplication:
         if (
             self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY}
             and self.command.last_code not in {CommandCode.ERROR_RESET, CommandCode.CONTROLLER_RESTART}
-            and (self.command.last_code != CommandCode.NUTRUNNER_DATA_REQUEST
+            and (self.command.last_code not in {CommandCode.NUTRUNNER_DATA_REQUEST, CommandCode.FASTENING_COMPLETE}
                  or self.plc_input.force_stop or not self.plc_input.run_enable)
         ):
             result = (
@@ -1306,6 +1322,7 @@ class CoreApplication:
     async def _handle_plc_command(self) -> None:
         self._sync_bypass_state()
         self._progress_motion_command(now_ms())
+        self._update_vision_work()
         restart_expired = bool(self._controller_restart_request and
                                now_ms() - self._controller_restart_request["requested_ms"] >
                                self.settings.runtime.command_timeout_s * 1000)
@@ -1343,12 +1360,13 @@ class CoreApplication:
         self.command.result = CommandResult.OK
         self.command.message = ""
         self.command.busy_since_ms = now_ms()
-        if code == CommandCode.NUTRUNNER_DATA_REQUEST:
+        if code in {CommandCode.NUTRUNNER_DATA_REQUEST, CommandCode.FASTENING_COMPLETE}:
             self.nutrunner_result = None
 
         if code not in {
             CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME, CommandCode.ERROR_RESET,
             CommandCode.CONTROLLER_RESTART, CommandCode.NUTRUNNER_DATA_REQUEST,
+            CommandCode.FASTENING_COMPLETE,
         }:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.INVALID_COMMAND
@@ -1362,7 +1380,7 @@ class CoreApplication:
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.SYSTEM_NOT_READY
                 return
-            if code == CommandCode.NUTRUNNER_DATA_REQUEST:
+            if code in {CommandCode.NUTRUNNER_DATA_REQUEST, CommandCode.FASTENING_COMPLETE}:
                 if self._device_bypassed("vision"):
                     if self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled):
                         self.command.status = CommandStatus.REJECTED
@@ -1432,6 +1450,95 @@ class CoreApplication:
         if code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME}:
             self._active_recipe_id = 0
             self._active_point_id = 0
+            self.nutrunner_result = None
+            if code == CommandCode.TARGET_APPLY_MOVE:
+                self._fastening_laser_inhibit = False
+            self._update_vision_work()
+
+    def _update_vision_work(self) -> None:
+        available = bool(
+            self.vision_service.state.enabled and not self._device_bypassed("vision")
+            and self.plc_input.run_enable and not self.plc_input.force_stop
+            and not self._controller_restart_pending() and not self.power_save.sleeping
+            and not self._gateway_update_in_progress and not self._stop_event.is_set()
+        )
+        target = ({"recipe_id": self._active_recipe_id, "point_id": self._active_point_id,
+                   "command_seq": self._active_target_seq}
+                  if available and self._active_recipe_id > 0 and self._active_point_id > 0 else None)
+        if target != self._vision_target:
+            if self._vision_work_task is not None:
+                self._vision_work_task.cancel()
+            self._vision_target = target
+            self._vision_target_synced = False
+            self._vision_work_retry_ms = 0
+            self._vision_work_error = ""
+            self.nutrunner_result = None
+        if not self.vision_service.state.online:
+            self._vision_target_synced = False
+        if (target is None or not self.vision_service.state.online
+                or self._vision_target_synced
+                or (self.command.last_code == CommandCode.FASTENING_COMPLETE
+                    and self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY})
+                or (self._vision_work_task is not None and not self._vision_work_task.done())
+                or now_ms() < self._vision_work_retry_ms):
+            return
+        self._vision_work_retry_ms = now_ms() + 1000
+        self._vision_work_task = asyncio.create_task(self._dispatch_vision_work(target))
+
+    async def _dispatch_vision_work(self, target: dict[str, int]) -> None:
+        try:
+            if not self._vision_target_synced:
+                await self.vision_service.set_target(**target)
+                if target != self._vision_target:
+                    return
+                self._vision_target_synced = True
+            self._vision_work_error = ""
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            error = str(exc)
+            if error != self._vision_work_error:
+                LOGGER.warning("Vision target/fastening communication failed: %s", error)
+            self._vision_work_error = error
+
+    async def _accept_nutrunner_result(self, result: dict[str, Any]) -> None:
+        self._fastening_laser_inhibit = True
+        self.nutrunner_result = result
+
+        async def turn_off() -> None:
+            try:
+                async with self._laser_control_lock:
+                    if not self._device_bypassed("laser"):
+                        if self.laser_service.state.enabled:
+                            response = await self.laser_service.command(self.settings.laser.off_command)
+                        elif self.ptm_service.state.enabled:
+                            response = await self.ptm_service.command("laser.off")
+                        else:
+                            return
+                        if isinstance(response, dict) and response.get("accepted") is False:
+                            raise RuntimeError("Laser OFF was rejected")
+                self._report_safe_stop_result("laser", "")
+            except Exception as exc:
+                self._report_safe_stop_result("laser", str(exc))
+                raise
+
+        if self._vision_laser_off_task is None or self._vision_laser_off_task.done():
+            self._vision_laser_off_task = asyncio.create_task(turn_off())
+        # A target change must not cancel an OFF already triggered by a valid result.
+        await asyncio.shield(self._vision_laser_off_task)
+
+    async def _stop_vision_work(self) -> None:
+        if self._vision_work_task is not None:
+            self._vision_work_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._vision_work_task
+            self._vision_work_task = None
+        if self._vision_laser_off_task is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._vision_laser_off_task
+            self._vision_laser_off_task = None
+        self._vision_target = None
+        self._vision_target_synced = False
 
     def _prepare_nutrunner_request(self, code: int, seq: int) -> None:
         recipe_id, point_id = self.plc_input.req_recipe_id, self.plc_input.req_point_id
@@ -1444,7 +1551,8 @@ class CoreApplication:
             self.command.result = CommandResult.POINT_NOT_FOUND
             return
         entry = self.settings.command_map.get(str(code))
-        if entry is None or entry.get("target") != "vision" or entry.get("command") != "vision.result":
+        expected = "vision.fastening_complete" if code == CommandCode.FASTENING_COMPLETE else "vision.result"
+        if entry is None or entry.get("target") != "vision" or entry.get("command") != expected:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.INVALID_COMMAND
             return
@@ -1452,7 +1560,7 @@ class CoreApplication:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.TRACKING_UNAVAILABLE
             return
-        self._pending_request = (code, seq, "vision.result", {"recipe_id": recipe_id, "point_id": point_id})
+        self._pending_request = (code, seq, expected, {"recipe_id": recipe_id, "point_id": point_id})
 
     async def _dispatch_plc_command(
         self, code: int, seq: int, command: str, params: dict[str, Any]
@@ -1474,10 +1582,27 @@ class CoreApplication:
                 await self._request_controller_restart(seq)
                 self.command.message = "Main Core restart requested; awaiting management server"
                 return
-            if code == CommandCode.NUTRUNNER_DATA_REQUEST:
-                response = await self.vision_service.request_nutrunner_data(
-                    int(params["recipe_id"]), int(params["point_id"]), seq,
-                )
+            if code in {CommandCode.NUTRUNNER_DATA_REQUEST, CommandCode.FASTENING_COMPLETE}:
+                if code == CommandCode.FASTENING_COMPLETE:
+                    if self._vision_work_task is not None:
+                        self._vision_work_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await self._vision_work_task
+                    await self.vision_service.set_target(int(params["recipe_id"]), int(params["point_id"]), seq)
+                    event_id = uuid4().hex
+                    deadline = time.monotonic() + self.settings.runtime.command_timeout_s
+                    while True:
+                        response = await asyncio.wait_for(
+                            self.vision_service.notify_fastening_complete(
+                                int(params["recipe_id"]), int(params["point_id"]), seq, event_id),
+                            timeout=max(0.0, deadline - time.monotonic()))
+                        if response["data_valid"] or not response["supported"]:
+                            break
+                        await asyncio.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+                else:
+                    response = await self.vision_service.request_nutrunner_data(
+                        int(params["recipe_id"]), int(params["point_id"]), seq,
+                    )
                 if seq != self.command.last_seq or self.command.status != CommandStatus.BUSY:
                     return
                 if self._device_bypassed("vision"):
@@ -1489,7 +1614,11 @@ class CoreApplication:
                     self.command.result = CommandResult.TRACKING_UNAVAILABLE
                     self.command.message = "Vision tightening data is not available"
                     return
-                self.nutrunner_result = response
+                preparing_laser = True
+                await self._accept_nutrunner_result(response)
+                preparing_laser = False
+                if seq != self.command.last_seq or self.command.status != CommandStatus.BUSY:
+                    return
                 self.command.status = CommandStatus.COMPLETE
                 self.command.result = CommandResult.OK
                 return
@@ -1535,7 +1664,10 @@ class CoreApplication:
                     self._controller_restart_request = None
                     self.command.result = CommandResult.INTERNAL_ERROR
                     return
-                if code == CommandCode.NUTRUNNER_DATA_REQUEST:
+                if code in {CommandCode.NUTRUNNER_DATA_REQUEST, CommandCode.FASTENING_COMPLETE}:
+                    if preparing_laser:
+                        self.command.result = CommandResult.INTERNAL_ERROR
+                        return
                     self.nutrunner_result = None
                     vision_error = getattr(exc, "code", None)
                     if vision_error in {"RECIPE_NOT_FOUND", "POINT_NOT_FOUND"}:
@@ -1576,6 +1708,7 @@ class CoreApplication:
                 if motion["code"] == CommandCode.TARGET_APPLY_MOVE:
                     self._active_recipe_id = int(motion["params"]["recipe_id"])
                     self._active_point_id = int(motion["params"]["point_id"])
+                    self._active_target_seq = self.command.last_seq
             self._active_motion = None
             return
         if fresh and raw_motion.get("failed_id") == motion["id"]:
@@ -2071,11 +2204,15 @@ class CoreApplication:
                 if service is not None and not service.state.enabled:
                     return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": f"device is disabled: {device_id}"})
                 manual_on = device_command == "laser.on"
-                if manual_on and not self._laser_manual_allowed():
-                    return JsonTcpResponse(False, error={"code": "LASER_INTERLOCK", "message": "Safety interlock blocks manual laser output"})
                 if self.power_save.sleeping and not manual_on and device_command in {"laser.on", "laser.pulse"}:
                     return JsonTcpResponse(False, error={"code": "POWER_SAVING", "message": "Wake Core before enabling laser output"})
-                result = await self.devices.command(device_id, device_command, device_params)
+                if device_command in {"laser.on", "laser.pulse"}:
+                    async with self._laser_control_lock:
+                        if not self._laser_manual_allowed():
+                            return JsonTcpResponse(False, error={"code": "LASER_INTERLOCK", "message": "Safety interlock blocks manual laser output"})
+                        result = await self.devices.command(device_id, device_command, device_params)
+                else:
+                    result = await self.devices.command(device_id, device_command, device_params)
                 return JsonTcpResponse(True, result)
             if command.startswith("process."):
                 action = command.split(".", 1)[1]
@@ -2131,9 +2268,10 @@ class CoreApplication:
                     return JsonTcpResponse(True, {"accepted": False, "bypassed": True})
                 if not self.laser_service.state.enabled:
                     return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": "Laser is disabled"})
-                if not self._laser_manual_allowed():
-                    return JsonTcpResponse(False, error={"code": "LASER_INTERLOCK", "message": "Safety interlock blocks manual laser output"})
-                result = await self.laser_service.command(self.settings.laser.on_command, params)
+                async with self._laser_control_lock:
+                    if not self._laser_manual_allowed():
+                        return JsonTcpResponse(False, error={"code": "LASER_INTERLOCK", "message": "Safety interlock blocks manual laser output"})
+                    result = await self.laser_service.command(self.settings.laser.on_command, params)
                 return JsonTcpResponse(True, result or {"accepted": True})
             if command == "laser.off":
                 if self._device_bypassed("laser"):
@@ -2215,7 +2353,8 @@ class CoreApplication:
         plc_words = self.plc_input.raw_words[:20]
         output_words = self.output.to_words()[:80]
         target_context = {"schema_version": 1, "requested": None, "applied": None}
-        if (self.plc_input.command_code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.NUTRUNNER_DATA_REQUEST}
+        if (self.plc_input.command_code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.NUTRUNNER_DATA_REQUEST,
+                                          CommandCode.FASTENING_COMPLETE}
                 and 1 <= self.plc_input.req_recipe_id <= 65535
                 and 1 <= self.plc_input.req_point_id <= 65535):
             target_context["requested"] = {
@@ -2309,6 +2448,12 @@ class CoreApplication:
                 "tracking_bypass": self.vision_snapshot.tracking_bypass,
                 "tracking_bypass_reason": self.vision_snapshot.tracking_bypass_reason,
                 "nutrunner_result": self.nutrunner_result,
+                "work": {
+                    "target": self._vision_target,
+                    "target_synced": self._vision_target_synced,
+                    "laser_inhibited": self._fastening_laser_inhibit,
+                    "last_error": self._vision_work_error,
+                },
             },
             "alarms": {
                 "warning_summary": self.alarms.warning_summary(),

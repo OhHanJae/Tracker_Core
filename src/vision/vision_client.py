@@ -88,6 +88,28 @@ class VisionTcpClient:
     async def request_nutrunner_data(
         self, recipe_id: int, point_id: int, command_seq: int
     ) -> dict[str, Any]:
+        return await self._request_result(
+            self.settings.result_command, recipe_id, point_id, command_seq
+        )
+
+    async def set_target(self, recipe_id: int, point_id: int, command_seq: int) -> None:
+        params = self._target_params(recipe_id, point_id, command_seq)
+        data = await self._request("vision.target.set", params)
+        if not isinstance(data, dict) or data.get("accepted") is not True:
+            raise JsonTcpError("vision.target.set was not accepted")
+        for key, value in params.items():
+            if type(data.get(key)) is not int or data[key] != value:
+                raise JsonTcpError(f"vision.target.set {key} does not match the request")
+
+    async def notify_fastening_complete(
+        self, recipe_id: int, point_id: int, command_seq: int, event_id: str
+    ) -> dict[str, Any]:
+        return await self._request_result(
+            "vision.fastening_complete", recipe_id, point_id, command_seq, event_id
+        )
+
+    @staticmethod
+    def _target_params(recipe_id: int, point_id: int, command_seq: int) -> dict[str, Any]:
         params = {
             "recipe_id": recipe_id,
             "point_id": point_id,
@@ -97,10 +119,30 @@ class VisionTcpClient:
             minimum = 0 if key == "command_seq" else 1
             if type(value) is not int or not minimum <= value <= 65535:
                 raise JsonTcpError(f"{key} must be an integer from {minimum} to 65535")
+        return params
+
+    async def _request_result(
+        self, command: str, recipe_id: int, point_id: int, command_seq: int,
+        event_id: str | None = None,
+    ) -> dict[str, Any]:
+        params = self._target_params(recipe_id, point_id, command_seq)
+        if event_id is not None:
+            if not isinstance(event_id, str) or not event_id.strip():
+                raise JsonTcpError("event_id must be a nonempty string")
+            params["event_id"] = event_id
+        data = await self._request(command, params)
+        if event_id is not None and (not isinstance(data, dict) or data.get("event_id") != event_id):
+            raise JsonTcpError("vision.fastening_complete event_id does not match the request")
+        result = normalize_nutrunner_result(data, recipe_id, point_id, command_seq)
+        if event_id is not None:
+            result["event_id"] = event_id
+        return result
+
+    async def _request(self, command: str, params: dict[str, Any]) -> Any:
         response = await send_json_request(
             self.settings.host,
             self.settings.port,
-            self.settings.result_command,
+            command,
             params,
             self.settings.timeout_s,
         )
@@ -109,9 +151,7 @@ class VisionTcpClient:
             raise JsonTcpError(
                 str(response.error), code=code if isinstance(code, str) else None
             )
-        return normalize_nutrunner_result(
-            response.result, recipe_id, point_id, command_seq
-        )
+        return response.result
 
 
 def normalize_nutrunner_result(
@@ -153,6 +193,8 @@ def normalize_nutrunner_result(
     ):
         for key in keys:
             value = source.get(key)
+            if source is data and value is None:
+                continue
             try:
                 valid = type(value) in (int, float) and math.isfinite(value)
             except OverflowError:
@@ -168,8 +210,8 @@ def normalize_nutrunner_result(
     ):
         raise JsonTcpError("coordinate_frame must be a nonempty string or null")
     result.update(
-        tightening_angle_deg=float(data["tightening_angle_deg"]),
-        inclination_deg=float(data["inclination_deg"]),
+        tightening_angle_deg=float(data["tightening_angle_deg"]) if data.get("tightening_angle_deg") is not None else None,
+        inclination_deg=float(data["inclination_deg"]) if data.get("inclination_deg") is not None else None,
         fastening_coordinate_mm={key: float(coordinate[key]) for key in ("x", "y", "z")},
         timestamp_ms=timestamp_ms,
         coordinate_frame=coordinate_frame,
