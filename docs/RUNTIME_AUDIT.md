@@ -63,8 +63,8 @@ Core와 Gateway는 Python 표준 라이브러리만 사용한다. PTM headless �
 - Core: `run_core.bat`.
 - Gateway: `run_gateway.bat`.
 - PTM headless: `run_server.bat` (TCP 8765, Web 8080).
-- Core Process Manager의 `start_scripts`는 각각 `../XGT_SharedMemory_Gateway/run_gateway.bat`, `../API/run_server.bat`로 지정하고 `working_dir`도 해당 저장소로 지정한다.
-- 현재 작업 폴더의 저장된 Core 설정은 Linux `.sh`를 가리킨다. Windows에서 사용할 설정은 위 `.bat` 경로로 바꿔야 한다. 저장된 Linux 실행 경로를 이번 작업에서 덮어쓰지 않았다.
+- Core Process Manager의 `start_scripts`는 각각 `../plc/run_gateway.bat`, `../ptm/run_server.bat`로 지정하고 `working_dir`는 `../plc`, `../ptm`으로 지정한다. 상대경로의 기준은 `core/`다.
+- 현재 저장된 Core 설정은 Windows `.bat`를 가리킨다. Linux 배포 시 `start_scripts`를 각각 `../plc/run_gateway.sh`, `../ptm/run_linux.sh`로 변경한다.
 - Core/Gateway는 같은 Windows 세션에서 실행한다. Python 가상환경은 Windows에서 생성하며 Linux venv를 복사해 사용하지 않는다.
 
 ### RDK X5 Linux 3.5

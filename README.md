@@ -42,6 +42,20 @@ Core PLC 맵은 방향별 100 WORD(200 BYTE)입니다. Gateway의 크기가 다�
 
 Python 3.10 이상이면 Windows/Linux 모두 같은 소스로 실행합니다. 외부 Python 패키지는 아직 필요하지 않습니다.
 
+### 폴더 배치와 상대경로
+
+`core`, `plc`, `ptm`, `vision`, `Traker_Monitor`를 같은 상위 폴더에 배치합니다. 상위 폴더의 이름이나 위치는 바꿀 수 있습니다.
+
+Process Manager의 `start_scripts`, `stop_script`, `working_dir`와 `paths`의 상대경로는 `core/` 기준입니다. 실행한 터미널의 현재 폴더와 무관하며, 설정에는 상대경로를 그대로 저장합니다.
+
+| 모듈 | Windows `start_scripts` | Linux `start_scripts` | `working_dir` |
+|---|---|---|---|
+| Main Core | `main.py` | `main.py` | `.` |
+| PLC | `../plc/run_gateway.bat` | `../plc/run_gateway.sh` | `../plc` |
+| PTM | `../ptm/run_server.bat` | `../ptm/run_linux.sh` | `../ptm` |
+
+`datas/global.json`은 로컬 설정 파일입니다. 현재 저장된 실행 경로는 Windows용이므로 Linux에 배포할 때는 같은 `start_scripts` 필드를 위 Linux 경로로 변경합니다. 가상환경은 배포 장비에서 각 실행 스크립트로 생성합니다.
+
 ### Windows
 
 ```bat
