@@ -955,6 +955,7 @@ class CoreApplication:
             if not self.plc_memory.connected:
                 self.plc_memory.connect()
             header = self.plc_memory.header()
+            self._plc_status_header = header
             if not header.status_flags & FLAG_PLC_CONNECTED:
                 raise SharedMemoryError("Gateway reports PLC disconnected")
             if not header.status_flags & FLAG_LAST_READ_OK or not header.last_read_time_ns:
@@ -1917,6 +1918,7 @@ class CoreApplication:
         )
 
     def _reset_plc_write_tracking(self) -> None:
+        self._plc_status_header: SharedMemoryHeader | None = None
         self._plc_write_sequence: int | None = None
         self._plc_write_ack_sequence: int | None = None
         self._plc_write_last_ack_ms = 0
@@ -1935,6 +1937,7 @@ class CoreApplication:
                 return
             payload = self.output.to_bytes()
             header = self.plc_memory.header()
+            self._plc_status_header = header
             timestamp = now_ms()
             if header.write_length != BYTE_COUNT:
                 raise SharedMemoryError(
@@ -2358,7 +2361,10 @@ class CoreApplication:
         if include_shared_memory and self._plc_enabled():
             with contextlib.suppress(Exception):
                 memory_header = self.plc_memory.header()
-                header = memory_header.to_dict()
+        elif self._plc_enabled() and self.plc_memory.connected:
+            memory_header = self._plc_status_header
+        if memory_header is not None:
+            header = memory_header.to_dict()
         plc_words = self.plc_input.raw_words[:20]
         output_words = self.output.to_words()[:80]
         target_context = {"schema_version": 1, "requested": None, "applied": None}

@@ -46,6 +46,7 @@ function render() {
     || (state.view === 'plc' && (state.activeSubgroup.plc || '연결/통신') === '연결/통신');
   document.documentElement.classList.toggle('external-frame-view', externalFrameView);
   document.body.classList.toggle('external-frame-view', externalFrameView);
+  viewRoot.closest('.content').classList.toggle('module-content', ['plc', 'ptm', 'vision'].includes(state.view));
   const [title, desc] = titles[state.view];
   pageTitle.textContent = title;
   pageActions.innerHTML = `<button class="secondary" data-action="wake-up">절전 해제</button>` + (state.view === 'services' ? `<button class="secondary" data-action="restart-all">전체 재시작</button>` : '');
@@ -248,6 +249,52 @@ function bindDynamicEvents() {
   });
 
 }
+
+const appShell = document.querySelector('.app-shell');
+const sidebar = document.getElementById('appSidebar');
+const sidebarPinBtn = document.getElementById('sidebarPinBtn');
+const sidebarRevealBtn = document.getElementById('sidebarRevealBtn');
+let sidebarPinned = true;
+try {
+  sidebarPinned = localStorage.getItem('track-eye.sidebar-pinned') !== 'false';
+} catch {}
+
+function setSidebarOpen(open) {
+  const visible = !sidebarPinned && open;
+  appShell.classList.toggle('sidebar-open', visible);
+  sidebarRevealBtn.setAttribute('aria-expanded', String(visible));
+}
+
+function setSidebarPinned(pinned) {
+  sidebarPinned = pinned;
+  appShell.classList.toggle('sidebar-unpinned', !pinned);
+  sidebarPinBtn.setAttribute('aria-pressed', String(pinned));
+  document.getElementById('sidebarPinLabel').textContent = pinned ? '사이드바 고정 해제' : '사이드바 고정';
+  setSidebarOpen(!pinned && sidebar.matches(':hover'));
+}
+
+setSidebarPinned(sidebarPinned);
+sidebarPinBtn.addEventListener('click', () => {
+  setSidebarPinned(!sidebarPinned);
+  try {
+    localStorage.setItem('track-eye.sidebar-pinned', String(sidebarPinned));
+  } catch {}
+});
+sidebarRevealBtn.addEventListener('pointerenter', () => setSidebarOpen(true));
+sidebarRevealBtn.addEventListener('click', () => setSidebarOpen(true));
+sidebarRevealBtn.addEventListener('focus', () => setSidebarOpen(true));
+sidebar.addEventListener('pointerenter', () => setSidebarOpen(true));
+sidebar.addEventListener('pointerleave', () => setSidebarOpen(false));
+sidebar.addEventListener('focusin', () => setSidebarOpen(true));
+sidebar.addEventListener('focusout', e => {
+  if (!sidebar.contains(e.relatedTarget) && e.relatedTarget !== sidebarRevealBtn) setSidebarOpen(false);
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !sidebarPinned && appShell.classList.contains('sidebar-open')) {
+    if (sidebar.contains(document.activeElement)) sidebarRevealBtn.focus();
+    setSidebarOpen(false);
+  }
+});
 
 document.getElementById('sidebarNav').addEventListener('click', e => {
   const btn = e.target.closest('.nav-item');

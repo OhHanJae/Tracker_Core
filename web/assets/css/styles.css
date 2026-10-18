@@ -28,6 +28,14 @@ button { cursor: pointer; }
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 260px 1fr; }
 .sidebar { background: linear-gradient(180deg, var(--nav), #0c1218); color: #dce6ef; padding: 22px 16px; display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; overflow: auto; }
+.sidebar-pin { display:flex; align-items:center; justify-content:center; gap:7px; }
+.sidebar-reveal { display:none; }
+.app-shell.sidebar-unpinned { grid-template-columns:minmax(0,1fr); }
+.sidebar-unpinned .sidebar { position:fixed; left:0; top:0; z-index:40; width:260px; height:100vh; transform:translateX(-100%); visibility:hidden; transition:transform .18s ease, visibility .18s; box-shadow:8px 0 28px rgba(12,18,24,.2); }
+.sidebar-unpinned.sidebar-open .sidebar { transform:translateX(0); visibility:visible; }
+.sidebar-unpinned .sidebar-reveal { display:grid; place-items:center; position:fixed; inset:0 auto 0 0; z-index:41; width:10px; padding:0; border:0; background:transparent; color:var(--accent); opacity:0; }
+.sidebar-unpinned .sidebar-reveal:focus-visible { width:26px; background:var(--panel); opacity:1; outline:2px solid var(--accent); outline-offset:-2px; }
+.sidebar-unpinned.sidebar-open .sidebar-reveal { pointer-events:none; }
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 20px; border-bottom: 1px solid rgba(255,255,255,.08); }
 .brand-mark { width: 40px; height: 40px; border-radius: 11px; background: linear-gradient(135deg, #2d8cff, #1559d5); display: grid; place-items: center; font-weight: 800; letter-spacing: -.5px; color: white; box-shadow: 0 6px 18px rgba(30,120,255,.25); }
 .brand strong { display: block; font-size: 15px; letter-spacing: .8px; }
@@ -68,6 +76,7 @@ button { cursor: pointer; }
 .hidden { display:none !important; }
 
 .content { padding: 28px 32px 42px; max-width: 1680px; margin: 0 auto; }
+.content.module-content { width:100%; max-width:none; padding-left:12px; padding-right:12px; }
 .page-head { display:flex; justify-content:space-between; gap:20px; align-items:flex-end; margin-bottom:22px; }
 .page-head h1 { margin: 4px 0 6px; font-size: 28px; letter-spacing:-.7px; }
 .page-head p { margin:0; color:var(--muted); font-size:13px; }

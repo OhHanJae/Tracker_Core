@@ -8,7 +8,8 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
+    <button class="sidebar-reveal" id="sidebarRevealBtn" type="button" aria-label="사이드바 열기" aria-controls="appSidebar" aria-expanded="false"><span aria-hidden="true">›</span></button>
+    <aside class="sidebar" id="appSidebar">
       <div class="brand">
         <div class="brand-mark">TE</div>
         <div>
@@ -16,6 +17,8 @@
           <span>Controller Configurator</span>
         </div>
       </div>
+
+      <button class="ghost small sidebar-pin" id="sidebarPinBtn" type="button" aria-pressed="true"><span aria-hidden="true">📌</span><span id="sidebarPinLabel">사이드바 고정 해제</span></button>
 
       <div class="controller-summary">
         <div class="summary-row">
