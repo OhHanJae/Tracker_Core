@@ -189,6 +189,7 @@ class CoreApplication:
         self._vision_work_retry_ms = 0
         self._vision_work_error = ""
         self._fastening_laser_inhibit = False
+        self._nutrunner_data_hold = False
         self._sync_bypass_state(initial=True)
         if managed_worker:
             endpoint = self.settings.processes["core"]
@@ -1120,7 +1121,8 @@ class CoreApplication:
         required_mask = snapshot.camera_required_mask & ((1 << camera_count) - 1)
         required_missing = bool(required_mask & ~(snapshot.camera_online_mask & snapshot.camera_valid_mask))
         vision_fault = snapshot.vision_fault_word
-        tracking_requested = self.plc_input.tracking_enable or snapshot.tracking_active
+        tracking_requested = not getattr(self, "_nutrunner_data_hold", False) and (
+            self.plc_input.tracking_enable or snapshot.tracking_active)
         tracker_present = snapshot.tracker_present is True or (snapshot.tracker_present is None and snapshot.tracker_valid)
         result_expected = tracking_requested and tracker_present and not required_missing
         timestamp_ms = now_ms()
@@ -1374,6 +1376,14 @@ class CoreApplication:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.INVALID_COMMAND
             return
+        previous_data_hold = self._nutrunner_data_hold
+        self._nutrunner_data_hold = code == CommandCode.NUTRUNNER_DATA_REQUEST
+        if self._nutrunner_data_hold:
+            self._fastening_laser_inhibit = True
+            self._position_ok_since_ms = None
+            self._request_nutrunner_laser_off()
+        elif previous_data_hold:
+            self._fastening_laser_inhibit = False
         if code not in {CommandCode.ERROR_RESET, CommandCode.CONTROLLER_RESTART}:
             if self.plc_input.force_stop:
                 self.command.status = CommandStatus.REJECTED
@@ -1510,7 +1520,13 @@ class CoreApplication:
     async def _accept_nutrunner_result(self, result: dict[str, Any]) -> None:
         self._fastening_laser_inhibit = True
         self.nutrunner_result = result
+        off_task = self._vision_laser_off_task if self._nutrunner_data_hold else None
+        if off_task is None:
+            off_task = self._request_nutrunner_laser_off()
+        # A target change must not cancel an OFF already requested by the PLC.
+        await asyncio.shield(off_task)
 
+    def _request_nutrunner_laser_off(self) -> asyncio.Task[None]:
         async def turn_off() -> None:
             try:
                 async with self._laser_control_lock:
@@ -1530,8 +1546,10 @@ class CoreApplication:
 
         if self._vision_laser_off_task is None or self._vision_laser_off_task.done():
             self._vision_laser_off_task = asyncio.create_task(turn_off())
-        # A target change must not cancel an OFF already triggered by a valid result.
-        await asyncio.shield(self._vision_laser_off_task)
+            # OFF can finish before an unavailable/rejected measurement is read.
+            self._vision_laser_off_task.add_done_callback(
+                lambda task: None if task.cancelled() else task.exception())
+        return self._vision_laser_off_task
 
     async def _stop_vision_work(self) -> None:
         if self._vision_work_task is not None:
@@ -1574,7 +1592,7 @@ class CoreApplication:
     ) -> None:
         preparing_laser = False
         try:
-            if code in {CommandCode.ERROR_RESET, CommandCode.NUTRUNNER_DATA_REQUEST} and self._laser_manual_active():
+            if code == CommandCode.ERROR_RESET and self._laser_manual_active():
                 try:
                     await self.laser_service.command(self.settings.laser.off_command)
                 except Exception as exc:
@@ -1788,7 +1806,7 @@ class CoreApplication:
         pan_error_x100 = _scale_or_zero(self.vision_snapshot.pan_error_deg)
         tilt_error_x100 = _scale_or_zero(self.vision_snapshot.tilt_error_deg)
 
-        position_ok = self.plc_input.tracking_enable and not restart_pending and (
+        position_ok = self.plc_input.tracking_enable and not self._nutrunner_data_hold and not restart_pending and (
             process_permitted if vision_bypassed else (
                 self.vision_snapshot.tracker_valid
                 and self.vision_snapshot.tracker_present is not False
@@ -1843,7 +1861,7 @@ class CoreApplication:
             and (self._safe_stop_task is None or self._safe_stop_task.done())
             and not any(not task.done() for task in self._bypass_stop_tasks)
         )
-        tracking_active = (
+        tracking_active = not self._nutrunner_data_hold and (
             self.plc_input.tracking_enable and process_permitted if vision_bypassed
             else self.vision_service.state.enabled and not restart_pending and self.vision_snapshot.tracking_active
         )
@@ -1863,7 +1881,8 @@ class CoreApplication:
             controller_state = ControllerState.STANDBY
 
         tracking_state = TrackingState.OFF
-        if self.plc_input.tracking_enable and not restart_pending and (vision_bypassed or self.vision_service.state.enabled):
+        if (self.plc_input.tracking_enable and not self._nutrunner_data_hold
+                and not restart_pending and (vision_bypassed or self.vision_service.state.enabled)):
             if fault_active:
                 tracking_state = TrackingState.FAULT
             elif vision_bypassed:
@@ -2467,6 +2486,7 @@ class CoreApplication:
                     "target": self._vision_target,
                     "target_synced": self._vision_target_synced,
                     "laser_inhibited": self._fastening_laser_inhibit,
+                    "position_check_suspended": self._nutrunner_data_hold,
                     "last_error": self._vision_work_error,
                 },
             },

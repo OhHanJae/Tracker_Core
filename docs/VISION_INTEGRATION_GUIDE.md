@@ -198,7 +198,8 @@ Core 구현은 추가되었다. 현재 Vision의 `CoreVisionBridge.handle()`에�
 - 명령 6은 요청 ID를 먼저 `vision.target.set`으로 전달한 후 `vision.fastening_complete`를 전송한다. 이때 `command_seq`는 PLC 명령 6의 SEQ이다. 현재 적용 포인트를 체결하려면 PLC는 명령 1에 사용한 동일한 레시피/포인트 ID를 넣는다.
 - Core는 레시피/포인트/SEQ/체결 이벤트 ID가 일치하는 유효 좌표를 받자마자 `laser.off`를 전송한다. 각도·기울기가 없어도 좌표를 수신한다. 통신 응답 처리에 따른 소프트웨어 OFF 요청이며 실제 GPIO 지연은 실장비에서 측정한다.
 - 레이저 OFF 응답까지 확인하면 명령 `COMPLETE/OK`. OFF 실패는 `ERROR/INTERNAL_ERROR`와 레이저 오류로 기록하며 측정값을 보존한다. 다음 유효한 명령 1 수락 전까지 Core의 자동·수동 레이저 ON/PULSE를 차단한다.
-- 기존 명령 5도 유효 체결 데이터를 받으면 같은 OFF 처리를 한다. 지원하지 않는 결과는 `REJECTED/TRACKING_UNAVAILABLE`, 잘못된 식별자/통신 실패/대기 시간 초과는 `ERROR/TRACKING_UNAVAILABLE`이다. Vision이 보낸 `RECIPE_NOT_FOUND`/`POINT_NOT_FOUND`는 해당 PLC 결과로 반환한다.
+- 명령 5는 새 SEQ의 요청을 접수한 즉시 `laser.off`를 백그라운드 전송하고 Core의 Position OK 판정을 보류한다. 데이터 응답을 기다리지 않고 PLC `Tracking State=OFF`, `TRACKING_ACTIVE=0`, `POSITION_OK=0`, `POSITION_STABLE=0`, `LASER_TARGET_READY=0`으로 출력하며 자동·수동 레이저 ON/PULSE를 차단한다. Vision의 카메라·측정 수집과 `vision.result` 데이터 요청은 유지한다. 이 상태는 응답 실패나 같은 SEQ 유지, 명령 0, 절전 해제로 풀리지 않으며, 다음 지원 명령(1~6, 새 SEQ)을 접수할 때 해제한다. 다음 명령도 5이면 계속 보류한다. 상태는 `vision.work.position_check_suspended`에서 확인한다.
+- 명령 5에서 지원하지 않는 결과는 `REJECTED/TRACKING_UNAVAILABLE`, 잘못된 식별자/통신 실패/대기 시간 초과는 `ERROR/TRACKING_UNAVAILABLE`이다. Vision이 보낸 `RECIPE_NOT_FOUND`/`POINT_NOT_FOUND`는 해당 PLC 결과로 반환한다. 레이저 OFF 실패는 레이저 오류로 기록하고, 유효 데이터 수신 후 OFF 실패를 확인한 명령은 `ERROR/INTERNAL_ERROR`로 처리한다. 다음 명령을 접수해도 기존 안전 인터록과 명령 6의 유효 결과 수신 후 재점등 차단 규칙은 적용한다.
 - 같은 SEQ를 유지한 명령 6은 재실행하지 않는다. RUN_ENABLE 해제/FORCE_STOP은 진행 중 요청을 취소한다. Vision 바이패스에서는 통신·가짜 측정 없이 `COMPLETE/OK`로 끝난다. 바이패스에서도 기존 안전 인터록은 적용한다.
 
 ### 7.2 Vision이 추가할 TCP JSON Lines 계약
@@ -226,3 +227,5 @@ Core가 요청한 같은 TCP 연결에서 한 줄 JSON 응답으로 반환한다
 ### 7.3 확인 항목
 
 Core의 TCP 테스트 서버로 대상 전달, 명령 6(SEQ 0 포함), 중복 SEQ 방지, 지연/잘못된 결과 거부, 좌표만 수신, OFF 실패 및 취소 중 OFF 유지, 재점등 차단을 검증한다. 배포 시 Vision에 위 두 명령을 구현한 후 Core를 재시작하고 실제 카메라/PLC/PTM에서 좌표 대상 일치와 레이저 OFF 지연을 확인한다.
+
+명령 5는 데이터 응답을 지연시켜도 먼저 레이저 OFF 요청과 PLC 추적 OFF가 나오는지 확인한다. 결과 오류·잘못된 대상 ID·바이패스에서도 Position OK를 내보내지 않아야 하며, 카메라 장애 알람은 계속 유지한다. 같은 SEQ·명령 0·절전 해제·지원하지 않는 명령은 보류를 해제하지 않아야 한다. 다음 지원 명령의 새 SEQ에서 판정이 재개되고, Position Stable의 안정화 시간은 처음부터 다시 측정해야 한다.
