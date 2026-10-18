@@ -43,6 +43,22 @@ function processHealthText(proc) {
   return proc.health?.online ? 'ALIVE' : 'DEAD';
 }
 
+function httpCommunicationDisplay(item) {
+  if (item?.enabled === false) return { text: 'Disabled', state: 'Disabled', detail: 'Disabled' };
+  if (!item?.online) return { text: 'Offline', state: 'Offline', detail: item?.error || 'N/A' };
+  try {
+    const host = new URL(item.url).hostname.toLowerCase();
+    const isLoopback = value => value === 'localhost' || value === '[::1]' || /^127\./.test(value);
+    if (isLoopback(host) && window.location.hostname && !isLoopback(window.location.hostname.toLowerCase())) {
+      return {
+        text: '외부 접속 미확인', state: 'Warning',
+        detail: `Core 내부 주소(${host}) 응답. 외부 접속은 웹 바인딩 및 방화벽 설정을 확인하세요.`,
+      };
+    }
+  } catch { /* Keep the completed Core probe result when no valid URL was returned. */ }
+  return { text: 'Core 연결', state: 'Online', detail: 'Core 서버에서 접속 확인' };
+}
+
 export function renderDashboard() {
   const web = state.coreStatus?.core?.http;
   const webEndpoint = web ? `${web.host}:${web.port}` : window.location.host || 'N/A';
@@ -97,7 +113,7 @@ export function renderDashboard() {
         </table></div>
       </div>
       <div class="card dashboard-table-card">
-        <div class="card-head"><h3>HTTP Communication</h3><small>Setup / Calibration Web UI</small></div>
+        <div class="card-head"><h3>HTTP Communication</h3><small>Core 서버에서 확인 · Setup / Calibration Web UI</small></div>
         <div class="table-wrap"><table class="dashboard-table">
           <colgroup><col style="width:22%"><col style="width:32%"><col style="width:18%"><col style="width:28%"></colgroup>
           <thead><tr><th>Service</th><th>Endpoint</th><th>Status</th><th>Detail</th></tr></thead>
@@ -105,7 +121,10 @@ export function renderDashboard() {
             ['PLC Web', state.httpCommunication?.plc],
             ['PTM Web', state.httpCommunication?.ptm],
             ['Vision Web', state.httpCommunication?.vision],
-          ].map(([name, item]) => `<tr><td>${esc(name)}</td><td>${esc(item?.url || 'N/A')}</td><td>${statusBadge(item?.enabled === false ? 'Disabled' : item?.online ? 'Online' : 'Offline')}</td><td>${esc(item?.enabled === false ? 'Disabled' : item?.error || (item?.online ? 'Reachable' : 'N/A'))}</td></tr>`).join('')}</tbody>
+          ].map(([name, item]) => {
+            const display = httpCommunicationDisplay(item);
+            return `<tr><td>${esc(name)}</td><td>${esc(item?.url || 'N/A')}</td><td>${statusBadge(display.text, display.state)}</td><td>${esc(display.detail)}</td></tr>`;
+          }).join('')}</tbody>
         </table></div>
       </div>
     </div>`;

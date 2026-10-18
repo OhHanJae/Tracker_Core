@@ -380,16 +380,17 @@ function renderOperationalSettings() {
       configField('PLC 경고 (ms)', `<input id="plcWarnMs" type="number" min="100" max="60000" required value="${esc(runtime.plc_heartbeat_warn_ms ?? 1000)}">`),
       configField('PLC 장애 (ms)', `<input id="plcFaultMs" type="number" min="101" max="60000" required value="${esc(runtime.plc_heartbeat_fault_ms ?? 3000)}">`, '경고 시간보다 커야 합니다.'),
       configField('Vision 상태 만료 (ms)', `<input id="visionMaxAgeMs" type="number" min="100" max="60000" required value="${esc(runtime.vision_status_max_age_ms ?? 1500)}">`),
-      configField('PLC 무요청 절전 (초)', `<input id="powerSaveTimeout" type="number" min="1" max="86400" required value="${esc(runtime.power_save_timeout_s ?? 1800)}">`),
       configField('장애 유지', `<label class="switch"><input id="faultLatch" type="checkbox" ${runtime.fault_latch_enabled ? 'checked' : ''}><span class="slider"></span></label>`, '수동 리셋 전까지 장애 표시 유지'),
     ], '<button class="primary" id="saveOperationalSettings">Alarm 적용</button>');
   }
   const system = c.system || {};
+  const powerSaveTimeout = c.runtime?.power_save_timeout_s ?? 1800;
   const resources = state.coreStatus?.core?.resources || {};
-  return configCard('리소스 경고', [
-    configField('메모리 경고 (%)', `<input id="memoryWarnPercent" type="number" min="1" max="100" required value="${esc(system.memory_warn_percent ?? 90)}">`, `현재 ${resources.memory?.value ?? '-'}%${resources.memory?.warning ? ' · 경고' : ''}`),
-    configField('디스크 경고 (%)', `<input id="diskWarnPercent" type="number" min="1" max="100" required value="${esc(system.disk_warn_percent ?? 90)}">`, `현재 ${resources.disk?.value ?? '-'}%${resources.disk?.warning ? ' · 경고' : ''}`),
-  ], '<button class="primary" id="saveOperationalSettings">System 적용</button>', '현재 서버의 리소스 상태에 적용됩니다.');
+  return configCard('System 설정', [
+    configField('메모리 경고 (%)', `<input id="memoryWarnPercent" type="number" min="1" max="100" required data-current-value="${esc(system.memory_warn_percent ?? 90)}" value="${esc(system.memory_warn_percent ?? 90)}">`, `현재 ${resources.memory?.value ?? '-'}%${resources.memory?.warning ? ' · 경고' : ''}`),
+    configField('디스크 경고 (%)', `<input id="diskWarnPercent" type="number" min="1" max="100" required data-current-value="${esc(system.disk_warn_percent ?? 90)}" value="${esc(system.disk_warn_percent ?? 90)}">`, `현재 ${resources.disk?.value ?? '-'}%${resources.disk?.warning ? ' · 경고' : ''}`),
+    configField('Vision / PTM 절전 시간 (분)', `<input id="powerSaveTimeout" type="number" min="0.016666666666666666" max="1440" step="any" required data-current-seconds="${esc(powerSaveTimeout)}" value="${esc(powerSaveTimeout / 60)}">`, 'PLC 작업 요청이 없는 동안의 공통 절전 시간입니다. Vision 추적과 PTM 레이저 출력에 적용되며, 운전과 모터 동작을 정지한 뒤 변경하세요.'),
+  ], '<button class="primary" id="saveOperationalSettings">System 적용</button>', '리소스 경고 기준과 Vision / PTM 공통 절전 시간을 저장합니다.');
 }
 
 function checkedValues(ids) {
@@ -428,18 +429,30 @@ async function saveOperationalSettings() {
       plc_heartbeat_warn_ms: warn,
       plc_heartbeat_fault_ms: fault,
       vision_status_max_age_ms: Number(document.getElementById('visionMaxAgeMs').value),
-      power_save_timeout_s: Number(document.getElementById('powerSaveTimeout').value),
       fault_latch_enabled: document.getElementById('faultLatch').checked,
     } };
   } else if (state.view === 'system') {
-    if (!checkedValues(['memoryWarnPercent', 'diskWarnPercent'])) return;
+    if (!checkedValues(['memoryWarnPercent', 'diskWarnPercent', 'powerSaveTimeout'])) return;
     patch = { system: {
       memory_warn_percent: Number(document.getElementById('memoryWarnPercent').value),
       disk_warn_percent: Number(document.getElementById('diskWarnPercent').value),
     } };
+    const timeoutInput = document.getElementById('powerSaveTimeout');
+    const timeoutSeconds = Number(timeoutInput.value) * 60;
+    if (timeoutSeconds !== Number(timeoutInput.dataset.currentSeconds)) {
+      patch.runtime = { power_save_timeout_s: timeoutSeconds };
+    }
   } else return;
   try {
-    state.coreConfig = await apiRequest('/api/config', { method: 'PATCH', body: JSON.stringify(patch) });
+    if (state.view === 'system' && patch.runtime) {
+      state.coreConfig = await coreCommand('monitor.config.apply', { patch, expected: {
+        'runtime.power_save_timeout_s': Number(document.getElementById('powerSaveTimeout').dataset.currentSeconds),
+        'system.memory_warn_percent': Number(document.getElementById('memoryWarnPercent').dataset.currentValue),
+        'system.disk_warn_percent': Number(document.getElementById('diskWarnPercent').dataset.currentValue),
+      } });
+    } else {
+      state.coreConfig = await apiRequest('/api/config', { method: 'PATCH', body: JSON.stringify(patch) });
+    }
     await loadCoreState({ silent: true });
     render();
     showToast('설정을 적용했습니다.');

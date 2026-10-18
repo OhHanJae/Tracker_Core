@@ -36,7 +36,7 @@ const titles = {
   process: ['Watchdog', '프로세스별 자동 재시작과 Watchdog 상태를 관리합니다.'],
   logging: ['Logging', '프로세스 오류 이력을 조회·저장·불러오고 Core 파일 로그를 설정합니다.'],
   alarm: ['Alarm / Fault', 'PLC 및 Vision 장애 판정 기준을 설정합니다.'],
-  system: ['System', '메모리와 디스크 사용률 경고 기준을 설정합니다.'],
+  system: ['System', '리소스 경고 기준과 Vision / PTM 공통 절전 시간을 설정합니다.'],
 };
 
 const categoryMap = {
