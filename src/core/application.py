@@ -183,6 +183,7 @@ class CoreApplication:
         self._active_target_seq = 0
         self._vision_target: dict[str, int] | None = None
         self._vision_target_synced = False
+        self._vision_work_suspended = False
         self._vision_work_task: asyncio.Task[None] | None = None
         self._vision_laser_off_task: asyncio.Task[None] | None = None
         self._vision_work_retry_ms = 0
@@ -359,6 +360,7 @@ class CoreApplication:
                 self._active_recipe_id = int(params.get("recipe_id", self.plc_input.req_recipe_id))
                 self._active_point_id = int(params.get("point_id", self.plc_input.req_point_id))
                 self._active_target_seq = self.command.last_seq
+                self._vision_work_suspended = False
         else:
             self.nutrunner_result = None
         self.command.status = CommandStatus.COMPLETE
@@ -1453,6 +1455,7 @@ class CoreApplication:
             self.nutrunner_result = None
             if code == CommandCode.TARGET_APPLY_MOVE:
                 self._fastening_laser_inhibit = False
+                self._vision_work_suspended = False
             self._update_vision_work()
 
     def _update_vision_work(self) -> None:
@@ -1476,7 +1479,7 @@ class CoreApplication:
         if not self.vision_service.state.online:
             self._vision_target_synced = False
         if (target is None or not self.vision_service.state.online
-                or self._vision_target_synced
+                or self._vision_work_suspended
                 or (self.command.last_code == CommandCode.FASTENING_COMPLETE
                     and self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY})
                 or (self._vision_work_task is not None and not self._vision_work_task.done())
@@ -1487,15 +1490,17 @@ class CoreApplication:
 
     async def _dispatch_vision_work(self, target: dict[str, int]) -> None:
         try:
-            if not self._vision_target_synced:
-                await self.vision_service.set_target(**target)
-                if target != self._vision_target:
-                    return
-                self._vision_target_synced = True
+            await self.vision_service.set_target(**target)
+            if target != self._vision_target:
+                return
+            self._vision_target_synced = True
             self._vision_work_error = ""
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if target != self._vision_target:
+                return
+            self._vision_target_synced = False
             error = str(exc)
             if error != self._vision_work_error:
                 LOGGER.warning("Vision target/fastening communication failed: %s", error)
@@ -1539,6 +1544,7 @@ class CoreApplication:
             self._vision_laser_off_task = None
         self._vision_target = None
         self._vision_target_synced = False
+        self._vision_work_suspended = False
 
     def _prepare_nutrunner_request(self, code: int, seq: int) -> None:
         recipe_id, point_id = self.plc_input.req_recipe_id, self.plc_input.req_point_id
@@ -1584,6 +1590,9 @@ class CoreApplication:
                 return
             if code in {CommandCode.NUTRUNNER_DATA_REQUEST, CommandCode.FASTENING_COMPLETE}:
                 if code == CommandCode.FASTENING_COMPLETE:
+                    # Its own target sequence must not be overwritten by move-target renewals.
+                    self._vision_work_suspended = True
+                    self._vision_target_synced = False
                     if self._vision_work_task is not None:
                         self._vision_work_task.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
