@@ -7,6 +7,7 @@ import {
   statusTextForProcess,
   isManagedModule,
 } from './global.js';
+import { browserReachableUrl } from './external_web_frame.js';
 
 function formatBytes(value) {
   if (!Number.isFinite(Number(value))) return 'N/A';
@@ -46,16 +47,6 @@ function processHealthText(proc) {
 function httpCommunicationDisplay(item) {
   if (item?.enabled === false) return { text: 'Disabled', state: 'Disabled', detail: 'Disabled' };
   if (!item?.online) return { text: 'Offline', state: 'Offline', detail: item?.error || 'N/A' };
-  try {
-    const host = new URL(item.url).hostname.toLowerCase();
-    const isLoopback = value => value === 'localhost' || value === '[::1]' || /^127\./.test(value);
-    if (isLoopback(host) && window.location.hostname && !isLoopback(window.location.hostname.toLowerCase())) {
-      return {
-        text: '외부 접속 미확인', state: 'Warning',
-        detail: `Core 내부 주소(${host}) 응답. 외부 접속은 웹 바인딩 및 방화벽 설정을 확인하세요.`,
-      };
-    }
-  } catch { /* Keep the completed Core probe result when no valid URL was returned. */ }
   return { text: 'Core 연결', state: 'Online', detail: 'Core 서버에서 접속 확인' };
 }
 
@@ -123,7 +114,7 @@ export function renderDashboard() {
             ['Vision Web', state.httpCommunication?.vision],
           ].map(([name, item]) => {
             const display = httpCommunicationDisplay(item);
-            return `<tr><td>${esc(name)}</td><td>${esc(item?.url || 'N/A')}</td><td>${statusBadge(display.text, display.state)}</td><td>${esc(display.detail)}</td></tr>`;
+            return `<tr><td>${esc(name)}</td><td>${esc(browserReachableUrl(item?.url) || 'N/A')}</td><td>${statusBadge(display.text, display.state)}</td><td>${esc(display.detail)}</td></tr>`;
           }).join('')}</tbody>
         </table></div>
       </div>

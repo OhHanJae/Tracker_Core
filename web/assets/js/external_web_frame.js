@@ -56,7 +56,7 @@ function openExternalWebModal(name, url) {
   modal.classList.remove('hidden');
 }
 
-function browserReachableUrl(url) {
+export function browserReachableUrl(url) {
   if (!url) return url;
   try {
     const parsed = new URL(url);
