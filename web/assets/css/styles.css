@@ -33,9 +33,8 @@ button { cursor: pointer; }
 .app-shell.sidebar-unpinned { grid-template-columns:minmax(0,1fr); }
 .sidebar-unpinned .sidebar { position:fixed; left:0; top:0; z-index:40; width:260px; height:100vh; transform:translateX(-100%); visibility:hidden; transition:transform .18s ease, visibility .18s; box-shadow:8px 0 28px rgba(12,18,24,.2); }
 .sidebar-unpinned.sidebar-open .sidebar { transform:translateX(0); visibility:visible; }
-.sidebar-unpinned .sidebar-reveal { display:grid; place-items:center; position:fixed; inset:0 auto 0 0; z-index:41; width:10px; padding:0; border:0; background:transparent; color:var(--accent); opacity:0; }
+.sidebar-unpinned .sidebar-reveal { display:grid; place-items:center; position:fixed; inset:0 auto 0 0; z-index:39; width:24px; padding:0; border:0; background:transparent; color:var(--accent); opacity:0; }
 .sidebar-unpinned .sidebar-reveal:focus-visible { width:26px; background:var(--panel); opacity:1; outline:2px solid var(--accent); outline-offset:-2px; }
-.sidebar-unpinned.sidebar-open .sidebar-reveal { pointer-events:none; }
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 20px; border-bottom: 1px solid rgba(255,255,255,.08); }
 .brand-mark { width: 40px; height: 40px; border-radius: 11px; background: linear-gradient(135deg, #2d8cff, #1559d5); display: grid; place-items: center; font-weight: 800; letter-spacing: -.5px; color: white; box-shadow: 0 6px 18px rgba(30,120,255,.25); }
 .brand strong { display: block; font-size: 15px; letter-spacing: .8px; }

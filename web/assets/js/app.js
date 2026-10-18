@@ -255,14 +255,25 @@ const sidebar = document.getElementById('appSidebar');
 const sidebarPinBtn = document.getElementById('sidebarPinBtn');
 const sidebarRevealBtn = document.getElementById('sidebarRevealBtn');
 let sidebarPinned = true;
+let sidebarCloseTimer = null;
 try {
   sidebarPinned = localStorage.getItem('track-eye.sidebar-pinned') !== 'false';
 } catch {}
 
 function setSidebarOpen(open) {
+  clearTimeout(sidebarCloseTimer);
+  sidebarCloseTimer = null;
   const visible = !sidebarPinned && open;
   appShell.classList.toggle('sidebar-open', visible);
   sidebarRevealBtn.setAttribute('aria-expanded', String(visible));
+}
+
+function scheduleSidebarClose() {
+  clearTimeout(sidebarCloseTimer);
+  if (sidebarPinned) return;
+  sidebarCloseTimer = setTimeout(() => {
+    if (!sidebar.matches(':hover') && !sidebarRevealBtn.matches(':hover')) setSidebarOpen(false);
+  }, 200);
 }
 
 function setSidebarPinned(pinned) {
@@ -281,14 +292,17 @@ sidebarPinBtn.addEventListener('click', () => {
   } catch {}
 });
 sidebarRevealBtn.addEventListener('pointerenter', () => setSidebarOpen(true));
+sidebarRevealBtn.addEventListener('pointerleave', scheduleSidebarClose);
 sidebarRevealBtn.addEventListener('click', () => setSidebarOpen(true));
 sidebarRevealBtn.addEventListener('focus', () => setSidebarOpen(true));
 sidebar.addEventListener('pointerenter', () => setSidebarOpen(true));
-sidebar.addEventListener('pointerleave', () => setSidebarOpen(false));
+sidebar.addEventListener('pointerleave', scheduleSidebarClose);
 sidebar.addEventListener('focusin', () => setSidebarOpen(true));
-sidebar.addEventListener('focusout', e => {
-  if (!sidebar.contains(e.relatedTarget) && e.relatedTarget !== sidebarRevealBtn) setSidebarOpen(false);
-});
+for (const area of [sidebar, sidebarRevealBtn]) {
+  area.addEventListener('focusout', e => {
+    if (!sidebar.contains(e.relatedTarget) && e.relatedTarget !== sidebarRevealBtn) scheduleSidebarClose();
+  });
+}
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !sidebarPinned && appShell.classList.contains('sidebar-open')) {
     if (sidebar.contains(document.activeElement)) sidebarRevealBtn.focus();
