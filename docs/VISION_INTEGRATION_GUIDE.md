@@ -188,7 +188,7 @@ Vision은 대상 부재만으로 `fault=true`, D+61.0 또는 D+59.5를 보내지
 
 ## 7. 현재 레시피/포인트와 체결 완료 연동 (2026-10-16)
 
-Core 구현은 추가되었다. 현재 Vision의 `CoreVisionBridge.handle()`에는 아래 `vision.target.set`, `vision.fastening_complete` 수신부가 없어 Vision에서 구현해야 한다. Vision 앱 코드는 이번 변경에 포함하지 않았다.
+Core의 대상 전송과 Vision의 `CoreVisionBridge.handle()` 내 `vision.target.set`, `vision.fastening_complete` 수신부가 구현되어 있다. 이동 완료 후 Vision 대상 적용 여부는 Core의 `vision.work.target_synced`와 Vision의 `last_core_request`를 함께 확인한다. TCP 상태 조회 성공만으로 대상 적용 성공을 판단하지 않는다.
 
 ### 7.1 PLC 명령과 처리 순서
 
@@ -202,7 +202,7 @@ Core 구현은 추가되었다. 현재 Vision의 `CoreVisionBridge.handle()`에�
 - 명령 5에서 지원하지 않는 결과는 `REJECTED/TRACKING_UNAVAILABLE`, 잘못된 식별자/통신 실패/대기 시간 초과는 `ERROR/TRACKING_UNAVAILABLE`이다. Vision이 보낸 `RECIPE_NOT_FOUND`/`POINT_NOT_FOUND`는 해당 PLC 결과로 반환한다. 레이저 OFF 실패는 레이저 오류로 기록하고, 유효 데이터 수신 후 OFF 실패를 확인한 명령은 `ERROR/INTERNAL_ERROR`로 처리한다. 다음 명령을 접수해도 기존 안전 인터록과 명령 6의 유효 결과 수신 후 재점등 차단 규칙은 적용한다.
 - 같은 SEQ를 유지한 명령 6은 재실행하지 않는다. RUN_ENABLE 해제/FORCE_STOP은 진행 중 요청을 취소한다. Vision 바이패스에서는 통신·가짜 측정 없이 `COMPLETE/OK`로 끝난다. 바이패스에서도 기존 안전 인터록은 적용한다.
 
-### 7.2 Vision이 추가할 TCP JSON Lines 계약
+### 7.2 Vision TCP JSON Lines 계약
 
 대상 설정 요청과 응답:
 
@@ -226,6 +226,14 @@ Core가 요청한 같은 TCP 연결에서 한 줄 JSON 응답으로 반환한다
 
 ### 7.3 확인 항목
 
-Core의 TCP 테스트 서버로 대상 전달, 명령 6(SEQ 0 포함), 중복 SEQ 방지, 지연/잘못된 결과 거부, 좌표만 수신, OFF 실패 및 취소 중 OFF 유지, 재점등 차단을 검증한다. 배포 시 Vision에 위 두 명령을 구현한 후 Core를 재시작하고 실제 카메라/PLC/PTM에서 좌표 대상 일치와 레이저 OFF 지연을 확인한다.
+Core의 TCP 테스트 서버로 대상 전달, 명령 6(SEQ 0 포함), 중복 SEQ 방지, 지연/잘못된 결과 거부, 좌표만 수신, OFF 실패 및 취소 중 OFF 유지, 재점등 차단을 검증한다. 배포 시 Core와 Vision의 수신 계약 및 저장 설정을 맞추고 실제 카메라/PLC/PTM에서 좌표 대상 일치와 레이저 OFF 지연을 확인한다.
 
 명령 5는 데이터 응답을 지연시켜도 먼저 레이저 OFF 요청과 PLC 추적 OFF가 나오는지 확인한다. 결과 오류·잘못된 대상 ID·바이패스에서도 Position OK를 내보내지 않아야 하며, 카메라 장애 알람은 계속 유지한다. 같은 SEQ·명령 0·절전 해제·지원하지 않는 명령은 보류를 해제하지 않아야 한다. 다음 지원 명령의 새 SEQ에서 판정이 재개되고, Position Stable의 안정화 시간은 처음부터 다시 측정해야 한다.
+
+### 7.4 대상 수신 설정과 재동기화 확인
+
+- Core는 PTM의 `completed_id`가 이번 이동의 `motion_id`와 일치한 뒤 해당 레시피/포인트/PLC SEQ를 전송한다. PTM 이동 `COMPLETE`와 Vision ACK는 별개다. RUN_ENABLE 해제·FORCE_STOP·고장에 따른 안전 정지·절전은 Core의 적용 대상을 지울 수 있으므로, 과거 `COMPLETE`만 보지 말고 `runtime.target_context.applied`와 `vision.work.target`을 확인한다.
+- Vision `/api/vision/run-signal`의 `enabled=true`와 실제 레시피/포인트에 대응하는 `mappings`가 필요하다. Vision 레시피 등록, 포인트 등록, CAD 대상·설치 위치·카메라 매핑, 유효한 보정은 각각 확인한다. PTM의 레시피에 포인트가 있어도 Vision에 자동 등록되지는 않는다. 설정을 자동 생성하거나 임의의 CAD 포인트에 연결하지 않는다.
+- 기본 명령은 `vision.target.set`, 필드 위치는 `params.recipe_id`, `params.point_id`, `params.command_seq`다. 저장된 사용자 명령/필드 설정을 사용한다면 Core 계약과 일치시킨다. 비활성 수신도 정상 형식의 요청이면 `last_core_request`에 ID/SEQ와 `run_signal_disabled` 거부 사유를 남긴다. 기존 일반 명령 분기의 `INVALID_PARAMS: params must be an empty object` 대신 `INVALID_TARGET: run_signal_disabled`를 반환해 원인을 구분한다.
+- `/api/vision/run/status`의 `last_core_request.accepted`와 `reason`으로 미수신/수신 거부/적용 성공을 구분한다. Core의 `target_synced=false`와 `vision.work.last_error`도 함께 확인한다.
+- 카메라/추적 중단 또는 대상 만료 후 Core가 마지막으로 수락된 동일 `(recipe_id, point_id, command_seq)`를 재전송하면 Vision은 매핑·레시피·보정을 다시 검증하고 `WAIT_TRACKING`에서 새 표본을 수집한다. 과거 Position OK나 측정값은 재사용하지 않는다. 활성 대상에 대한 정상 갱신은 표본을 초기화하지 않는다. 같은 SEQ의 다른 대상 및 오래된 SEQ는 계속 거부하고, 제품 변경 뒤에는 이전 대상의 동일 SEQ로 복구하지 않는다.
