@@ -44,6 +44,22 @@ function processHealthText(proc) {
   return proc.health?.online ? 'ALIVE' : 'DEAD';
 }
 
+function ethernetCard(metric) {
+  if (!metric || metric.available === false || metric.value === null || metric.value === undefined) {
+    return resourceCard('Ethernet', metric);
+  }
+  const rate = value => `${(Number(value) / 1_000_000).toFixed(2)} Mbps`;
+  return `<div class="resource ethernet-resource">
+    <div class="resource-head"><span>Ethernet</span><strong>↓ ${esc(rate(metric.receive_bps))} / ↑ ${esc(rate(metric.transmit_bps))}</strong></div>
+    ${(metric.interfaces || []).map(item => {
+      const load = item.utilization_percent;
+      const percent = load === null || load === undefined ? null : Math.max(0, Math.min(100, Number(load)));
+      return `<div class="resource-meta">${esc(item.name)} · 수신 ${esc(rate(item.receive_bps))} / 송신 ${esc(rate(item.transmit_bps))}${percent === null ? '' : ` · ${esc(percent)}%`}</div>
+        ${percent === null ? '' : `<div class="progress"><i style="width:${percent}%"></i></div>`}`;
+    }).join('')}
+  </div>`;
+}
+
 function httpCommunicationDisplay(item) {
   if (item?.enabled === false) return { text: 'Disabled', state: 'Disabled', detail: 'Disabled' };
   if (!item?.online) return { text: 'Offline', state: 'Offline', detail: item?.error || 'N/A' };
@@ -84,6 +100,7 @@ export function renderDashboard() {
           ${resourceCard('CPU', resources.cpu, resources.cpu?.logical_cores ? `${resources.cpu.logical_cores} logical cores` : '')}
           ${resourceCard('Memory', resources.memory, resources.memory?.available ? `${formatBytes(resources.memory.used_bytes)} / ${formatBytes(resources.memory.total_bytes)}` : '')}
           ${resourceCard('Disk', resources.disk, resources.disk?.available ? `${formatBytes(resources.disk.used_bytes)} / ${formatBytes(resources.disk.total_bytes)} · ${resources.disk.path || ''}` : '')}
+          ${ethernetCard(resources.ethernet)}
           ${resourceCard('Uptime', resources.uptime, resources.uptime?.available ? formatUptime(resources.uptime.value) : '')}
           ${resourceCard('Platform', resources.platform, resources.platform?.available ? String(resources.platform.value || '') : '')}
         </div></div>

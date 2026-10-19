@@ -1455,14 +1455,6 @@ class CoreApplication:
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.SYSTEM_NOT_READY
                 return
-            if (
-                code == CommandCode.TARGET_APPLY_MOVE
-                and not self.ptm_service.state.status.get("homed")
-            ):
-                self.command.status = CommandStatus.REJECTED
-                self.command.result = CommandResult.HOMING_REQUIRED
-                return
-
         entry = self.settings.command_map.get(str(code))
         expected = {
             CommandCode.TARGET_APPLY_MOVE: "point.goto",

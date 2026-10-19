@@ -121,6 +121,8 @@ tr:hover td { background:#fbfcfd; }
 .progress { height:7px; background:#e9edf2; border-radius:999px; overflow:hidden; }
 .progress > i { display:block; height:100%; border-radius:999px; background:linear-gradient(90deg,#2c83ff,#1c68dc); }
 .resource-meta { display:flex; justify-content:space-between; color:#8794a2; font-size:10px; margin-top:8px; }
+.ethernet-resource .resource-head { flex-wrap:wrap; gap:6px; }
+.ethernet-resource .resource-meta { display:block; overflow-wrap:anywhere; margin-bottom:8px; }
 
 .tabs { display:flex; gap:6px; padding:7px; background:#edf2f6; width:max-content; max-width:100%; border-radius:10px; margin-bottom:16px; flex-wrap:wrap; }
 .tab { border:0; background:transparent; color:#687583; border-radius:7px; padding:7px 11px; font-size:11px; font-weight:700; }
