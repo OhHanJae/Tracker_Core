@@ -237,3 +237,12 @@ Core의 TCP 테스트 서버로 대상 전달, 명령 6(SEQ 0 포함), 중복 SE
 - 기본 명령은 `vision.target.set`, 필드 위치는 `params.recipe_id`, `params.point_id`, `params.command_seq`다. 저장된 사용자 명령/필드 설정을 사용한다면 Core 계약과 일치시킨다. 비활성 수신도 정상 형식의 요청이면 `last_core_request`에 ID/SEQ와 `run_signal_disabled` 거부 사유를 남긴다. 기존 일반 명령 분기의 `INVALID_PARAMS: params must be an empty object` 대신 `INVALID_TARGET: run_signal_disabled`를 반환해 원인을 구분한다.
 - `/api/vision/run/status`의 `last_core_request.accepted`와 `reason`으로 미수신/수신 거부/적용 성공을 구분한다. Core의 `target_synced=false`와 `vision.work.last_error`도 함께 확인한다.
 - 카메라/추적 중단 또는 대상 만료 후 Core가 마지막으로 수락된 동일 `(recipe_id, point_id, command_seq)`를 재전송하면 Vision은 매핑·레시피·보정을 다시 검증하고 `WAIT_TRACKING`에서 새 표본을 수집한다. 과거 Position OK나 측정값은 재사용하지 않는다. 활성 대상에 대한 정상 갱신은 표본을 초기화하지 않는다. 같은 SEQ의 다른 대상 및 오래된 SEQ는 계속 거부하고, 제품 변경 뒤에는 이전 대상의 동일 SEQ로 복구하지 않는다.
+
+### 7.5 Vision 포인트 등록 순서
+
+1. **VISION → 레시피·포인트**에서 PLC와 동일한 레시피 ID를 등록한다. 해당 레시피를 선택하고 포인트 ID·이름을 입력해 **포인트 추가**를 누른다. 예를 들어 PLC의 레시피 3 / 포인트 15는 Vision에도 숫자 ID `3 / 15`로 등록한다. CAD ID `G3-015`는 다음 단계에서 연결하며, 숫자 포인트 ID 대신 입력하지 않는다.
+2. **VISION → Core 수신 신호**에서 **지정점 수신 사용**을 켠다. **연결 추가**로 같은 숫자 레시피·포인트 ID에 실제 CAD 보정 포인트, 설치 위치의 `capture_set_id`, 카메라 위치, 확인된 평면 높이를 지정하고 **설정 저장**을 누른다. 화면의 설치 위치 프로필 이름(`SETTING-001` 등)과 실제 `capture_set_id`는 다를 수 있으므로 저장된 보정 정보를 확인한다.
+3. 해당 CAD 그룹의 카메라 보정과 제품 위치 4점 보정이 유효한지 확인한다. 포인트 ID 등록·연결 설정과 실제 위치 측정 준비 상태는 별개다. 보정되지 않은 다른 그룹까지 현재 그룹의 보정으로 대체하지 않는다.
+4. PLC에서 새 SEQ의 `TARGET_APPLY_MOVE`를 실행한다. 이동 후 Core `vision.work.target_synced=true`, Vision `last_core_request.accepted=true`와 ID/SEQ 일치를 확인하고, 새 추적 표본으로 위치 판정이 진행되는지 확인한다.
+
+저장 파일은 Vision 데이터 폴더 아래 `vision_recipes/recipes.json`(ID·이름), `core_integration/run_signal.json`(수신 설정·CAD 연결), `cad_targets/group_settings.json`(CAD 그룹 사용 설정)이다. 기본 데이터 폴더는 `vision/data`이며 `FVP_DATA_DIR` 설정 시 그 경로를 사용한다. 데이터는 Git 관리 대상이 아니므로 소스 코드만 배포하면 로컬 등록 내용은 장비로 옮겨지지 않는다. 장비의 기존 카메라·제품 보정 파일은 보존한다.

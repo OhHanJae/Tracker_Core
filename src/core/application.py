@@ -160,6 +160,12 @@ class CoreApplication:
         self.power_save = PowerSaveState(self.settings.runtime.power_save_timeout_s)
         self._wake_up_previous = False
         self._power_laser_task: asyncio.Task[None] | None = None
+        self._laser_state_task: asyncio.Task[None] | None = None
+        self._laser_state_desired: tuple[str, int, int, int] | None = None
+        self._laser_state_sent: tuple[str, int, int, int] | None = None
+        self._laser_state_profile_sent: dict[str, Any] | None = None
+        self._laser_state_retry_ms = 0
+        self._laser_workflow_complete = False
         self._power_laser_retry_ms = 0
         self._laser_permit_previous = False
         self._power_sleeping_previous = False
@@ -502,6 +508,12 @@ class CoreApplication:
                 self._gateway_config_task = asyncio.create_task(self._configure_gateway_on_start())
 
     async def _replace_settings_locked(self, settings: AppSettings) -> None:
+        self._laser_state_desired = None
+        self._laser_state_sent = None
+        if self._laser_state_task is not None:
+            self._laser_state_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._laser_state_task
         validate_discovery(settings.discovery)
         self._validate_operator_settings(settings)
         if self._power_laser_task is not None:
@@ -684,7 +696,7 @@ class CoreApplication:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._gateway_config_task
             self._gateway_config_task = None
-        for task in (self._run_task, self._power_laser_task):
+        for task in (self._run_task, self._power_laser_task, self._laser_state_task):
             if task:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -873,8 +885,10 @@ class CoreApplication:
             self._power_save_tracking_resume_pending = False
 
     def _laser_permitted(self) -> bool:
+        return self._laser_signaling_permitted() and not self._fastening_laser_inhibit
+
+    def _laser_signaling_permitted(self) -> bool:
         return bool(self.plc_input.run_enable and self.plc_input.laser_enable
-                    and not self._fastening_laser_inhibit
                     and not self.plc_input.force_stop and not self.power_save.sleeping
                     and not self._controller_restart_pending()
                     and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
@@ -915,11 +929,17 @@ class CoreApplication:
                     self.ptm_service.state.status.get("laser_on") or laser.status.get("on"))
         changed = self._power_sleeping_previous != self.power_save.sleeping
         raw_laser = self.ptm_service.state.status.get("raw", {}).get("laser", {})
+        need_off = bool(need_off or raw_laser.get("active_state"))
+        completion_signal = bool(self._laser_workflow_complete and self._laser_signaling_permitted()
+                                 and raw_laser.get("active_state") == "work_complete")
         actual_sleep = raw_laser.get("power_saving")
         mismatch = isinstance(actual_sleep, bool) and actual_sleep != self.power_save.sleeping
         actual_manual_allowed = raw_laser.get("manual_allowed")
         mismatch |= isinstance(actual_manual_allowed, bool) and actual_manual_allowed != self._laser_manual_allowed()
-        if ((changed or mismatch or (not permitted and need_off and not (
+        actual_state_allowed = raw_laser.get("state_allowed")
+        mismatch |= isinstance(actual_state_allowed, bool) and actual_state_allowed != (
+            self._laser_signaling_permitted() and not self._nutrunner_data_hold)
+        if ((changed or mismatch or (not permitted and need_off and not completion_signal and not (
                 self._laser_manual_active() and self._laser_manual_allowed()))) and laser.enabled and not laser.bypassed
                 and now_ms() >= self._power_laser_retry_ms
                 and (self._power_laser_task is None or self._power_laser_task.done())):
@@ -932,9 +952,12 @@ class CoreApplication:
         try:
             async with self._laser_control_lock:
                 if self.settings.laser.mode.lower() in {"ptm", "gpio"}:
+                    state_policy = ({"state_allowed": self._laser_signaling_permitted() and not self._nutrunner_data_hold}
+                                    if isinstance(self.ptm_service.state.status.get("raw", {}).get("laser", {}).get("state_profiles"), dict) else {})
                     await self.laser_service.command("laser.power_save", {
                         "enabled": self.power_save.sleeping, "automatic_off": True,
-                        "manual_allowed": self._laser_manual_allowed()})
+                        "manual_allowed": self._laser_manual_allowed(),
+                        **state_policy})
                 else:
                     await self.laser_service.command(self.settings.laser.off_command)
             self._report_safe_stop_result("laser", "")
@@ -1256,6 +1279,11 @@ class CoreApplication:
             raise
 
     def _abort_active_command(self, result: CommandResult) -> None:
+        self._laser_state_desired = None
+        self._laser_state_sent = None
+        self._laser_workflow_complete = False
+        if self._laser_state_task is not None:
+            self._laser_state_task.cancel()
         if self._command_task is not None and not self._command_task.done():
             self._command_task.cancel()
         self._command_task = None
@@ -1465,6 +1493,8 @@ class CoreApplication:
             self._active_point_id = 0
             self.nutrunner_result = None
             if code == CommandCode.TARGET_APPLY_MOVE:
+                self._laser_workflow_complete = False
+                self._laser_state_sent = None
                 self._fastening_laser_inhibit = False
                 self._vision_work_suspended = False
             self._update_vision_work()
@@ -1644,6 +1674,10 @@ class CoreApplication:
                     return
                 preparing_laser = True
                 await self._accept_nutrunner_result(response)
+                if code == CommandCode.FASTENING_COMPLETE:
+                    self._laser_workflow_complete = (
+                        int(params["recipe_id"]) == self._active_recipe_id
+                        and int(params["point_id"]) == self._active_point_id)
                 preparing_laser = False
                 if seq != self.command.last_seq or self.command.status != CommandStatus.BUSY:
                     return
@@ -1787,6 +1821,66 @@ class CoreApplication:
                 resolved[key] = value
         return resolved
 
+    def _update_workflow_laser(self, position_stable: bool, tolerance_x100: int, timestamp_ms: int) -> None:
+        raw = self.ptm_service.state.status.get("raw", {}).get("laser", {})
+        supported = self.settings.laser.mode.lower() in {"ptm", "gpio"} and isinstance(raw.get("state_profiles"), dict)
+        ready = (supported and self.ptm_service.state.online and self.laser_service.state.online
+                 and self._active_recipe_id > 0 and self._active_point_id > 0
+                 and not self.ptm_service.state.status.get("moving") and not self._nutrunner_data_hold
+                 and self._laser_signaling_permitted() and not self._stop_event.is_set()
+                 and not self._gateway_update_in_progress and not self._laser_manual_active())
+        state = None
+        if ready and self._laser_workflow_complete:
+            state = "work_complete"
+        elif ready and self._laser_permitted():
+            state = "point_irradiation"
+            vision = self.vision_snapshot
+            if (not self._device_bypassed("vision") and self.vision_service.state.online
+                    and self.plc_input.tracking_enable and vision.tracker_valid
+                    and vision.tracker_present is not False and vision.result_ready is not False
+                    and vision.position_error_mm is not None and math.isfinite(vision.position_error_mm)):
+                if abs(vision.position_error_mm) * 100 > tolerance_x100:
+                    state = "wrong_point"
+                elif position_stable:
+                    state = "position_check"
+        target = (state, self._active_recipe_id, self._active_point_id, self._active_target_seq) if state else None
+        if target != self._laser_state_desired:
+            self._laser_state_retry_ms = 0
+        self._laser_state_desired = target
+        if not self.ptm_service.state.online:
+            self._laser_state_sent = None
+        if (target is None or (self._laser_state_task is not None and not self._laser_state_task.done())
+                or timestamp_ms < self._laser_state_retry_ms):
+            return
+        if self._laser_state_sent == target and self._laser_state_profile_sent == raw["state_profiles"].get(state):
+            return
+        self._laser_state_retry_ms = timestamp_ms + 1000
+        self._laser_state_task = asyncio.create_task(self._dispatch_laser_state(target))
+
+    async def _dispatch_laser_state(self, target: tuple[str, int, int, int]) -> None:
+        try:
+            async with self._laser_control_lock:
+                if target != self._laser_state_desired or not self._laser_signaling_permitted():
+                    return
+                await self.laser_service.command("laser.power_save", {
+                    "enabled": self.power_save.sleeping,
+                    "automatic_off": not self._laser_permitted(),
+                    "manual_allowed": self._laser_manual_allowed(),
+                    "state_allowed": self._laser_signaling_permitted() and not self._nutrunner_data_hold,
+                })
+                if target != self._laser_state_desired or not self._laser_signaling_permitted():
+                    return
+                response = await self.laser_service.command("laser.state", {
+                    "state": target[0], "recipe_id": target[1], "point_id": target[2], "manual": False,
+                })
+                if not isinstance(response, dict) or response.get("accepted") is not False:
+                    self._laser_state_sent = target
+                    self._laser_state_profile_sent = dict(self.ptm_service.state.status.get("raw", {}).get("laser", {}).get("state_profiles", {}).get(target[0], {}))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOGGER.warning("Laser workflow state %s failed: %s", target[0], exc)
+
     def _build_output(self, timestamp_ms: int) -> None:
         bypass = self._bypass_status()
         ptm_bypassed = bypass["ptm"]["active"]
@@ -1826,6 +1920,7 @@ class CoreApplication:
             and timestamp_ms - self._position_ok_since_ms
             >= self.settings.runtime.position_stable_ms
         )
+        self._update_workflow_laser(position_stable, tracking_tolerance, timestamp_ms)
         laser_target_ready = (
             (bypass["laser"]["active"] or self.laser_service.state.enabled)
             and (vision_bypassed or self.vision_service.state.enabled)
@@ -2237,7 +2332,7 @@ class CoreApplication:
                 manual_on = device_command == "laser.on"
                 if self.power_save.sleeping and not manual_on and device_command in {"laser.on", "laser.pulse"}:
                     return JsonTcpResponse(False, error={"code": "POWER_SAVING", "message": "Wake Core before enabling laser output"})
-                if device_command in {"laser.on", "laser.pulse"}:
+                if device_command in {"laser.on", "laser.pulse", "laser.state"}:
                     async with self._laser_control_lock:
                         if not self._laser_manual_allowed():
                             return JsonTcpResponse(False, error={"code": "LASER_INTERLOCK", "message": "Safety interlock blocks manual laser output"})
