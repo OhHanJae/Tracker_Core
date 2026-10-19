@@ -1821,6 +1821,30 @@ class CoreApplication:
                 resolved[key] = value
         return resolved
 
+    def _vision_wrong_point(self, timestamp_ms: int) -> bool | None:
+        vision = self.vision_snapshot
+        match = vision.point_match
+        state = self.vision_service.state
+        if (not match or match.get("wrong_point") is None
+                or self._device_bypassed("vision") or not self.plc_input.tracking_enable
+                or not state.online or not vision.online or not vision.tracking_active
+                or vision.tracker_present is not True or self._vision_work_suspended
+                or self._nutrunner_data_hold or self._active_motion is not None
+                or self.ptm_service.state.status.get("moving")
+                or self._active_recipe_id <= 0 or self._active_point_id <= 0
+                or (match["recipe_id"], match["point_id"], match["command_seq"]) != (
+                    self._active_recipe_id, self._active_point_id, self._active_target_seq)):
+            return None
+        required = vision.camera_required_mask
+        if (not required or vision.camera_online_mask & required != required
+                or vision.camera_valid_mask & required != required or vision.fault
+                or state.last_ok_ms <= 0):
+            return None
+        age_ms = match["age_seconds"] * 1000 + max(0, timestamp_ms - state.last_ok_ms)
+        if age_ms > self.settings.runtime.vision_status_max_age_ms:
+            return None
+        return match["wrong_point"]
+
     def _update_workflow_laser(self, position_stable: bool, tolerance_x100: int, timestamp_ms: int) -> None:
         raw = self.ptm_service.state.status.get("raw", {}).get("laser", {})
         supported = self.settings.laser.mode.lower() in {"ptm", "gpio"} and isinstance(raw.get("state_profiles"), dict)
@@ -1835,13 +1859,13 @@ class CoreApplication:
         elif ready and self._laser_permitted():
             state = "point_irradiation"
             vision = self.vision_snapshot
-            if (not self._device_bypassed("vision") and self.vision_service.state.online
+            if self._vision_wrong_point(timestamp_ms) is True:
+                state = "wrong_point"
+            elif (not self._device_bypassed("vision") and self.vision_service.state.online
                     and self.plc_input.tracking_enable and vision.tracker_valid
                     and vision.tracker_present is not False and vision.result_ready is not False
                     and vision.position_error_mm is not None and math.isfinite(vision.position_error_mm)):
-                if abs(vision.position_error_mm) * 100 > tolerance_x100:
-                    state = "wrong_point"
-                elif position_stable:
+                if position_stable and abs(vision.position_error_mm) * 100 <= tolerance_x100:
                     state = "position_check"
         target = (state, self._active_recipe_id, self._active_point_id, self._active_target_seq) if state else None
         if target != self._laser_state_desired:
@@ -1897,12 +1921,14 @@ class CoreApplication:
             self.settings.runtime.laser_tolerance_default_deg_x100
         )
         position_error_x100 = _scale_or_zero(self.vision_snapshot.position_error_mm)
+        wrong_point = self._vision_wrong_point(timestamp_ms)
         pan_error_x100 = _scale_or_zero(self.vision_snapshot.pan_error_deg)
         tilt_error_x100 = _scale_or_zero(self.vision_snapshot.tilt_error_deg)
 
         position_ok = self.plc_input.tracking_enable and not self._nutrunner_data_hold and not restart_pending and (
             process_permitted if vision_bypassed else (
                 self.vision_snapshot.tracker_valid
+                and (self.vision_snapshot.point_match is None or wrong_point is False)
                 and self.vision_snapshot.tracker_present is not False
                 and self.vision_snapshot.result_ready is not False
                 and self.vision_snapshot.position_error_mm is not None
@@ -2572,6 +2598,8 @@ class CoreApplication:
                 "tracker_present": self.vision_snapshot.tracker_present,
                 "result_ready": self.vision_snapshot.result_ready,
                 "result_age_seconds": self.vision_snapshot.result_age_seconds,
+                "point_match": self.vision_snapshot.point_match,
+                "wrong_point": self._vision_wrong_point(now_ms()),
                 "position_error_mm": self.vision_snapshot.position_error_mm,
                 "camera_ip": self.vision_snapshot.camera_ip,
                 "tracking_bypass": self.vision_snapshot.tracking_bypass,

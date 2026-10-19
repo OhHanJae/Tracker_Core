@@ -6,6 +6,8 @@
 
 ## 1. 현재 동작 범위
 
+2026-10-19 추가: 다른 체결점 지향 신호는 [`point_match` 통신 계약 및 Vision 수정 지침](VISION_WRONG_POINT_SIGNAL_GUIDE.md)을 따른다. Core 수신·표시·위치 OK 차단은 반영했으며 Vision 코드는 이번 작업에서 변경하지 않았다. 기존 위치 오차만으로 다른 체결점을 확정하지 않는다.
+
 Core와 Vision의 통신 계약은 서로 맞는다. Core는 `src/vision/vision_client.py`에서 `vision.status`를 호출하고, Vision은 `web/backend/services/core_vision_bridge.py`에서 처리한다.
 
 - 웹: HTTP 8767. Core 운전 통신: TCP 8768.

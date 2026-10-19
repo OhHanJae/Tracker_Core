@@ -35,6 +35,7 @@ class VisionSnapshot:
     tracker_present: bool | None = None
     result_ready: bool | None = None
     result_age_seconds: float | None = None
+    point_match: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -47,6 +48,7 @@ class VisionSnapshot:
             "tracker_present": self.tracker_present,
             "result_ready": self.result_ready,
             "result_age_seconds": self.result_age_seconds,
+            "point_match": self.point_match,
             "degraded": self.degraded,
             "fault": self.fault,
             "position_error_mm": self.position_error_mm,
@@ -285,6 +287,7 @@ def normalize_vision_snapshot(data: dict[str, Any], camera_count: int) -> Vision
         tracker_present=_first_bool(data, tracker, "tracker_present"),
         result_ready=_first_bool(data, tracker, "result_ready"),
         result_age_seconds=result_age,
+        point_match=_normalize_point_match(data["point_match"]) if "point_match" in data else None,
         degraded=bool(data.get("degraded") or data.get("vision_degraded")),
         fault=bool(data.get("fault") or data.get("vision_fault")),
         position_error_mm=position_error,
@@ -302,6 +305,28 @@ def normalize_vision_snapshot(data: dict[str, Any], camera_count: int) -> Vision
         tracker_fault_word=_int(data.get("tracker_fault_word"), 0),
         raw=data,
     )
+
+
+def _normalize_point_match(value: Any) -> dict[str, Any]:
+    source = _dict(value)
+    result: dict[str, Any] = {}
+    for key in ("recipe_id", "point_id", "command_seq", "matched_recipe_id", "matched_point_id"):
+        item = source.get(key)
+        minimum = 0 if key == "command_seq" else 1
+        result[key] = item if type(item) is int and minimum <= item <= 65535 else None
+    age = source.get("age_seconds")
+    try:
+        valid_age = type(age) in (int, float) and math.isfinite(age) and age >= 0
+    except OverflowError:
+        valid_age = False
+    result["age_seconds"] = float(age) if valid_age else None
+    wrong = source.get("wrong_point")
+    identified = all(result[key] is not None for key in (
+        "recipe_id", "point_id", "command_seq", "matched_recipe_id", "matched_point_id"))
+    different = (result["recipe_id"], result["point_id"]) != (
+        result["matched_recipe_id"], result["matched_point_id"])
+    result["wrong_point"] = wrong if type(wrong) is bool and identified and valid_age and wrong == different else None
+    return result
 
 
 def _dict(value: Any) -> dict[str, Any]:

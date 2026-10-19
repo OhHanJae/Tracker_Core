@@ -13,6 +13,7 @@ tests
 !/tests/
 /tests/*
 !/tests/test_laser_states.py
+!/tests/test_vision_point_match.py
 logs
 datas/global.json
 
