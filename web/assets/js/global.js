@@ -18,6 +18,10 @@ const state = {
   apiOnline: false,
   lastApiError: '',
   coreStateLoading: false,
+  processActions: {},
+  moduleActions: {},
+  restartAllPending: false,
+  restartAllProgress: '',
 };
 
 const viewRoot = document.getElementById('viewRoot');
@@ -63,10 +67,14 @@ function esc(v = '') {
   return String(v).replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
 }
 
-function showToast(msg) {
+let toastTimer;
+
+function showToast(msg, { kind = 'info', persistent = false } = {}) {
+  clearTimeout(toastTimer);
   toast.textContent = msg;
+  toast.dataset.kind = kind;
   toast.classList.add('show');
-  setTimeout(() => toast.classList.remove('show'), 1900);
+  if (!persistent) toastTimer = setTimeout(() => toast.classList.remove('show'), kind === 'error' ? 6000 : 3500);
 }
 
 function priorityClass(p) {

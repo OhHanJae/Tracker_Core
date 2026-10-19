@@ -30,7 +30,11 @@ export function renderServices() {
     const status = statusTextForProcess(proc);
     const endpoint = m.endpoint || endpointForProcess(proc, m);
     const processName = String(m.process || proc?.process_name || '').trim();
-    const processDisabled = processName ? '' : 'disabled';
+    const action = state.processActions[processName];
+    const saving = state.moduleActions[m.id];
+    const feedback = action?.busy ? action : saving?.busy ? saving : saving || action;
+    const busy = Boolean(action?.busy || saving?.busy || state.restartAllPending);
+    const processDisabled = processName && !busy ? '' : 'disabled';
     return `<div class="card module-card">
         <div class="module-head"><div><span class="status-dot ${proc?.enabled === false ? '' : proc?.online ? 'online' : 'offline'}"></span><strong>${esc(m.name)}</strong><small>${esc(endpoint)} · ${esc(m.health || m.healthType || '-')}</small></div>${statusBadge(status)}</div>
         <div class="module-body">
@@ -42,12 +46,13 @@ export function renderServices() {
           <small class="module-note">실행 중 상대 경로로 여는 설정·파일의 기준 폴더입니다. 비워두면 Start Script가 있는 폴더를 사용합니다.</small>
           ${m.id === 'vision' ? '<small class="module-note">Vision은 접속 주소만 설정합니다. 서버 바인딩·카메라 IP는 Vision Web에서 설정해야 합니다.</small>' : '<small class="module-note">서버 IP·포트 변경은 설정 저장 후 해당 프로세스를 다시 시작해야 적용됩니다.</small>'}
         </div>
+        ${feedback ? `<p class="operation-feedback" data-kind="${feedback.kind}" role="status">${esc(feedback.message)}</p>` : ''}
         <div class="module-actions">
-          <button class="mini-btn primary-lite" data-module-action="apply" data-module-id="${esc(m.id)}">설정 저장</button>
-          <button class="mini-btn" data-proc-action="status" data-proc-name="${esc(processName)}" ${processDisabled}>상태 조회</button>
-          <button class="mini-btn" data-proc-action="start" data-proc-name="${esc(processName)}" ${processDisabled}>Start</button>
-          <button class="mini-btn stop" data-proc-action="stop" data-proc-name="${esc(processName)}" ${processDisabled}>Stop</button>
-          <button class="mini-btn restart" data-proc-action="restart" data-proc-name="${esc(processName)}" ${processDisabled}>Restart</button>
+          <button class="mini-btn primary-lite" data-module-action="apply" data-module-id="${esc(m.id)}" ${busy ? 'disabled' : ''} aria-busy="${Boolean(saving?.busy)}">${saving?.busy ? '저장 중…' : '설정 저장'}</button>
+          <button class="mini-btn" data-proc-action="status" data-proc-name="${esc(processName)}" ${processDisabled} aria-busy="${Boolean(action?.busy && action.action === 'status')}">${action?.busy && action.action === 'status' ? action.buttonText : '상태 조회'}</button>
+          <button class="mini-btn" data-proc-action="start" data-proc-name="${esc(processName)}" ${processDisabled} aria-busy="${Boolean(action?.busy && action.action === 'start')}">${action?.busy && action.action === 'start' ? action.buttonText : 'Start'}</button>
+          <button class="mini-btn stop" data-proc-action="stop" data-proc-name="${esc(processName)}" ${processDisabled} aria-busy="${Boolean(action?.busy && action.action === 'stop')}">${action?.busy && action.action === 'stop' ? action.buttonText : 'Stop'}</button>
+          <button class="mini-btn restart" data-proc-action="restart" data-proc-name="${esc(processName)}" ${processDisabled} aria-busy="${Boolean(action?.busy && action.action === 'restart')}">${action?.busy && action.action === 'restart' ? action.buttonText : 'Restart'}</button>
         </div>
       </div>`;
   }).join('')}

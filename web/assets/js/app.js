@@ -49,7 +49,9 @@ function render() {
   viewRoot.closest('.content').classList.toggle('module-content', ['plc', 'ptm', 'vision'].includes(state.view));
   const [title, desc] = titles[state.view];
   pageTitle.textContent = title;
-  pageActions.innerHTML = `<button class="secondary" data-action="wake-up">절전 해제</button>` + (state.view === 'services' ? `<button class="secondary" data-action="restart-all">전체 재시작</button>` : '');
+  const processBusy = Object.values(state.processActions).some(action => action.busy)
+    || Object.values(state.moduleActions).some(action => action.busy);
+  pageActions.innerHTML = `<button class="secondary" data-action="wake-up">절전 해제</button>` + (state.view === 'services' ? `<button class="secondary" data-action="restart-all" ${state.restartAllPending || processBusy ? 'disabled' : ''} aria-busy="${state.restartAllPending}">${state.restartAllPending ? esc(state.restartAllProgress) : '전체 재시작'}</button>` : '');
 
   if (state.view === 'dashboard') viewRoot.innerHTML = renderDashboard();
   else if (state.view === 'monitor') viewRoot.innerHTML = renderRuntimeMonitor();
@@ -100,12 +102,26 @@ async function pushCommand(command, payload = {}) {
   if (['dashboard', 'services', 'process'].includes(state.view)) render();
 }
 
-async function pushProcessAction(moduleOrName, action) {
+async function pushProcessAction(moduleOrName, action, { batch = false } = {}) {
   const processName = moduleProcessName(moduleOrName);
   if (!processName) {
     showToast('Process name is missing.');
     return;
   }
+  if (state.processActions[processName]?.busy || (state.restartAllPending && !batch)) return false;
+  const labels = {
+    start: ['프로세스 시작 중…', '시작 중…', '시작 요청 처리 완료'],
+    stop: ['프로세스 중지 중…', '중지 중…', '중지 요청 처리 완료'],
+    restart: ['프로세스 재시작 중…', '재시작 중…', '재시작 요청 처리 완료'],
+    status: ['프로세스 상태 조회 중…', '조회 중…', '상태 조회 완료'],
+  }[action];
+  if (!labels) return false;
+  const module = state.modules.find(item => moduleProcessName(item) === processName);
+  if (module) delete state.moduleActions[module.id];
+  const feedback = { action, busy: true, kind: 'busy', buttonText: labels[1], message: `${processName}: ${labels[0]}` };
+  state.processActions[processName] = feedback;
+  showToast(feedback.message, { kind: 'busy', persistent: true });
+  render();
 
   const packet = {
     command: `process.${action}`,
@@ -113,22 +129,55 @@ async function pushProcessAction(moduleOrName, action) {
     params: { process_name: processName },
   };
 
+  let succeeded = false;
   try {
     const result = await coreCommand(`process.${action}`, { process_name: processName });
     recordCommand(packet, result, null);
     await loadCoreState({ silent: true });
-    showToast(`${processName} ${action} complete`);
+    feedback.kind = 'success';
+    feedback.message = `${processName}: ${labels[2]}`;
+    if (['start', 'restart'].includes(action) && result?.running && !result?.online) feedback.message += ' · 통신 연결 확인 중';
+    showToast(feedback.message, { kind: 'success' });
+    succeeded = true;
   } catch (error) {
     recordCommand(packet, null, error);
-    showToast(`${processName} ${action} failed: ${error.message}`);
+    feedback.kind = 'error';
+    feedback.message = `${processName}: ${labels[2].replace(' 완료', '')} 실패 — ${error.message}`;
+    showToast(feedback.message, { kind: 'error' });
+  } finally {
+    feedback.busy = false;
   }
 
   if (['dashboard', 'services', 'process'].includes(state.view)) render();
+  return succeeded;
 }
 
 async function applyModuleConfig(module) {
-  const patch = buildModulePatch(module);
-  await pushCommand('SET_CONFIG', { patch, target: moduleProcessName(module) });
+  if (state.moduleActions[module.id]?.busy || state.processActions[moduleProcessName(module)]?.busy || state.restartAllPending) return;
+  const feedback = { busy: true, kind: 'busy', message: `${module.name}: 설정 저장 중…` };
+  delete state.processActions[moduleProcessName(module)];
+  state.moduleActions[module.id] = feedback;
+  showToast(feedback.message, { kind: 'busy', persistent: true });
+  render();
+  const packet = { command: 'SET_CONFIG', request_id: `REQ-${Date.now()}`, params: {} };
+  try {
+    const patch = buildModulePatch(module);
+    packet.params = { patch, target: moduleProcessName(module) };
+    const result = await apiRequest('/api/config', { method: 'PATCH', body: JSON.stringify(patch) });
+    mergeModulePatchIntoLocal(patch);
+    recordCommand(packet, result, null);
+    await loadCoreState({ silent: true });
+    feedback.kind = 'success';
+    feedback.message = `${module.name}: 설정을 저장했습니다.`;
+  } catch (error) {
+    recordCommand(packet, null, error);
+    feedback.kind = 'error';
+    feedback.message = `${module.name}: 설정 저장 실패 — ${error.message}`;
+  } finally {
+    feedback.busy = false;
+    showToast(feedback.message, { kind: feedback.kind });
+    if (['dashboard', 'services', 'process'].includes(state.view)) render();
+  }
 }
 
 function bindDynamicEvents() {
@@ -237,14 +286,29 @@ function bindDynamicEvents() {
   }));
 
   document.querySelector('[data-action="restart-all"]')?.addEventListener('click', async () => {
+    if (state.restartAllPending || Object.values(state.processActions).some(action => action.busy)
+      || Object.values(state.moduleActions).some(action => action.busy)) return;
     const targets = state.modules
       .filter(isManagedModule)
       .map(moduleProcessName)
       .filter(Boolean)
       .filter(isConfiguredProcessName);
 
-    for (const processName of targets) {
-      await pushProcessAction(processName, 'restart');
+    if (!targets.length) { showToast('재시작할 프로세스가 없습니다.'); return; }
+    state.restartAllPending = true;
+    let completed = 0;
+    let failed = 0;
+    try {
+      for (const processName of targets) {
+        state.restartAllProgress = `전체 재시작 중… ${completed + 1}/${targets.length}`;
+        if (!await pushProcessAction(processName, 'restart', { batch: true })) failed++;
+        completed++;
+      }
+    } finally {
+      state.restartAllPending = false;
+      render();
+      showToast(`전체 재시작 처리 완료: 성공 ${completed - failed}개${failed ? ` / 실패 ${failed}개 — 각 카드의 오류를 확인하세요.` : ''}`,
+        { kind: failed ? 'error' : 'success' });
     }
   });
 
