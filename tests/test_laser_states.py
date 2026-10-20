@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 from src.common.settings import AppSettings, save_settings
-from src.common.status import now_ms
+from src.common.status import CommandCode, CommandStatus, DeviceSummaryBit, now_ms
 from src.communication.plc_memory_mapping import PlcInput
 from src.core.application import CoreApplication
 from src.vision.vision_client import VisionSnapshot, normalize_vision_snapshot
@@ -19,7 +19,8 @@ class LaserStateTests(unittest.IsolatedAsyncioTestCase):
         settings.laser.mode = 'gpio'
         save_settings(settings, path)
         self.app = CoreApplication(path)
-        self.app.plc_input = PlcInput(run_enable=True, laser_enable=True, tracking_enable=True)
+        self.app.plc_input = PlcInput(run_enable=True, laser_mode=1, tracking_enable=True)
+        self.app._laser_mode_previous = 1
         self.app.ptm_service.state.online = True
         self.app.ptm_service.state.last_ok_ms = now_ms()
         self.raw = {'state_profiles': {state: {'mode': 'on', 'interval_ms': 500} for state in (
@@ -133,7 +134,7 @@ class LaserStateTests(unittest.IsolatedAsyncioTestCase):
         self.app.laser_service.command.side_effect = command
         self.app._update_workflow_laser(False, 100, self.clock)
         await entered.wait()
-        self.app.plc_input.force_stop = True
+        self.app.plc_input.laser_mode = 0
         self.app._update_workflow_laser(False, 100, self.clock + 1)
         release.set()
         await self.app._laser_state_task
@@ -157,14 +158,93 @@ class LaserStateTests(unittest.IsolatedAsyncioTestCase):
         await self.update()
         self.assertEqual(self.state_calls(), [])
 
-    async def test_force_stop_cancels_completion_blink_even_in_dark_phase(self):
+    async def test_ptm_stop_preserves_completion_blink_even_in_dark_phase(self):
         self.app._fastening_laser_inhibit = True
         self.app._laser_workflow_complete = True
         self.raw.update(active_state='work_complete', on=False, manual_allowed=False,
                         state_allowed=True, power_saving=False)
         self.app.plc_input.force_stop = True
+        self.app.ptm_service.command = AsyncMock()
+        self.app._update_power_save()
+        await self.app._apply_safe_stop_if_needed()
+        await self.app._safe_stop_task
+        self.app.ptm_service.command.assert_awaited_once_with('motion.stop', {'preserve_laser': True})
+        self.app.laser_service.command.assert_not_awaited()
+        self.assertTrue(self.app._laser_workflow_complete)
+
+    async def test_manual_laser_block_reason_matches_existing_permission_gate(self):
+        self.assertTrue(self.app._laser_manual_allowed())
+        self.assertEqual(self.app._laser_manual_block_reason(), '')
+        self.app.plc_input.force_stop = True
+        self.assertTrue(self.app._laser_manual_allowed())
+        self.app.plc_input.laser_mode = 0
+        self.assertIn('D+1', self.app._laser_manual_block_reason())
+        self.app.plc_input.laser_mode = 1
+        self.app.plc_input.force_stop = False
+        self.app._fastening_laser_inhibit = True
+        self.assertIn('체결', self.app._laser_manual_block_reason())
+        self.app._fastening_laser_inhibit = False
+        self.app.alarms.set_fault_word(DeviceSummaryBit.CONTROLLER, 1)
+        self.assertFalse(self.app._laser_manual_allowed())
+        self.assertIn('Core 알람 1001', self.app._laser_manual_block_reason())
+
+    async def test_changed_block_reason_is_sent_while_permission_remains_false(self):
+        self.app.alarms.set_fault_word(DeviceSummaryBit.CONTROLLER, 1)
+        self.raw.update(manual_allowed=False, manual_block_reason='old reason',
+                        state_allowed=False, power_saving=False)
         self.app._update_power_save()
         await self.app._power_laser_task
         policy = self.app.laser_service.command.await_args.args[1]
-        self.assertFalse(policy['state_allowed'])
         self.assertFalse(policy['manual_allowed'])
+        self.assertIn('Core 알람', policy['manual_block_reason'])
+
+    async def test_forced_modes_override_idle_sleep_and_fastening_but_obey_faults(self):
+        self.app.plc_input.run_enable = False
+        self.app.plc_input.force_stop = True
+        self.app.power_save.sleeping = True
+        self.app._fastening_laser_inhibit = True
+        for mode in (0, 1, 2, 3, 4, 5, 6):
+            with self.subTest(mode=mode):
+                self.app.plc_input.laser_mode = mode
+                self.app._update_power_save()
+                await self.app._power_laser_task
+                policy = self.app.laser_service.command.await_args.args[1]
+                self.assertEqual(policy['plc_mode'], mode)
+                self.assertEqual(policy['state_allowed'], mode in (2, 3, 4, 5))
+                if mode in (2, 3, 4, 5):
+                    self.assertFalse(policy['enabled'])
+                    self.assertFalse(policy['automatic_off'])
+                    self.assertFalse(policy['manual_allowed'])
+        self.app.plc_input.laser_mode = 2
+        self.app.alarms.set_fault_word(DeviceSummaryBit.CONTROLLER, 1)
+        self.assertFalse(self.app._laser_policy(automatic_off=False)['state_allowed'])
+
+    async def test_plc_laser_on_includes_dark_blink_phase_and_excludes_off_profile(self):
+        for profile, expected in (('blink', True), ('on', True), ('off', False)):
+            with self.subTest(profile=profile):
+                self.raw.update(active_state='wrong_point', active_profile={'mode': profile})
+                self.app.laser_service.state.status = {'on': False}
+                self.app._build_output(self.clock)
+                self.assertEqual(bool(self.app.output.to_words()[0] & (1 << 6)), expected)
+        self.raw['active_state'] = None
+        self.app._build_output(self.clock)
+        self.assertFalse(self.app.output.flags.laser_on)
+
+    async def test_mode_change_back_to_auto_reapplies_workflow_profile(self):
+        await self.update()
+        self.app.plc_input.laser_mode = 3
+        await self.update()
+        self.app.plc_input.laser_mode = 1
+        await self.update()
+        self.assertEqual(len(self.state_calls()), 2)
+
+    async def test_forced_mode_is_not_turned_off_by_move_or_fastening(self):
+        self.app.plc_input.laser_mode = 3
+        self.app.command.last_seq = 7
+        self.app.command.status = CommandStatus.BUSY
+        self.app.ptm_service.command = AsyncMock(return_value={'motion_id': 'move-7'})
+        await self.app._dispatch_plc_command(CommandCode.TARGET_APPLY_MOVE, 7, 'point.goto',
+                                             {'recipe_id': 1, 'point_id': 2})
+        self.assertEqual(self.app.command.status, CommandStatus.BUSY)
+        await self.app._request_nutrunner_laser_off()
+        self.app.laser_service.command.assert_not_awaited()

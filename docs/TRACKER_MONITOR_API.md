@@ -143,7 +143,7 @@ automatic_off/manual_allowed로 일반 자동 OFF와 강제 차단을 원자적�
 RUN_ENABLE=OFF의 내부 모터 정리만 preserve_laser_manual을 사용한다.
 레이저는 출력 검출이 없으며 GPIO 입력/readback을 읽지 않는다.
 PLC D+66/D+67, D+20.5, 레이저 경고/고장 요약과 대표 코드 5000~5099는 Reserved/0이다.
-`laser.on` 상태값과 PLC LASER_ON은 마지막 성공한 GPIO 명령을 뜻한다. 실제 방출을 보증하지 않는다.
+`laser.on` 상태값은 마지막 성공한 GPIO 명령을 뜻한다. PLC LASER_ON은 연속 ON 또는 점멸 활성 상태이며 점멸의 OFF 구간도 1을 유지한다. 실제 방출 검출값은 아니다.
 `system.status.laser`는 `feedback_available=false`, `on_source=commanded_gpio_level`을 제공하고 armed 필드는 없다.
 GPIO 호출 오류는 `laser.error`/Core `command_error`와 API 응답·로그에 남긴다.
 PTM TCP·모터 RS485 통신 알람은 기존대로 유지한다. 자세한 계약은 Monitor 지침서 18절을 따른다.

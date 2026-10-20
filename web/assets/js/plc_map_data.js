@@ -1,7 +1,7 @@
 window.TRACK_EYE_PLC_MAP = {
   "sourceFile": "트래커 PLC 통신 맵 v5 Core 반영.xlsx",
   "sourceTitle": "Tracker Project PLC Communication Map v5 + GPIO/WakeUp 2026-10-16",
-  "note": "v5 기준 Camera 1~2 지원. camera_count=1/2에 따라 필수 마스크 0x1/0x3. D+00.4 WAKE_UP; 레이저 출력 검출 없음: D+66/D+67 및 레이저 요약 Reserved(0). LASER_ON은 마지막 GPIO 명령값.",
+  "note": "v5 기준 Camera 1~2 지원. camera_count=1/2에 따라 필수 마스크 0x1/0x3. D+00.4 WAKE_UP; 레이저 출력 검출 없음: D+66/D+67 및 레이저 요약 Reserved(0). D+01 LASER_MODE=0~5. D+00.3 Reserved. D+00.F는 PTM 정지만 수행. LASER_ON은 연속 ON/점멸 활성 상태(점멸 OFF 구간도 1).",
   "sheets": [
     {
       "key": "01_PLC_to_Controller",
@@ -63,13 +63,13 @@ window.TRACK_EYE_PLC_MAP = {
           "시스템",
           "D+00",
           "3",
-          "LASER_ENABLE",
-          "Laser/Motor 출력 기능 허용",
-          "실제 출력은 Controller 조건과 AND",
-          "BOOL",
-          "Level",
-          "자동",
-          "0/1"
+          "Reserved",
+          "예약",
+          "레이저 제어는 D+01 LASER_MODE 사용",
+          "-",
+          "-",
+          "-",
+          "0"
         ],
         [
           "시스템",
@@ -208,8 +208,8 @@ window.TRACK_EYE_PLC_MAP = {
           "D+00",
           "F",
           "FORCE_STOP",
-          "Pan/Tilt/Laser 등 동작 강제 중단",
-          "최우선 공정 정지. 안전 E-Stop 대체 금지",
+          "PTM(Pan/Tilt) 동작 정지",
+          "레이저 상태에 관여하지 않음. 레이저 강제 OFF는 D+01=0. 안전 E-Stop 대체 금지",
           "BOOL",
           "Level",
           "전체",
@@ -219,13 +219,13 @@ window.TRACK_EYE_PLC_MAP = {
           "시스템",
           "D+01",
           "-",
-          "Reserved",
-          "예약",
-          "사용 금지",
-          "WORD",
-          "Reserve",
-          "-",
-          "0"
+          "LASER_MODE",
+          "레이저 제어 모드",
+          "0 = 레이저 강제 OFF\n1 = 자동 (Controller 제어)\n2 = 상시 ON\n3 = 500ms 간격 점멸\n4 = 250ms 간격 점멸\n5 = 100ms 간격 점멸\n6~65535 = Reserved (강제 OFF)\n2~5는 자동 공정/절전과 무관. 장치 고장·바이패스·Core 재시작 시 OFF",
+          "UINT16",
+          "Level",
+          "전체",
+          "0~5"
         ],
         [
           "시스템",
@@ -902,8 +902,8 @@ window.TRACK_EYE_PLC_MAP = {
           "D+00",
           "6",
           "LASER_ON",
-          "마지막 GPIO ON/OFF 명령 상태",
-          "실제 광 방출/출력 검출 상태가 아님",
+          "레이저 ON 또는 점멸 활성",
+          "연속 ON 및 점멸 중 1 유지 (점멸의 OFF 구간 포함). 레이저 OFF 상태는 0. 실제 광 출력 검출값 아님",
           "BOOL",
           "Level",
           "전체",

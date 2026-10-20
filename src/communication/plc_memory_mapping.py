@@ -64,7 +64,7 @@ def set_word_bit(words: list[int], word_index: int, bit_index: int, enabled: boo
 class PlcInput:
     run_enable: bool = False
     tracking_enable: bool = False
-    laser_enable: bool = False
+    laser_mode: int = 0
     wake_up: bool = False
     force_stop: bool = False
     heartbeat: int = 0
@@ -90,7 +90,7 @@ class PlcInput:
         return cls(
             run_enable=get_word_bit(padded, 0, 0),
             tracking_enable=get_word_bit(padded, 0, 2),
-            laser_enable=get_word_bit(padded, 0, 3),
+            laser_mode=padded[1],
             wake_up=get_word_bit(padded, 0, 4),
             force_stop=get_word_bit(padded, 0, 15),
             heartbeat=padded[7],
@@ -108,6 +108,10 @@ class PlcInput:
     @classmethod
     def from_bytes(cls, payload: bytes) -> "PlcInput":
         return cls.from_words(words_from_bytes(payload))
+
+    @property
+    def laser_enable(self) -> bool:
+        return 1 <= self.laser_mode <= 5
 
     def applied_tracking_tolerance(self, default_value: int) -> int:
         if 1 <= self.tracking_tolerance_mm_x100 <= 10000:
