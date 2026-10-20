@@ -248,3 +248,36 @@ class LaserStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.app.command.status, CommandStatus.BUSY)
         await self.app._request_nutrunner_laser_off()
         self.app.laser_service.command.assert_not_awaited()
+
+    async def test_ptm_control_priority_ignores_plc_laser_and_run_values(self):
+        self.raw['control_priority'] = True
+        self.app.power_save.sleeping = True
+        self.app._fastening_laser_inhibit = True
+        self.app._nutrunner_data_hold = True
+        for mode in (0, 1, 2, 3, 4, 5, 6, 65535):
+            for run_enable in (False, True):
+                for force_stop in (False, True):
+                    with self.subTest(mode=mode, run_enable=run_enable, force_stop=force_stop):
+                        self.app.plc_input.laser_mode = mode
+                        self.app.plc_input.run_enable = run_enable
+                        self.app.plc_input.force_stop = force_stop
+                        self.assertTrue(self.app._laser_permitted())
+                        self.assertTrue(self.app._laser_manual_allowed())
+                        policy = self.app._laser_policy(automatic_off=True)
+                        self.assertTrue(policy['manual_allowed'] and policy['state_allowed'])
+                        self.assertFalse(policy['enabled'] or policy['automatic_off'])
+                        self.assertEqual(policy['plc_mode'], mode)
+
+    async def test_priority_preserves_local_laser_during_plc_motor_stop(self):
+        self.raw.update(control_priority=True, active_state='wrong_point')
+        self.app.plc_input.laser_mode = 0
+        self.app.plc_input.run_enable = False
+        self.app.ptm_service.command = AsyncMock()
+        await self.app._apply_safe_stop_if_needed()
+        await self.app._safe_stop_task
+        self.app.ptm_service.command.assert_awaited_once_with('motion.stop', {'preserve_laser': True})
+        self.app.laser_service.command.assert_not_awaited()
+        self.app.alarms.set_fault_word(DeviceSummaryBit.CONTROLLER, 1)
+        policy = self.app._laser_policy(automatic_off=False)
+        self.assertFalse(policy['local_allowed'] or policy['manual_allowed'] or policy['state_allowed'])
+        self.assertIn('Core 알람', policy['local_block_reason'])
