@@ -14,6 +14,8 @@ const {chromium} = require('playwright');
   let visionLoads = 0;
   let snapshots = 0;
   let fail = false;
+  let cameraFail = false;
+  let cameraFrames = 0;
   const input = Array(100).fill(0);
   Object.assign(input, {0: 5, 7: 218, 10: 3, 11: 15, 12: 2, 13: 41});
   const written = Array(80).fill(0);
@@ -27,10 +29,14 @@ const {chromium} = require('playwright');
     ptm: {enabled: true, online: true, serial_connected: true, pan_deg: 123.45, tilt_deg: -12.34, moving: false},
     vision: {enabled: true, online: true, tracker_valid: true, result_ready: true, point_match: true, position_error_mm: 0.42,
       result_age_seconds: 0.1, work: {target_synced: true, target: {recipe_id: 3, point_id: 15}}},
-    devices: {ptm: {online: true, age_ms: 50, status: {raw: {laser: {on: false}}}}, vision: {online: true, age_ms: 50}},
-    plc: {enabled: true, heartbeat: 218, input_words_preview: input, write: {state: 'confirmed',
+    devices: {ptm: {online: true, age_ms: 50, status: {raw: {laser: {on: false}}}}, vision: {online: true, age_ms: 50,
+      status: {raw: {run_position: {simulation: false, target: {recipe_id: 3, point_id: 15}, measurement_age_ms: 30,
+        error_mm: 0.42, measurement: {data_valid: true, coordinate_frame: 'PRODUCT_CAD_STEP_NATIVE',
+          socket_reference_xyz_mm: [10, 20, 30], target_reference_xyz_mm: [10.1, 20.2, 30.3],
+          inclination_valid: true, inclination_deg: 2.5, tightening_angle_deg: 12.3}}}}}},
+    plc: {enabled: true, heartbeat: 218, heartbeat_age_ms: 100, input_words_preview: input, write: {state: 'confirmed',
       acknowledged_sequence: 512, last_committed_words_preview: written}},
-    plc_memory: {connected: true, read: {words: input, source_age_ms: 100}}, laser: {on: false}, bypass: {}, alarms: {},
+    plc_memory: {connected: true, read: {base_address: 'D2000', words: input, source_age_ms: 100}, write: {base_address: 'D3000', words: written}}, laser: {on: false}, bypass: {}, alarms: {},
     alarm_history: {entries: [], recording: {running: true, retention_days: 30}},
     monitor: {schema_version: 1, state_age_ms: 50, endpoints: {vision: {http: {host: '127.0.0.1', port: 8767}}}},
   };
@@ -50,6 +56,12 @@ const {chromium} = require('playwright');
     const request = route.request();
     const url = new URL(request.url());
     const json = result => route.fulfill({json: {ok: true, result}});
+    if (url.pathname === '/api/monitor/vision/frame') {
+      cameraFrames++;
+      if (cameraFail) return route.fulfill({status: 503, body: 'Preview unavailable'});
+      return route.fulfill({contentType: 'image/svg+xml', headers: {'X-Frame-Id': String(cameraFrames)},
+        body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 420"><rect width="700" height="420" fill="#101b23"/><path d="M80 80H580L630 130V340H60V130Z" fill="#7b919e" stroke="#c3d3dd" stroke-width="3"/><path d="M160 145H530V280H160Z" fill="#223944"/><g fill="#b5c7d2" stroke="#223944" stroke-width="5"><circle cx="110" cy="135" r="15"/><circle cx="580" cy="135" r="15"/><circle cx="110" cy="295" r="15"/><circle cx="580" cy="295" r="15"/></g><text x="350" y="395" fill="#86a3b5" font-size="14" text-anchor="middle">브라우저 검증용 모의 카메라 영상</text></svg>'});
+    }
     if (url.pathname === '/api/status') return json(data);
     if (url.pathname === '/api/config') return json({processes: {}, vision: {web_enabled: true, web_host: '127.0.0.1', web_port: 8767}});
     if (url.pathname === '/api/devices') return json(data.devices);
@@ -81,30 +93,61 @@ const {chromium} = require('playwright');
     await page.goto('http://core.test/');
     await openIntegrated();
     await waitText('#imPtm', '123.45');
-    await page.waitForFunction(() => document.querySelector('#imVisionFrame')?.src.endsWith('/#run'));
-    assert.equal(await page.locator('#imVisionFrame').getAttribute('src'), 'http://core.test:8767/#run');
-    await page.waitForFunction(() => document.querySelector('#imVisionEmpty').hidden);
-    const frame = await page.locator('#imVisionFrame').elementHandle();
-    const loads = visionLoads;
+    await page.waitForFunction(() => document.querySelector('#imVisionImage')?.src.startsWith('blob:'));
+    assert.equal(await page.locator('#imVisionFrame').count(), 0, 'only camera pixels and status are loaded');
+    assert.equal(await page.locator('main.main > header').count(), 0);
+    for (const id of ['saveBtn', 'applyBtn', 'fileMenuBtn', 'discoverBtn', 'connectBtn'])
+      assert.equal(await page.locator('#appSidebar #' + id).count(), 1, id + ' is in the sidebar');
+    const frame = await page.locator('#imVisionImage').elementHandle();
     const count = snapshots;
     await page.waitForTimeout(2200);
     assert.ok(snapshots >= count + 2, 'cached status polls continuously');
-    assert.equal(visionLoads, loads, 'Vision RUN is not reloaded by status polling');
-    assert.equal(await frame.evaluate(element => element === document.getElementById('imVisionFrame')), true);
-    assert.match(await page.locator('#imPlc').innerText(), /2 \/ 41/);
-    assert.match(await page.locator('#imPlc').innerText(), /3 \/ 15/);
+    assert.equal(visionLoads, 0, 'the complete Vision page is never requested');
+    assert.equal(await frame.evaluate(element => element === document.getElementById('imVisionImage')), true);
+    assert.match(await page.locator('#imPlc').innerText(), /2 · 원점 복귀/);
+    assert.match(await page.locator('#imPlc').innerText(), /41 \/ 41/);
+    assert.match(await page.locator('#imPlc').innerText(), /정상/);
     assert.match(await page.locator('#imPlc').innerText(), /512/);
     assert.match(await page.locator('#imFlow').innerText(), /대상 동기화됨/);
-    data.vision.result_ready = false;
-    await page.waitForFunction(() => document.querySelectorAll('#imVisionMetrics strong')[2].textContent === '—');
-    assert.doesNotMatch(await page.locator('#imVisionMetrics').innerText(), /일치/);
-    data.vision.result_ready = true;
+    assert.match(await page.locator('#imVisionMetrics').innerText(), /X 10.0 \/ Y 20.0 \/ Z 30.0/);
+    assert.match(await page.locator('#imVisionMetrics').innerText(), /2.5°/);
+    assert.match(await page.locator('#imVisionMetrics').innerText(), /12.3°/);
+    data.devices.vision.status.raw.run_position.measurement.data_valid = false;
+    await page.waitForFunction(() => document.querySelectorAll('#imVisionMetrics strong')[1].textContent === '—');
+    data.devices.vision.status.raw.run_position.measurement.data_valid = true;
     await waitText('#imVisionMetrics', '0.42 mm');
+    cameraFail = true;
+    await waitText('#camera-message', 'HTTP 503');
+    cameraFail = false;
+    await page.waitForFunction(() => document.querySelector('#camera-message').hidden);
+    data.plc.heartbeat_age_ms = 1500;
+    await waitText('#imPlc', '지연');
+    data.plc.heartbeat_age_ms = 3500;
+    await waitText('#imPlc', '끊김');
+    data.plc.heartbeat_age_ms = 100;
+    data.command.status = 'BUSY';
+    await waitText('#imPlc', '원점 복귀 처리 중');
+    data.command.status = 'COMPLETE';
+    await page.locator('#imPlcCheck').click();
+    await page.waitForFunction(() => document.querySelector('#imPlcDialog').open);
+    assert.equal(await page.locator('.im-plc-data-pane').count(), 2, 'wide modal displays both directions together');
+    const runRow = page.getByRole('button', {name: 'RUN_ENABLE 전체 설명', exact: true});
+    assert.match(await runRow.innerText(), /D2000.0/);
+    assert.equal(await runRow.locator('td strong').innerText(), '1');
+    const before = await page.locator('[data-direction="write"][data-plc-page="1"]').evaluate(element => element.parentElement.textContent);
+    await page.locator('[data-direction="write"][data-plc-page="1"]').click();
+    assert.notEqual(await page.locator('[data-direction="write"][data-plc-page="1"]').evaluate(element => element.parentElement.textContent), before);
+    await runRow.click();
+    await waitText('.im-plc-row-detail', 'Controller 정상 운전 허용');
+    await page.locator('[data-plc-back]').click();
+    assert.equal(await page.locator('#imPlcModalBody').evaluate(element => element.scrollHeight > element.clientHeight + 1), false);
+    if (process.env.MONITOR_SCREENSHOT_DIR) await page.screenshot({path: path.join(process.env.MONITOR_SCREENSHOT_DIR, 'plc-communication.png')});
+    await page.keyboard.press('Escape');
     if (process.env.MONITOR_SCREENSHOT_DIR) await page.screenshot({path: path.join(process.env.MONITOR_SCREENSHOT_DIR, 'integrated-monitor.png')});
     await page.setViewportSize({width: 1366, height: 768});
     const rect = await page.locator('#imAlarmBar').boundingBox();
     assert.ok(rect.y + rect.height <= 768, 'alarm bar fits on a 1366 by 768 desktop');
-    for (const selector of ['.im-target-request', '.im-device-foot', '.im-caption']) {
+    for (const selector of ['.im-target-request', '.im-device-foot']) {
       assert.equal(await page.locator(selector).evaluate(element =>
         element.getBoundingClientRect().bottom <= element.closest('.im-panel').getBoundingClientRect().bottom), true,
       selector + ' remains visible on the compact desktop');
@@ -141,7 +184,7 @@ const {chromium} = require('playwright');
     await page.locator('#imAlarmSearch').fill('없는 값');
     await waitText('#imAlarmRows', '조회 조건에 해당하는 알람이 없습니다.');
 
-    await openIntegrated();
+    await page.locator('#imBackToMonitor').click();
     data.alarm_history.entries = [];
     data.runtime.target_context.applied = null;
     data.ptm.pan_deg = null;
@@ -164,13 +207,13 @@ const {chromium} = require('playwright');
     await page.waitForFunction(() => document.querySelector('#integratedMonitor').dataset.stale === 'false');
     await waitText('#imAlarmBar', '현재 보고된 오류·경고가 없습니다.');
     data.bypass.vision = {active: true};
-    const loadsBeforeBypass = visionLoads;
+    const framesBeforeBypass = cameraFrames;
     await waitText('#imFlow', '바이패스');
-    assert.equal(visionLoads, loadsBeforeBypass, 'bypass keeps the configured RUN frame available');
-    const refreshed = page.waitForEvent('framenavigated', {predicate: frame => frame.url().includes('_core_refresh=')});
+    assert.ok(cameraFrames > framesBeforeBypass, 'bypass keeps the camera preview available');
+    const framesBeforeRefresh = cameraFrames;
     await page.locator('#imVisionReload').click();
-    await refreshed;
-    assert.equal(visionLoads, loadsBeforeBypass + 1, 'only explicit refresh reloads Vision');
+    await page.waitForTimeout(250);
+    assert.ok(cameraFrames > framesBeforeRefresh);
     await page.locator('#sidebarNav [data-view="dashboard"]').click();
     await page.waitForTimeout(200);
     const stopped = snapshots;
@@ -184,11 +227,17 @@ const {chromium} = require('playwright');
     await page.keyboard.press('Escape');
     await waitText('#imPtm', '-12.34');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'mobile has no horizontal page overflow');
+    await page.locator('#imPlcCheck').click();
+    await page.locator('[data-plc-mode="write"]').click();
+    assert.equal(await page.locator('.im-plc-data-pane').count(), 1);
+    assert.match(await page.locator('.im-plc-data-pane h3').innerText(), /Controller → PLC/);
+    assert.equal(await page.locator('#imPlcModalBody').evaluate(element => element.scrollHeight > element.clientHeight + 1 || element.scrollWidth > element.clientWidth + 1), false);
+    await page.keyboard.press('Escape');
     assert.deepEqual([...new Set(commands)].sort(), ['alarms.history', 'monitor.snapshot']);
     assert.deepEqual(errors, []);
-    console.log('PASS: integrated layout, persistent RUN iframe, live PLC/PTM/target data, alarm navigation/details/history/filter/pagination, stale/offline/recovery, bypass, cleanup and mobile');
+    console.log('PASS: camera-only preview and 503 recovery, live XYZ/angles, heartbeat/command status, sidebar tools, paginated bidirectional PLC modal, alarm return/history, stale/recovery, cleanup and mobile');
   } catch (error) {
-    console.error({errors, commands: commands.slice(-5), text: await page.locator('#viewRoot').innerText()});
+    console.error({errors, commands: commands.slice(-5), text: (await page.locator('#viewRoot').innerText()).slice(0, 1800)});
     throw error;
   } finally { await browser.close(); }
 })().catch(error => {console.error(error); process.exitCode = 1;});

@@ -1,5 +1,7 @@
 import { state, esc, apiRequest, showToast } from './global.js';
 import { browserReachableUrl } from './external_web_frame.js';
+import { startVisionCamera } from './vision_camera.js';
+import { renderPlcDialog, bindPlcDialog, openPlcDialog, updatePlcDialog } from './plc_monitor_dialog.js';
 
 const controllerNames = {
   INIT: '초기화', STANDBY: '운전 대기', READY: '운전 준비 완료', HOMING: '원점 복귀 중',
@@ -7,6 +9,8 @@ const controllerNames = {
   FAULT: '오류 확인 필요', TEACH_CALIBRATION: '티칭 / 캘리브레이션',
 };
 const commandNames = { IDLE: '대기', RECEIVED: '수신', BUSY: '처리 중', COMPLETE: '완료', REJECTED: '거부', ERROR: '오류' };
+const plcCommands = {0: '명령 없음', 1: '레시피·포인트 적용 및 이동', 2: '원점 복귀', 3: '알람 리셋',
+  4: 'Core 재시작', 5: '너트러너 측정 데이터 요청', 6: '체결 완료 통보'};
 const writeNames = {
   disabled: '비활성', waiting_gateway: 'Gateway 대기', disconnected: '공유메모리 단절',
   waiting_commit: '기록 대기', pending: '응답 대기', transmitting: '전송 중 · 응답 정상',
@@ -101,16 +105,16 @@ export function renderIntegratedMonitor() {
       <div class="im-hero-actions"><span id="imUpdated">1초 갱신</span><button type="button" id="imFullscreen" title="전체화면">⛶ <span>전체화면</span></button></div></header>
     <div class="im-flow" id="imFlow" aria-label="현재 작업 흐름"></div>
     <div class="im-workspace">
-      <section class="im-panel im-vision"><div class="im-panel-head"><div><span class="im-live-dot"></span><h3>VISION <span>RUN</span></h3><span id="imVisionConnection"></span></div>
+      <section class="im-panel im-vision"><div class="im-panel-head"><div><span class="im-live-dot"></span><h3>VISION <span>CAMERA</span></h3><span id="imVisionConnection"></span></div>
         <div class="im-vision-actions"><a id="imVisionOpen" target="_blank" rel="noopener" hidden>새 창 ↗</a><button type="button" id="imVisionReload" aria-label="Vision RUN 새로고침">↻</button></div></div>
-        <div class="im-vision-viewport"><iframe id="imVisionFrame" title="Vision RUN 운전 화면" src="about:blank"></iframe>
-          <div class="im-vision-empty" id="imVisionEmpty"><span>◎</span><strong>Vision RUN 연결 확인 중</strong><small>설정된 Vision 운전 화면을 불러옵니다.</small></div></div>
-        <div class="im-vision-metrics" id="imVisionMetrics"></div></section>
+        <div class="im-vision-metrics" id="imVisionMetrics"></div>
+        <div class="im-vision-viewport"><img id="imVisionImage" alt="Vision 카메라 최신 영상"><div class="camera-message" id="camera-message" role="status">카메라 최신 프레임 연결 중</div></div></section>
       <aside class="im-side"><section class="im-panel"><div class="im-panel-head"><h3>현재 작업</h3><span id="imTargetBadge"></span></div><div id="imTarget" class="im-panel-body"></div></section>
         <section class="im-panel"><div class="im-panel-head"><h3>PTM · 레이저</h3><span id="imPtmConnection"></span></div><div id="imPtm" class="im-panel-body"></div></section>
-        <section class="im-panel im-plc-panel"><div class="im-panel-head"><h3>PLC 요청 / 응답</h3><button class="im-text-button" type="button" data-monitor-view="monitor">상세 ↗</button></div><div id="imPlc" class="im-panel-body"></div></section></aside>
+        <section class="im-panel im-plc-panel"><div class="im-panel-head"><h3>PLC 운전 / 통신</h3><button class="im-text-button" type="button" id="imPlcCheck">PLC 통신 확인 ↗</button></div><div id="imPlc" class="im-panel-body"></div></section></aside>
     </div>
     <button type="button" class="im-alarm-bar" id="imAlarmBar" data-open-alarms aria-label="현재 오류·경고 상세 알람 목록 열기"></button>
+    ${renderPlcDialog()}
   </div>`;
 }
 
@@ -161,20 +165,40 @@ function updateIntegrated() {
   const written = plc.write?.last_committed_words_preview || [];
   const command = data.command || {};
   const write = plc.write || {};
-  updateHtml('imPlc', `<div class="im-plc-direction"><span>PLC → CORE</span>${pill(memory.disabled || plc.enabled === false ? '비활성' : inputFresh ? '수신 중' : '수신 확인', inputFresh ? 'good' : 'muted')}</div>
-    <div class="im-plc-values">${pair('CODE / SEQ', `${number(input[12])} / ${number(input[13])}`)}${pair('RECIPE / POINT', `${number(input[10])} / ${number(input[11])}`)}${pair('HEARTBEAT', number(input[7] ?? plc.heartbeat))}</div>
-    <div class="im-plc-direction"><span>CORE → PLC</span>${pill(live ? writeNames[write.state] || '확인 대기' : '미확인', live && ['confirmed', 'transmitting'].includes(write.state) ? 'good' : write.state === 'error' ? 'bad' : 'muted')}</div>
-    <div class="im-plc-values">${pair('처리 / 결과', `${commandNames[command.status] || '—'} / ${command.result || '—'}`)}${pair('응답 SEQ / 기록 결과', `${number(command.last_seq)} / ${number(written[15])}`)}${pair('전송 ACK', number(write.acknowledged_sequence))}</div>
-    <small class="im-caption">ACK는 PLC 쓰기 응답 기준 · 기록 결과 D+15</small>`);
+  const heartbeatAge = plc.heartbeat_age_ms;
+  const warnMs = state.coreConfig?.runtime?.plc_heartbeat_warn_ms || 1000;
+  const faultMs = state.coreConfig?.runtime?.plc_heartbeat_fault_ms || 3000;
+  const heartbeatKnown = inputFresh && typeof heartbeatAge === 'number' && Number.isFinite(heartbeatAge);
+  const heartbeatState = !heartbeatKnown ? '미확인' : heartbeatAge >= faultMs ? '끊김' : heartbeatAge >= warnMs ? '지연' : '정상';
+  const handling = command.status === 'BUSY' ? `${plcCommands[command.last_code] || '명령'} 처리 중`
+    : command.status === 'RECEIVED' ? '명령 수신 · 처리 준비' : `${commandNames[command.status] || '대기'}${command.result ? ' · ' + command.result : ''}`;
+  updateHtml('imPlc', `<div class="im-plc-direction"><span>하트비트</span>${pill(heartbeatState, heartbeatState === '정상' ? 'good' : heartbeatState === '끊김' ? 'bad' : heartbeatState === '지연' ? 'warn' : 'muted')}</div>
+    <div class="im-plc-values">${pair('최근 갱신 / 수신값', `${heartbeatKnown ? number(heartbeatAge, 0, ' ms') : '—'} / ${number(input[7] ?? plc.heartbeat)}`)}${pair('수신 명령', `${number(input[12])} · ${plcCommands[input[12]] || '미정의 명령'}`)}${pair('현재 처리', live ? handling : '상태 미확인')}${pair('요청 / 응답 SEQ', `${number(input[13])} / ${number(command.last_seq)}`)}${pair('RUN / 추적 / 정지', `${run.run_enable ? 'ON' : 'OFF'} / ${run.tracking_enable ? 'ON' : 'OFF'} / ${run.force_stop ? 'ON' : 'OFF'}`)}</div>
+    <div class="im-plc-direction"><span>Controller → PLC</span>${pill(live ? writeNames[write.state] || '확인 대기' : '미확인', live && ['confirmed', 'transmitting'].includes(write.state) ? 'good' : write.state === 'error' ? 'bad' : 'muted')}</div>
+    <div class="im-plc-values">${pair('기록 결과 / 전송 ACK', `${number(written[15])} / ${number(write.acknowledged_sequence)}`)}</div>`);
   updateHtml('imVisionConnection', pill(data.bypass?.vision?.active ? '바이패스' : vision.enabled === false ? '비활성' : visionOnline ? '연결됨' : '상태 확인', visionOnline && !data.bypass?.vision?.active ? 'good' : 'muted'));
-  const measurementValid = visionOnline && synced && vision.result_ready === true && vision.tracker_valid === true
-    && !data.bypass?.vision?.active;
+  const runPosition = data.devices?.vision?.status?.raw?.run_position;
+  const measurement = runPosition?.measurement;
+  const measuredTarget = runPosition?.target;
+  const measurementAge = runPosition?.measurement_age_ms;
+  const measurementValid = visionOnline && !data.bypass?.vision?.active && runPosition?.simulation !== true
+    && measurement?.data_valid === true && measuredTarget?.expired !== true
+    && applied?.recipe_id > 0 && applied?.point_id > 0
+    && measuredTarget?.recipe_id === applied.recipe_id && measuredTarget?.point_id === applied.point_id
+    && (!Number.isInteger(visionTarget?.command_seq) || measuredTarget?.command_seq === visionTarget.command_seq)
+    && (typeof measurementAge !== 'number' || measurementAge + Date.now() - receivedAt < (state.coreConfig?.runtime?.vision_status_max_age_ms || 1500));
+  const xyz = values => measurementValid && Array.isArray(values) && values.length === 3 && values.every(value => typeof value === 'number' && Number.isFinite(value))
+    ? values.map((value, index) => `${['X', 'Y', 'Z'][index]} ${value.toFixed(1)}`).join(' / ') : '—';
+  const metric = (label, value, wide = false) => `<div${wide ? ' class="im-metric-wide"' : ''}><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
   updateHtml('imVisionMetrics', [
-    ['공구 추적', !visionOnline ? '미확인' : vision.tracker_valid ? '유효' : '추적 대기'],
-    ['지정 포인트', !measurementValid ? '미확인' : vision.point_match ? '일치' : '확인 중'],
-    ['위치 오차', measurementValid ? number(vision.position_error_mm, 2, ' mm') : '—'],
-    ['결과 경과', visionOnline ? number(vision.result_age_seconds, 1, ' s') : '—'],
-  ].map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join(''));
+    metric('공구 추적', !visionOnline ? '미확인' : measurementValid ? '측정 중' : '추적 대기'),
+    metric('목표 대비 오차', measurementValid ? number(runPosition.error_mm, 2, ' mm') : '—'),
+    metric('지정 축 대비 기울기', measurementValid && measurement.inclination_valid !== false ? number(measurement.inclination_deg, 1, '°') : '—'),
+    metric('회전 각도', measurementValid ? number(measurement.tightening_angle_deg, 1, '°') : '—'),
+    metric(`공구 XYZ · mm (${measurement?.coordinate_frame === 'PRODUCT_CAD_STEP_NATIVE' ? '제품 CAD 기준' : measurement?.coordinate_frame === 'GROUP_REFERENCE_PLANE' ? '체결면 기준' : '좌표계 미보고'})`, xyz(measurement?.socket_reference_xyz_mm), true),
+    metric('지정점 XYZ · mm (공구와 동일 기준)', xyz(measurement?.target_reference_xyz_mm), true),
+  ].join(''));
+  updatePlcDialog(data, live);
   const messages = entries.map(entry => `${entry.suppressed ? '[바이패스 · 원인 미확인]' : entry.severity === 'Fault' ? '[오류]' : '[경고]'} ${entry.device_name || entry.device || ''} · ${entry.message}${entry.description ? ' — ' + entry.description : ''}`);
   const bar = document.getElementById('imAlarmBar');
   bar.dataset.level = counts.faults ? 'fault' : counts.warnings ? 'warning' : messages.length ? 'muted' : 'clear';
@@ -203,47 +227,17 @@ function visionRunUrl() {
   } catch { return ''; }
 }
 
-function updateFrame(run, force = false) {
-  const frame = document.getElementById('imVisionFrame');
-  if (!frame) return;
-  const url = visionRunUrl();
-  const empty = document.getElementById('imVisionEmpty');
+function updateCameraLinks() {
   const link = document.getElementById('imVisionOpen');
+  if (!link) return;
+  const url = visionRunUrl();
   link.hidden = !url;
   link.href = url || '#';
-  if (!url) {
-    if (frame.getAttribute('src') !== 'about:blank') frame.src = 'about:blank';
-    delete frame.dataset.runUrl;
-    empty.hidden = false;
-    empty.innerHTML = '<span>◎</span><strong>Vision Web 주소가 필요합니다</strong><small>Vision 설정에서 Web 주소와 포트를 확인하세요.</small>';
-    return;
-  }
-  if (!force && frame.dataset.runUrl === url) return;
-  clearTimeout(run.frameTimer);
-  empty.hidden = false;
-  empty.innerHTML = '<span>◎</span><strong>Vision RUN 불러오는 중</strong><small>연결이 지연되면 새로고침하거나 새 창에서 확인하세요.</small>';
-  frame.onload = () => {
-    if (runtime !== run) return;
-    empty.hidden = true;
-    clearTimeout(run.frameTimer);
-  };
-  frame.onerror = () => {
-    if (runtime !== run) return;
-    empty.hidden = false;
-    empty.innerHTML = '<span>!</span><strong>Vision RUN 화면 연결 확인</strong><small>Vision 프로세스와 Web 주소를 확인한 뒤 ↻ 버튼을 눌러주세요.</small>';
-  };
-  frame.dataset.runUrl = url;
-  const loadUrl = new URL(url);
-  if (force) loadUrl.searchParams.set('_core_refresh', String(Date.now()));
-  frame.src = loadUrl.href;
-  run.frameTimer = setTimeout(() => {
-    if (runtime === run) frame.onerror();
-  }, 8000);
 }
 
 export function renderAlarmList() {
   return `<section id="imAlarmList" class="im-alarm-list">
-    <div class="im-alarm-list-heading"><div><span class="im-eyebrow">ALARM CENTER</span><h2>오류·경고 상세</h2><p>발생 원인, 복구 상태와 리셋 대기 여부를 확인합니다.</p></div><button class="secondary" type="button" data-monitor-view="integrated">← 통합 모니터링</button></div>
+    <div class="im-alarm-list-heading"><div><span class="im-eyebrow">ALARM CENTER</span><h2>오류·경고 상세</h2><p>발생 원인, 복구 상태와 리셋 대기 여부를 확인합니다.</p></div><button class="primary" id="imBackToMonitor" type="button" data-monitor-view="integrated">← 통합 모니터링으로</button></div>
     <div id="imAlarmSummary" class="im-alarm-summary"></div>
     <div class="im-alarm-toolbar"><div class="tabs" role="group" aria-label="알람 조회 범위"><button type="button" class="tab ${alarmFilter.mode === 'active' ? 'active' : ''}" data-alarm-mode="active">현재 알람</button><button type="button" class="tab ${alarmFilter.mode === 'history' ? 'active' : ''}" data-alarm-mode="history">발생·복구 이력</button></div>
       <label>레벨<select id="imAlarmSeverity"><option value="">전체</option><option value="Fault" ${alarmFilter.severity === 'Fault' ? 'selected' : ''}>오류</option><option value="Warning" ${alarmFilter.severity === 'Warning' ? 'selected' : ''}>경고</option></select></label>
@@ -334,7 +328,7 @@ async function poll(run) {
     if (runtime === run) {
       updateIntegrated();
       updateAlarmList();
-      updateFrame(run);
+      updateCameraLinks();
       run.timer = setTimeout(() => poll(run), 1000);
     }
   }
@@ -346,6 +340,7 @@ export function startIntegratedRuntime(view, navigate) {
   if (!root) return;
   const run = { events: new AbortController(), pending: false };
   runtime = run;
+  if (view === 'integrated') { bindPlcDialog(run.events.signal); run.cameraStop = startVisionCamera(); }
   root.addEventListener('click', async event => {
     const destination = event.target.closest('[data-monitor-view]');
     if (destination) { navigate(destination.dataset.monitorView); return; }
@@ -361,7 +356,8 @@ export function startIntegratedRuntime(view, navigate) {
       if (alarmFilter.mode === 'history') loadHistory(run);
       else { run.historyRequest?.abort(); updateAlarmList(); }
     }
-    if (event.target.closest('#imVisionReload')) updateFrame(run, true);
+    if (event.target.closest('#imVisionReload')) { run.cameraStop?.(); run.cameraStop = startVisionCamera(); }
+    if (event.target.closest('#imPlcCheck')) openPlcDialog();
     if (event.target.closest('#imAlarmRefresh')) { poll(run); if (alarmFilter.mode === 'history') loadHistory(run); }
     if (event.target.closest('#imAlarmMore')) loadHistory(run, true);
     if (event.target.closest('#imFullscreen')) {
@@ -384,7 +380,7 @@ export function startIntegratedRuntime(view, navigate) {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(run); }, {signal: run.events.signal});
   updateIntegrated();
   updateAlarmList();
-  updateFrame(run);
+  updateCameraLinks();
   poll(run);
   if (view === 'alarm_list' && alarmFilter.mode === 'history') loadHistory(run);
 }
@@ -394,11 +390,9 @@ export function stopIntegratedRuntime() {
   runtime = null;
   if (!run) return;
   clearTimeout(run.timer);
-  clearTimeout(run.frameTimer);
+  run.cameraStop?.();
   clearTimeout(run.searchTimer);
   run.events.abort();
   run.request?.abort();
   run.historyRequest?.abort();
-  const frame = document.getElementById('imVisionFrame');
-  if (frame) { frame.onload = null; frame.onerror = null; }
 }

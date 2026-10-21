@@ -49,21 +49,15 @@
         <button class="nav-item" data-view="system"><span>⚙</span>System</button>
       </nav>
 
-      <div class="sidebar-footer">
-        <div class="version-line"><span>Core</span><strong>v1.2.3</strong></div>
-        <div class="version-line"><span>Schema</span><strong>v1.0</strong></div>
-      </div>
-    </aside>
-
-    <main class="main">
-      <header class="topbar">
-        <div class="topbar-left">
+      <section class="sidebar-tools" aria-label="Core 파일 및 설정 도구">
+        <div class="sidebar-tools-heading"><span>CORE TOOLS</span><span class="connection-badge"><span class="status-dot offline"></span>DISCONNECTED</span></div>
+        <div class="sidebar-tool-grid">
           <div class="file-menu-wrap">
             <button class="toolbar-btn" id="fileMenuBtn">파일 ▾</button>
             <div class="dropdown hidden" id="fileMenu">
               <button data-file-action="new">새 파일</button>
               <button data-file-action="open">파일 불러오기</button>
-              <button data-file-action="save">파일 저장</button>
+              <button data-file-action="save">파일 저장 (.tre)</button>
               <div class="divider"></div>
               <button data-file-action="export">설정 내보내기</button>
             </div>
@@ -71,13 +65,16 @@
           <button class="toolbar-btn" id="discoverBtn">컨트롤러 검색</button>
           <button class="toolbar-btn" id="connectBtn">연결 해제</button>
         </div>
-        <div class="topbar-right">
-          <span class="connection-badge"><span class="status-dot online"></span>CONNECTED</span>
-          <button class="secondary" id="saveBtn">저장</button>
-          <button class="primary" id="applyBtn">설정 적용</button>
-        </div>
-      </header>
+        <div class="sidebar-save-tools"><button class="secondary" id="saveBtn" title="현재 화면 설정을 Core 서버에 저장합니다. 파일 메뉴의 .tre 저장과는 다릅니다.">저장</button><button class="primary" id="applyBtn" title="설정을 저장하고 Core 설정을 다시 불러옵니다. Controller·Logging·Alarm·System 화면에서는 저장과 같은 동작입니다.">설정 적용</button></div>
+      </section>
 
+      <div class="sidebar-footer">
+        <div class="version-line"><span>Core</span><strong>v1.2.3</strong></div>
+        <div class="version-line"><span>Schema</span><strong>v1.0</strong></div>
+      </div>
+    </aside>
+
+    <main class="main">
       <section class="content">
         <div class="page-head">
           <div>

@@ -109,6 +109,7 @@ class JsonLineServer:
         self.static_root = Path(static_root).resolve() if static_root else None
         self.banner = banner
         self.allow_remote_process_control = allow_remote_process_control
+        self.vision_frame_handler = None
         self._server: asyncio.AbstractServer | None = None
         self._clients: set[asyncio.StreamWriter] = set()
         self._client_tasks: set[asyncio.Task[None]] = set()
@@ -296,6 +297,11 @@ class JsonLineServer:
             )
             return
 
+        if route == "/api/monitor/vision/frame" and method == "GET" and self.vision_frame_handler:
+            query = {key: values[-1] for key, values in parse_qs(urlparse(target).query).items()}
+            status, content, content_type, extra_headers = await self.vision_frame_handler(query)
+            await self._write_http_response(writer, status, content, content_type, method, extra_headers)
+            return
         if route in {"/api/status", "/status.json"}:
             response = await self.handler("get_status", {})
             await self._write_json_response(writer, response, method)
@@ -462,6 +468,7 @@ class JsonLineServer:
         body: bytes,
         content_type: str,
         method: str,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         response_body = b"" if method == "HEAD" else body
         header = (
@@ -473,7 +480,8 @@ class JsonLineServer:
             "Access-Control-Allow-Origin: *\r\n"
             "Access-Control-Allow-Headers: Content-Type\r\n"
             "Access-Control-Allow-Methods: GET,POST,PUT,PATCH,OPTIONS,HEAD\r\n"
-            "\r\n"
+            + "".join(f"{name}: {value}\r\n" for name, value in (extra_headers or {}).items())
+            + "\r\n"
         ).encode("ascii")
         try:
             writer.write(header + response_body)

@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import http.client
 import logging
 from typing import Any
+from urllib.parse import urlencode
 
 from src.common.event_history import EventHistory
 from src.common.alarm_history import AlarmHistory
@@ -26,10 +28,67 @@ class CoreWebApplication(CoreApplication):
         self._worker_expected_stop = False
         self._worker_restart_handled: tuple[Any, ...] | None = None
         super().__init__(*args, **kwargs)
+        self._vision_frame_slots = asyncio.Semaphore(4)
+        for server in (self._server, self._http_server):
+            if server is not None:
+                server.vision_frame_handler = self._monitor_vision_frame
         self.history = EventHistory(resolve_app_path(self.settings.paths.logs_dir) / "events.jsonl")
         self.process_manager.set_diagnostic_callback(self._process_diagnostic)
         self.process_manager.set_lifecycle_callbacks(self._before_process_stop, self._after_process_start)
         self._configure_managed_launches()
+
+    async def _monitor_vision_frame(self, query: dict[str, str]) -> tuple[str, bytes, str, dict[str, str]]:
+        """Read the configured Vision preview off the control loop; never redirect."""
+        web = self.settings.vision
+        if not web.web_enabled or not web.web_port:
+            return "503 Service Unavailable", b"Vision Web is disabled", "text/plain", {}
+        after = query.get("after", "")
+        if after and (not after.isascii() or not after.isdigit() or len(after) > 20):
+            return "400 Bad Request", b"Invalid frame id", "text/plain", {}
+        try:
+            await asyncio.wait_for(self._vision_frame_slots.acquire(), 0.1)
+        except asyncio.TimeoutError:
+            return "503 Service Unavailable", b"Preview busy", "text/plain", {}
+        try:
+            # A cancelled browser request must not release its slot while the
+            # bounded HTTP read still occupies a worker thread.
+            task = asyncio.create_task(asyncio.to_thread(self._read_vision_frame, web, after))
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
+        finally:
+            self._vision_frame_slots.release()
+
+    @staticmethod
+    def _read_vision_frame(web: Any, after: str) -> tuple[str, bytes, str, dict[str, str]]:
+        host = str(web.web_host).strip("[]")
+        if host in {"0.0.0.0", "::"}:
+            host = "127.0.0.1"
+        path = "/api/camera/live.jpg" + ("?" + urlencode({"after": after}) if after else "")
+        connection = http.client.HTTPConnection(host, int(web.web_port), timeout=1.5)
+        try:
+            connection.request("GET", path, headers={"Accept": "image/jpeg"})
+            response = connection.getresponse()
+            headers = {}
+            for name in ("X-Frame-Id", "X-Source-Width", "X-Source-Height"):
+                value = response.getheader(name, "")
+                if value.isascii() and value.isdigit() and len(value) <= 20:
+                    headers[name] = value
+            if response.status == 204:
+                return "204 No Content", b"", "image/jpeg", headers
+            if response.status != 200:
+                status = response.status if response.status in {409, 503} else 502
+                return f"{status} {'Service Unavailable' if status == 503 else 'Bad Gateway' if status == 502 else 'Conflict'}", b"Vision preview unavailable", "text/plain", {}
+            content = response.read(4 * 1024 * 1024 + 1)
+            if len(content) > 4 * 1024 * 1024 or response.getheader("Content-Type", "").split(";")[0] != "image/jpeg":
+                return "502 Bad Gateway", b"Invalid Vision JPEG response", "text/plain", {}
+            return "200 OK", content, "image/jpeg", headers
+        except (OSError, http.client.HTTPException):
+            return "502 Bad Gateway", b"Vision preview connection failed", "text/plain", {}
+        finally:
+            connection.close()
 
     def _process_diagnostic(self, event: dict[str, Any]) -> None:
         self.history.add(str(event.get("process_name", "process")), str(event.get("level", "ERROR")),

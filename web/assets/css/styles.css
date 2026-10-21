@@ -56,6 +56,19 @@ button { cursor: pointer; }
 .nav-item.active { background: #1e2b38; color: #fff; box-shadow: inset 3px 0 0 var(--accent); }
 .nav-item.active span { color: #62a6ff; }
 .sidebar-footer { margin-top: auto; padding: 14px 9px 3px; border-top: 1px solid rgba(255,255,255,.08); }
+.sidebar { overflow:hidden; }
+.sidebar > :not(.nav) { flex:none; }
+.sidebar .nav { flex:1; min-height:120px; overflow:auto; margin-bottom:12px; }
+.sidebar-tools { padding:12px 0; border-top:1px solid #ffffff16; }
+.sidebar-tools-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; color:#758b9e; font-size:9px; letter-spacing:1px; }
+.sidebar-tools .connection-badge { margin:0; color:#9db1c1; font-size:9px; letter-spacing:0; }
+.sidebar-tool-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.sidebar-tool-grid > :last-child { grid-column:1/-1; }
+.sidebar-tools .toolbar-btn, .sidebar-tools .secondary { width:100%; background:#1c2d3a; color:#b9cbda; border-color:#344553; padding:8px 6px; font-size:11px; }
+.sidebar-tools .toolbar-btn:hover, .sidebar-tools .secondary:hover { background:#293f50; }
+.sidebar-tools .dropdown { top:auto; bottom:calc(100% + 7px); min-width:205px; }
+.sidebar-save-tools { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px; }
+.sidebar-save-tools .primary { padding:8px 6px; font-size:11px; }
 .version-line { display: flex; justify-content: space-between; margin: 6px 0; font-size: 11px; color: #657789; }
 .version-line strong { color: #a9b8c6; font-weight: 600; }
 
