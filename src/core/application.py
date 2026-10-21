@@ -1468,6 +1468,7 @@ class CoreApplication:
         }:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.INVALID_COMMAND
+            LOGGER.warning("PLC command rejected: code=%s seq=%s reason=unsupported_command", code, seq)
             return
         previous_data_hold = self._nutrunner_data_hold
         self._nutrunner_data_hold = code == CommandCode.NUTRUNNER_DATA_REQUEST
@@ -1533,6 +1534,8 @@ class CoreApplication:
         ):
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.INVALID_COMMAND
+            LOGGER.warning("PLC command rejected: code=%s seq=%s reason=command_map_mismatch expected=%s",
+                           code, seq, expected)
             return
         params = self._resolve_params(entry.get("params") or {})
         if code == CommandCode.TARGET_APPLY_MOVE and (
@@ -1543,6 +1546,8 @@ class CoreApplication:
                 CommandResult.RECIPE_NOT_FOUND if not params.get("recipe_id")
                 else CommandResult.POINT_NOT_FOUND
             )
+            LOGGER.warning("PLC command rejected: code=%s seq=%s recipe_id=%s point_id=%s result=%s",
+                           code, seq, params.get("recipe_id"), params.get("point_id"), self.command.result.name)
             return
         self._pending_request = (code, seq, expected, params)
         if code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME}:
@@ -1659,16 +1664,22 @@ class CoreApplication:
         if not 1 <= recipe_id <= 65535:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.RECIPE_NOT_FOUND
+            LOGGER.warning("PLC command rejected: code=%s seq=%s recipe_id=%s reason=invalid_recipe_id",
+                           code, seq, recipe_id)
             return
         if not 1 <= point_id <= 65535:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.POINT_NOT_FOUND
+            LOGGER.warning("PLC command rejected: code=%s seq=%s point_id=%s reason=invalid_point_id",
+                           code, seq, point_id)
             return
         entry = self.settings.command_map.get(str(code))
         expected = "vision.fastening_complete" if code == CommandCode.FASTENING_COMPLETE else "vision.result"
         if entry is None or entry.get("target") != "vision" or entry.get("command") != expected:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.INVALID_COMMAND
+            LOGGER.warning("PLC command rejected: code=%s seq=%s reason=command_map_mismatch expected=%s",
+                           code, seq, expected)
             return
         if not self.vision_service.state.enabled or not self.vision_service.state.online:
             self.command.status = CommandStatus.REJECTED
@@ -1777,7 +1788,9 @@ class CoreApplication:
             raise
         except Exception as exc:
             if seq == self.command.last_seq and self.command.status == CommandStatus.BUSY:
-                LOGGER.warning("PLC command %s/%s failed: %s", code, seq, exc)
+                LOGGER.warning("PLC command failed: code=%s seq=%s command=%s recipe_id=%s point_id=%s error_code=%s: %s",
+                               code, seq, command, params.get("recipe_id"), params.get("point_id"),
+                               getattr(exc, "code", None), exc)
                 self.command.status = CommandStatus.ERROR
                 self.command.message = str(exc)
                 if code == CommandCode.CONTROLLER_RESTART:

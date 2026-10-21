@@ -14,6 +14,7 @@ class CommandCode(IntEnum):
     CONTROLLER_RESTART = 4
     NUTRUNNER_DATA_REQUEST = 5
     FASTENING_COMPLETE = 6
+    # Legacy import alias; PLC command 5 requests nutrunner data, not a config reload.
     RELOAD_CONFIG = 5
 
 
