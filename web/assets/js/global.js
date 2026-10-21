@@ -31,7 +31,9 @@ const toast = document.getElementById('toast');
 
 const titles = {
   dashboard: ['Dashboard', '컨트롤러, 서비스, 프로세스 상태를 한 화면에서 확인합니다.'],
+  integrated: ['통합 모니터링', 'Vision RUN, PLC, PTM과 현재 작업을 함께 확인합니다.'],
   monitor: ['운전 모니터', 'Core 처리 상태, PLC 쓰기 확인과 장치 상태를 모니터링합니다.'],
+  alarm_list: ['알람 목록', '현재 오류·경고와 발생·복구 이력을 확인합니다.'],
   controller: ['Controller', '검색, 기본 정보, 네트워크 등 컨트롤러 전역 설정입니다.'],
   plc: ['PLC', 'XGT 전용 통신, D 디바이스 주소, PLC Data Map, 공유 메모리를 관리합니다.'],
   ptm: ['PTM', 'PTM Web 화면을 표시합니다.'],

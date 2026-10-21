@@ -1,5 +1,6 @@
 import { renderDashboard } from './dashboard.js';
 import { renderRuntimeMonitor } from './runtime_monitor.js';
+import { renderIntegratedMonitor, renderAlarmList, startIntegratedRuntime, stopIntegratedRuntime } from './integrated_monitor.js';
 import { renderPLC, startPlcRuntime, stopPlcRuntime } from './plc/connection.js';
 import { renderPTM, startPtmRuntime, stopPtmRuntime } from './ptm/connection.js';
 import { renderVision, startVisionRuntime, stopVisionRuntime } from './vision/connection.js';
@@ -39,6 +40,7 @@ import {
 } from './global.js';
 
 function render() {
+  stopIntegratedRuntime();
   stopPlcRuntime();
   stopPtmRuntime();
   stopVisionRuntime();
@@ -47,6 +49,7 @@ function render() {
   document.documentElement.classList.toggle('external-frame-view', externalFrameView);
   document.body.classList.toggle('external-frame-view', externalFrameView);
   viewRoot.closest('.content').classList.toggle('module-content', ['plc', 'ptm', 'vision'].includes(state.view));
+  viewRoot.closest('.content').classList.toggle('integrated-content', state.view === 'integrated');
   const [title, desc] = titles[state.view];
   pageTitle.textContent = title;
   const processBusy = Object.values(state.processActions).some(action => action.busy)
@@ -54,6 +57,8 @@ function render() {
   pageActions.innerHTML = `<button class="secondary" data-action="wake-up">절전 해제</button>` + (state.view === 'services' ? `<button class="secondary" data-action="restart-all" ${state.restartAllPending || processBusy ? 'disabled' : ''} aria-busy="${state.restartAllPending}">${state.restartAllPending ? esc(state.restartAllProgress) : '전체 재시작'}</button>` : '');
 
   if (state.view === 'dashboard') viewRoot.innerHTML = renderDashboard();
+  else if (state.view === 'integrated') viewRoot.innerHTML = renderIntegratedMonitor();
+  else if (state.view === 'alarm_list') viewRoot.innerHTML = renderAlarmList();
   else if (state.view === 'monitor') viewRoot.innerHTML = renderRuntimeMonitor();
   else if (state.view === 'plc') viewRoot.innerHTML = renderPLC();
   else if (state.view === 'ptm') viewRoot.innerHTML = renderPTM();
@@ -65,10 +70,18 @@ function render() {
   else viewRoot.innerHTML = renderSettingsCategory(categoryMap[state.view]);
 
   bindDynamicEvents();
+  if (['integrated', 'alarm_list'].includes(state.view)) startIntegratedRuntime(state.view, navigateMonitor);
   if (state.view === 'logging') bindLogHistoryEvents(saveTextFile);
   if (state.view === 'plc') startPlcRuntime();
   if (state.view === 'ptm') startPtmRuntime();
   if (state.view === 'vision') startVisionRuntime();
+}
+
+function navigateMonitor(view) {
+  state.view = view;
+  document.querySelectorAll('#sidebarNav .nav-item').forEach(button =>
+    button.classList.toggle('active', button.dataset.view === view));
+  render();
 }
 
 async function pushCommand(command, payload = {}) {

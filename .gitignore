@@ -15,6 +15,7 @@ tests
 !/tests/test_laser_states.py
 !/tests/test_vision_point_match.py
 !/tests/test_command_diagnostics.py
+!/tests/test_integrated_monitor.cjs
 logs
 datas/global.json
 
