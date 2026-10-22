@@ -43,12 +43,19 @@ class PtmService(DeviceService):
         if command in {"ptm.status", "motor.status", self.settings.status_command}:
             return self.snapshot()
         if command == "point.goto":
+            for key in ("recipe_id", "point_id"):
+                if type(params.get(key)) is not int or not 1 <= params[key] <= 65535:
+                    raise ValueError(f"{key} must be an integer in 1..65535")
+            if "laser_after_move" in params and type(params["laser_after_move"]) is not bool:
+                raise ValueError("laser_after_move must be a boolean")
+            options = {key: params[key] for key in ("laser_after_move", "laser_permit_token", "require_homed", "expected_recipe_revision") if key in params}
             response = await self.client.point_goto(
                 int(params.get("recipe_id", 0)),
                 int(params.get("point_id", 0)),
+                **options,
             )
         elif command == "motion.stop":
-            if "jog_token" in params:
+            if params:
                 response = await self.client.request(command, params)
                 if isinstance(response, dict) and response.get("accepted") is False:
                     return response

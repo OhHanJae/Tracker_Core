@@ -22,7 +22,8 @@ class MotorApiClient:
             self.settings.timeout_s,
         )
         if not response.ok:
-            raise JsonTcpError(str(response.error))
+            code = response.error.get("code") if isinstance(response.error, dict) else None
+            raise JsonTcpError(str(response.error), code=code if isinstance(code, str) else None)
         return response.result
 
     async def status(self) -> dict[str, Any]:
@@ -35,11 +36,12 @@ class MotorApiClient:
     async def laser_off(self) -> None:
         await self.request("laser.off")
 
-    async def point_goto(self, recipe_id: int, point_id: int) -> Any:
+    async def point_goto(self, recipe_id: int, point_id: int, **options: Any) -> Any:
         return await self.request(
             "point.goto",
             {
                 "recipe_id": int(recipe_id),
                 "point_id": int(point_id),
+                **options,
             },
         )

@@ -30,7 +30,8 @@ class LaserStateTests(unittest.IsolatedAsyncioTestCase):
         self.app.vision_service.state.online = True
         self.app.vision_snapshot = VisionSnapshot(online=True, tracker_valid=True,
             tracking_active=True, tracker_present=True, result_ready=True, position_error_mm=0.1,
-            camera_required_mask=1, camera_online_mask=1, camera_valid_mask=1)
+            camera_required_mask=1, camera_online_mask=1, camera_valid_mask=1, production_approved=True)
+        self.app._vision_target_synced = True
         self.app._active_recipe_id, self.app._active_point_id, self.app._active_target_seq = 1, 2, 3
         self.app.laser_service.command = AsyncMock(return_value={'accepted': True})
         self.clock = now_ms()
@@ -91,11 +92,11 @@ class LaserStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.state_calls()[-1]['state'], 'position_check')
         self.assertIsNone(self.app._vision_wrong_point(self.clock + 2000))
 
-    async def test_wrong_or_unknown_match_blocks_position_ok_but_legacy_is_compatible(self):
+    async def test_wrong_or_missing_match_blocks_production_position_ok(self):
         self.app.settings.runtime.position_stable_ms = 0
         for match, expected in ((self.match(), False), (self.match(command_seq=9), False),
                                 (self.match(wrong_point='true'), False),
-                                (self.match(matched_point_id=2, wrong_point=False), True), (None, True)):
+                                (self.match(matched_point_id=2, wrong_point=False), True), (None, False)):
             with self.subTest(match=match):
                 self.app.vision_snapshot.point_match = match
                 self.app.vision_service.state.last_ok_ms = self.clock
@@ -249,7 +250,7 @@ class LaserStateTests(unittest.IsolatedAsyncioTestCase):
         await self.app._request_nutrunner_laser_off()
         self.app.laser_service.command.assert_not_awaited()
 
-    async def test_ptm_control_priority_ignores_plc_laser_and_run_values(self):
+    async def test_ptm_control_priority_cannot_override_plc_off(self):
         self.raw['control_priority'] = True
         self.app.power_save.sleeping = True
         self.app._fastening_laser_inhibit = True
@@ -261,22 +262,23 @@ class LaserStateTests(unittest.IsolatedAsyncioTestCase):
                         self.app.plc_input.laser_mode = mode
                         self.app.plc_input.run_enable = run_enable
                         self.app.plc_input.force_stop = force_stop
-                        self.assertTrue(self.app._laser_permitted())
-                        self.assertTrue(self.app._laser_manual_allowed())
+                        allowed = mode in {1, 2, 3, 4, 5}
+                        self.assertEqual(self.app._laser_permitted(), allowed)
+                        self.assertEqual(self.app._laser_manual_allowed(), allowed)
                         policy = self.app._laser_policy(automatic_off=True)
-                        self.assertTrue(policy['manual_allowed'] and policy['state_allowed'])
-                        self.assertFalse(policy['enabled'] or policy['automatic_off'])
+                        self.assertEqual(policy['manual_allowed'] and policy['state_allowed'], allowed)
+                        self.assertEqual(policy['automatic_off'], not allowed)
                         self.assertEqual(policy['plc_mode'], mode)
 
-    async def test_priority_preserves_local_laser_during_plc_motor_stop(self):
+    async def test_plc_off_and_run_disable_override_local_priority_on_stop(self):
         self.raw.update(control_priority=True, active_state='wrong_point')
         self.app.plc_input.laser_mode = 0
         self.app.plc_input.run_enable = False
         self.app.ptm_service.command = AsyncMock()
         await self.app._apply_safe_stop_if_needed()
         await self.app._safe_stop_task
-        self.app.ptm_service.command.assert_awaited_once_with('motion.stop', {'preserve_laser': True})
-        self.app.laser_service.command.assert_not_awaited()
+        self.app.ptm_service.command.assert_awaited_once_with('motion.stop')
+        self.app.laser_service.command.assert_awaited_once_with(self.app.settings.laser.off_command)
         self.app.alarms.set_fault_word(DeviceSummaryBit.CONTROLLER, 1)
         policy = self.app._laser_policy(automatic_off=False)
         self.assertFalse(policy['local_allowed'] or policy['manual_allowed'] or policy['state_allowed'])

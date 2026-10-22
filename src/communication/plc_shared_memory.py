@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from multiprocessing import shared_memory
 from typing import Any
 
+from src.communication.tx_writer_lock import TxWriterLock
+
 
 HEADER_FORMAT = "<4sHH9IiQQ"
 HEADER_SIZE = 64
@@ -68,6 +70,7 @@ class PlcSharedMemoryClient:
         self.name = name
         self.connected_name: str | None = None
         self._shm: shared_memory.SharedMemory | None = None
+        self._writer_lock: TxWriterLock | None = None
 
     @property
     def connected(self) -> bool:
@@ -96,6 +99,9 @@ class PlcSharedMemoryClient:
         raise SharedMemoryError(f"shared memory not found: {self.name} ({detail})")
 
     def close(self) -> None:
+        if self._writer_lock is not None:
+            self._writer_lock.close()
+            self._writer_lock = None
         if self._shm is None:
             return
         self._shm.close()
@@ -188,6 +194,13 @@ class PlcSharedMemoryClient:
 
     def write_plc_data(self, payload: bytes) -> int:
         shm = self._require_shm()
+        if self._writer_lock is None:
+            lock = TxWriterLock(self.connected_name or self.name)
+            try:
+                lock.acquire()
+            except OSError as exc:
+                raise SharedMemoryError(str(exc)) from exc
+            self._writer_lock = lock
         header = self.header()
         if len(payload) != header.write_length:
             raise SharedMemoryError(

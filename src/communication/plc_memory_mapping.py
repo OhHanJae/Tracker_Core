@@ -121,7 +121,7 @@ class PlcInput:
     def applied_laser_tolerance(self, default_value: int) -> int:
         if 1 <= self.laser_tolerance_deg_x100 <= 0xFFFF:
             return self.laser_tolerance_deg_x100
-        return 5
+        return default_value
 
 
 @dataclass

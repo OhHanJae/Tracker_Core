@@ -93,6 +93,10 @@ async def send_json_request(
 JsonCommandHandler = Callable[[str, dict[str, Any]], Awaitable[JsonTcpResponse]]
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number is not allowed: {value}")
+
+
 class JsonLineServer:
     def __init__(
         self,
@@ -102,6 +106,10 @@ class JsonLineServer:
         static_root: Path | str | None = None,
         banner: dict[str, Any] | None = None,
         allow_remote_process_control: bool = False,
+        *,
+        read_timeout_s: float = 5.0,
+        write_timeout_s: float = 2.0,
+        max_clients: int = 16,
     ) -> None:
         self.host = host
         self.port = port
@@ -109,6 +117,9 @@ class JsonLineServer:
         self.static_root = Path(static_root).resolve() if static_root else None
         self.banner = banner
         self.allow_remote_process_control = allow_remote_process_control
+        self.read_timeout_s = read_timeout_s
+        self.write_timeout_s = write_timeout_s
+        self.max_clients = max_clients
         self.vision_frame_handler = None
         self._server: asyncio.AbstractServer | None = None
         self._clients: set[asyncio.StreamWriter] = set()
@@ -117,7 +128,8 @@ class JsonLineServer:
 
     async def start(self) -> None:
         self._closing = False
-        self._server = await asyncio.start_server(self._handle_client, self.host, self.port)
+        self._server = await asyncio.start_server(
+            self._handle_client, self.host, self.port, limit=2 * 1024 * 1024)
 
     async def stop(self) -> None:
         self._closing = True
@@ -155,6 +167,11 @@ class JsonLineServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        if len(self._clients) >= self.max_clients:
+            writer.close()
+            with contextlib.suppress(OSError, asyncio.TimeoutError):
+                await asyncio.wait_for(writer.wait_closed(), self.write_timeout_s)
+            return
         task = asyncio.current_task()
         if task is not None:
             self._client_tasks.add(task)
@@ -162,14 +179,14 @@ class JsonLineServer:
         try:
             if not self._closing:
                 await self._serve_client(reader, writer)
-        except (ConnectionError, asyncio.IncompleteReadError, UnicodeError, ValueError):
+        except (ConnectionError, asyncio.IncompleteReadError, asyncio.TimeoutError, UnicodeError, ValueError):
             pass
         finally:
             self._clients.discard(writer)
             try:
                 writer.close()
-                with contextlib.suppress(OSError):
-                    await writer.wait_closed()
+                with contextlib.suppress(OSError, asyncio.TimeoutError):
+                    await asyncio.wait_for(writer.wait_closed(), self.write_timeout_s)
             finally:
                 if task is not None:
                     self._client_tasks.discard(task)
@@ -194,20 +211,21 @@ class JsonLineServer:
                 writer.write(
                     json.dumps(self.banner, separators=(",", ":")).encode("utf-8") + b"\n"
                 )
-                await writer.drain()
+                await asyncio.wait_for(writer.drain(), self.write_timeout_s)
 
             while True:
-                raw_line = first_line if first_line is not None else await reader.readline()
+                raw_line = first_line if first_line is not None else await asyncio.wait_for(
+                    reader.readline(), self.read_timeout_s)
                 first_line = None
                 if not raw_line:
                     break
                 try:
-                    request = json.loads(raw_line.decode("utf-8"))
+                    request = json.loads(raw_line.decode("utf-8"), parse_constant=_reject_json_constant)
                     if not isinstance(request, dict):
                         raise ValueError("request must be an object")
                     request_id = request.get("id")
                     command = request.get("command")
-                    params = request.get("params") or {}
+                    params = request.get("params", {})
                     if not isinstance(command, str) or not isinstance(params, dict):
                         raise ValueError("command must be string and params must be object")
                     if self._requires_local_process_control(command, writer):
@@ -237,8 +255,8 @@ class JsonLineServer:
                             "message": str(exc),
                         },
                     }
-                writer.write(json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n")
-                await writer.drain()
+                writer.write(json.dumps(message, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n")
+                await asyncio.wait_for(writer.drain(), self.write_timeout_s)
         except (ConnectionResetError, BrokenPipeError):
             pass
 
@@ -270,8 +288,13 @@ class JsonLineServer:
         route = unquote(urlparse(target).path or "/")
 
         headers: dict[str, str] = {}
+        header_bytes = 0
+        header_deadline = asyncio.get_running_loop().time() + self.read_timeout_s
         while True:
-            line = await reader.readline()
+            line = await asyncio.wait_for(reader.readline(), max(0, header_deadline - asyncio.get_running_loop().time()))
+            header_bytes += len(line)
+            if header_bytes > 65536:
+                raise ValueError("HTTP headers exceed 64 KiB")
             if not line or line in {b"\r\n", b"\n"}:
                 break
             decoded = line.decode("iso-8859-1", errors="replace")
@@ -282,10 +305,12 @@ class JsonLineServer:
         try:
             content_length = int(headers.get("content-length", "0") or "0")
         except ValueError:
-            content_length = 0
+            raise ValueError("invalid HTTP content-length") from None
+        if not 0 <= content_length <= 32 * 1024 * 1024:
+            raise ValueError("HTTP body must be 0..32 MiB")
         body_bytes = b""
         if content_length > 0:
-            body_bytes = await reader.readexactly(content_length)
+            body_bytes = await asyncio.wait_for(reader.readexactly(content_length), self.read_timeout_s)
 
         if method == "OPTIONS":
             await self._write_http_response(
@@ -485,7 +510,7 @@ class JsonLineServer:
         ).encode("ascii")
         try:
             writer.write(header + response_body)
-            await writer.drain()
+            await asyncio.wait_for(writer.drain(), self.write_timeout_s)
         except (ConnectionResetError, BrokenPipeError):
             return
 
@@ -543,7 +568,7 @@ def _render_tcp_help_page(status_json: str) -> str:
 def _decode_json_body(body: bytes) -> dict[str, Any]:
     if not body:
         return {}
-    data = json.loads(body.decode("utf-8"))
+    data = json.loads(body.decode("utf-8"), parse_constant=_reject_json_constant)
     if not isinstance(data, dict):
         raise ValueError("HTTP JSON body must be an object")
     return data

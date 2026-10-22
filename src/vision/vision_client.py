@@ -36,6 +36,7 @@ class VisionSnapshot:
     result_ready: bool | None = None
     result_age_seconds: float | None = None
     point_match: dict[str, Any] | None = None
+    production_approved: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -49,6 +50,7 @@ class VisionSnapshot:
             "result_ready": self.result_ready,
             "result_age_seconds": self.result_age_seconds,
             "point_match": self.point_match,
+            "production_approved": self.production_approved,
             "degraded": self.degraded,
             "fault": self.fault,
             "position_error_mm": self.position_error_mm,
@@ -284,6 +286,7 @@ def normalize_vision_snapshot(data: dict[str, Any], camera_count: int) -> Vision
                                 if isinstance(data.get("tracking_bypass_reason"), str) else ""),
         camera_ip=camera_ip.strip() or None if isinstance(camera_ip, str) else None,
         tracker_valid=tracker_valid,
+        production_approved=data.get("production_approved") is True,
         tracker_present=_first_bool(data, tracker, "tracker_present"),
         result_ready=_first_bool(data, tracker, "result_ready"),
         result_age_seconds=result_age,

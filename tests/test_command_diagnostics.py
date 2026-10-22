@@ -21,7 +21,7 @@ class CommandDiagnosticsTest(unittest.IsolatedAsyncioTestCase):
         app = CoreApplication(path, managed_worker=True)
         app._update_vision_work = Mock()
         app.ptm_service.state.online = True
-        app.ptm_service.state.status = {"connected": True, "ready": True}
+        app.ptm_service.state.status = {"connected": True, "ready": True, "homed": True}
         app.ptm_service.command = AsyncMock()
         app.vision_service.command = AsyncMock()
         return app
@@ -95,7 +95,7 @@ class CommandDiagnosticsTest(unittest.IsolatedAsyncioTestCase):
         app.vision_service.request_nutrunner_data = AsyncMock(
             side_effect=JsonTcpError("unknown Vision item", code="RECIPE_NOT_FOUND"))
         with self.assertLogs(LOGGER, level="WARNING") as logs:
-            await app._dispatch_plc_command(5, 23, "vision.result", {"recipe_id": 2, "point_id": 7})
+            await app._dispatch_plc_command(5, 23, "vision.result", {"recipe_id": 2, "point_id": 7, "target_seq": 22})
         self.assertEqual(app.command.status, CommandStatus.REJECTED)
         self.assertEqual(app.command.result, CommandResult.RECIPE_NOT_FOUND)
         self.assertEqual(app.command.message, "unknown Vision item")

@@ -88,6 +88,12 @@ class CoreApplication:
         self._monitor_plc_cache: dict[str, Any] = {}
         self.command = CommandRuntime()
         self._command_seen = False
+        self._command_fingerprint: tuple[int, int, int, int] | None = None
+        self._command_protocol_error = ""
+        self._plc_startup_sync_required = False
+        self._plc_heartbeat_observed = False
+        self._plc_last_read_sequence: int | None = None
+        self._plc_last_read_change_ms = now_ms()
         self._controller_restart_request: dict[str, Any] | None = None
         if plc_restart_seq is not None:
             if not managed_worker or type(plc_restart_seq) is not int or not 0 <= plc_restart_seq <= 65535:
@@ -189,6 +195,9 @@ class CoreApplication:
         self._last_bypass_state: dict[str, bool] = {}
         self.nutrunner_result: dict[str, Any] | None = None
         self._active_target_seq = 0
+        self._active_motion_id: str | None = None
+        self._active_recipe_revision: str | None = None
+        self._recipe_revisions: dict[int, str] = {}
         self._vision_target: dict[str, int] | None = None
         self._vision_target_synced = False
         self._vision_work_suspended = False
@@ -208,6 +217,10 @@ class CoreApplication:
 
     @staticmethod
     def _validate_operator_settings(settings: AppSettings) -> None:
+        for name, maximum in (("tracking_tolerance_default_mm_x100", 10000), ("laser_tolerance_default_deg_x100", 65535)):
+            value = getattr(settings.runtime, name)
+            if type(value) is not int or not 1 <= value <= maximum:
+                raise ValueError(f"{name} must be an integer in 1..{maximum}")
         timeout = settings.runtime.power_save_timeout_s
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 1 <= timeout <= 86400:
             raise ValueError("Power-save timeout must be between 1 and 86400 seconds")
@@ -665,6 +678,8 @@ class CoreApplication:
 
     async def start(self) -> None:
         self._validate_operator_settings(self.settings)
+        self._plc_startup_sync_required = self._plc_enabled()
+        self._plc_heartbeat_observed = False
         self._configure_logging()
         await self.alarm_history.start()
         await self._start_servers()
@@ -890,6 +905,8 @@ class CoreApplication:
         return self.ptm_service.state.status.get("raw", {}).get("laser", {}).get("control_priority") is True
 
     def _effective_laser_mode(self) -> int:
+        if self.plc_input.laser_mode not in {1, 2, 3, 4, 5}:
+            return 0
         return 1 if self._laser_control_priority() else self.plc_input.laser_mode
 
     def _laser_permitted(self) -> bool:
@@ -898,7 +915,7 @@ class CoreApplication:
 
     def _laser_signaling_permitted(self) -> bool:
         priority = self._laser_control_priority()
-        return bool((priority or self.plc_input.laser_enable)
+        return bool(self.plc_input.laser_enable
                     and (priority or self._effective_laser_mode() != 1 or (
                         self.plc_input.run_enable and not self.power_save.sleeping))
                     and not self._controller_restart_pending()
@@ -916,12 +933,16 @@ class CoreApplication:
         return self._laser_local_block_reason()
 
     def _laser_local_block_reason(self) -> str:
+        if self._plc_startup_sync_required:
+            return "PLC startup synchronization is required"
         if self._controller_restart_pending():
             return "Core 재시작 진행 중"
         faults = self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
         if faults:
             code = self.alarms.primary_fault_code(self.settings.runtime.fault_latch_enabled)
             return f"Core 알람 {code} 활성 (fault_summary=0x{faults:04X})"
+        if self.plc_input.laser_mode not in {1, 2, 3, 4, 5}:
+            return "PLC laser mode forces OFF"
         if not self.laser_service.state.enabled:
             return "Core 레이저 장치 사용 안 함"
         if self._device_bypassed("laser"):
@@ -1037,6 +1058,11 @@ class CoreApplication:
                 raise SharedMemoryError("Gateway reports PLC disconnected")
             if not header.status_flags & FLAG_LAST_READ_OK or not header.last_read_time_ns:
                 raise ValueError("Gateway has no successful live PLC read")
+            if header.read_sequence != self._plc_last_read_sequence:
+                self._plc_last_read_sequence = header.read_sequence
+                self._plc_last_read_change_ms = timestamp_ms
+            elif timestamp_ms - self._plc_last_read_change_ms >= self.settings.runtime.plc_heartbeat_fault_ms:
+                raise SharedMemoryError("Gateway PLC read sequence is stale")
             payload = self.plc_memory.read_plc_data()
             if len(payload) != BYTE_COUNT:
                 raise ValueError(
@@ -1058,9 +1084,20 @@ class CoreApplication:
                 self.settings.runtime.fault_latch_enabled,
             )
             if self.plc_input.heartbeat != self._last_plc_heartbeat:
+                if self._last_plc_heartbeat is not None:
+                    self._plc_heartbeat_observed = True
                 self._last_plc_heartbeat = self.plc_input.heartbeat
                 self._last_plc_heartbeat_change_ms = timestamp_ms
+            if (self._plc_startup_sync_required and self._plc_heartbeat_observed
+                    and not self.plc_input.run_enable and self.plc_input.command_code == 0):
+                self._plc_startup_sync_required = False
+                self._command_protocol_error = ""
+                self._command_seen = True
+                self.command.last_seq = self.plc_input.command_seq
+                self._command_fingerprint = None
         except SharedMemoryError as exc:
+            self._plc_startup_sync_required = True
+            self._plc_heartbeat_observed = False
             self._plc_read_error = str(exc) or type(exc).__name__
             LOGGER.debug("PLC shared memory read failed: %s", exc)
             self.plc_memory.close()
@@ -1073,6 +1110,8 @@ class CoreApplication:
                 self.settings.runtime.fault_latch_enabled,
             )
         except Exception as exc:
+            self._plc_startup_sync_required = True
+            self._plc_heartbeat_observed = False
             LOGGER.debug("PLC read failed: %s", exc)
             self._plc_read_error = str(exc) or type(exc).__name__
             self.plc_input = PlcInput()
@@ -1110,6 +1149,8 @@ class CoreApplication:
             self.settings.runtime.fault_latch_enabled,
         )
         if heartbeat_fault:
+            self._plc_startup_sync_required = True
+            self._plc_heartbeat_observed = False
             self.plc_input = PlcInput()
 
     def _sync_device_snapshots(self) -> None:
@@ -1258,17 +1299,20 @@ class CoreApplication:
             self.alarms.clear_device(device)
 
     async def _apply_safe_stop_if_needed(self) -> None:
-        laser_stop_required = (not self.plc_input.run_enable
+        laser_stop_required = ((not self.plc_input.run_enable
+                                and not (self._laser_control_priority() or self._effective_laser_mode() in {2, 3, 4, 5}))
+                               or not self.plc_input.laser_enable
                                or bool(self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled))
-                               or self._controller_restart_pending())
+                               or self._controller_restart_pending() or self._plc_startup_sync_required)
         preserve_laser = ((self.plc_input.force_stop and not laser_stop_required)
-                          or ((self._laser_control_priority() or self._effective_laser_mode() in {2, 3, 4, 5})
+                           or (not laser_stop_required and (self._laser_control_priority() or self._effective_laser_mode() in {2, 3, 4, 5})
                               and self._laser_signaling_permitted()))
         safe_stop_requested = (
             self.plc_input.force_stop
             or not self.plc_input.run_enable
             or bool(self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled))
             or self._controller_restart_pending()
+            or self._plc_startup_sync_required
         )
         if not safe_stop_requested:
             self._safe_stop_applied = False
@@ -1445,15 +1489,29 @@ class CoreApplication:
             return
         code = self.plc_input.command_code
         seq = self.plc_input.command_seq
-        if code == 0 or (self._command_seen and seq == self.command.last_seq):
+        fingerprint = (seq, code, self.plc_input.req_recipe_id, self.plc_input.req_point_id)
+        if code == 0:
+            if self.command.status != CommandStatus.BUSY and not self.plc_input.run_enable:
+                self._command_protocol_error = ""
+                self._recipe_revisions.clear()
+            return
+        if self._plc_startup_sync_required:
+            return
+        if self._command_seen and seq == self.command.last_seq:
+            if self._command_fingerprint is not None and fingerprint != self._command_fingerprint:
+                self._command_protocol_error = "same sequence has different command or target"
+            return
+        if self._command_protocol_error:
             return
         if self.command.status == CommandStatus.BUSY:
+            self._command_protocol_error = "request slot changed before terminal acknowledgement"
             return
 
         self.command.last_code = code
         self.command.last_seq = seq
         self._command_request_params = {}
         self._command_seen = True
+        self._command_fingerprint = fingerprint
         self.command.status = CommandStatus.RECEIVED
         self.command.result = CommandResult.OK
         self.command.message = ""
@@ -1487,6 +1545,12 @@ class CoreApplication:
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.SYSTEM_NOT_READY
                 return
+            if (code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.NUTRUNNER_DATA_REQUEST, CommandCode.FASTENING_COMPLETE}
+                    and self.plc_input.tracking_tolerance_mm_x100 > 10000):
+                self.command.status = CommandStatus.REJECTED
+                self.command.result = CommandResult.CONFIG_OR_CAL_ERROR
+                self.command.message = "PLC tracking tolerance is outside 0..10000"
+                return
             if code in {CommandCode.NUTRUNNER_DATA_REQUEST, CommandCode.FASTENING_COMPLETE}:
                 if self._device_bypassed("vision"):
                     if self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled):
@@ -1507,6 +1571,10 @@ class CoreApplication:
             if self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled):
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.FAULT_ACTIVE
+                return
+            if code == CommandCode.TARGET_APPLY_MOVE and self.ptm_service.state.status.get("homed") is not True:
+                self.command.status = CommandStatus.REJECTED
+                self.command.result = CommandResult.HOMING_REQUIRED
                 return
             if ((self._safe_stop_task is not None and not self._safe_stop_task.done())
                     or any(not task.done() for task in self._bypass_stop_tasks)):
@@ -1538,6 +1606,11 @@ class CoreApplication:
                            code, seq, expected)
             return
         params = self._resolve_params(entry.get("params") or {})
+        if code == CommandCode.TARGET_APPLY_MOVE:
+            params["require_homed"] = True
+            revision = self._recipe_revisions.get(self.plc_input.req_recipe_id)
+            if revision is not None:
+                params["expected_recipe_revision"] = revision
         if code == CommandCode.TARGET_APPLY_MOVE and (
             not params.get("recipe_id") or not params.get("point_id")
         ):
@@ -1553,6 +1626,8 @@ class CoreApplication:
         if code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME}:
             self._active_recipe_id = 0
             self._active_point_id = 0
+            self._active_motion_id = None
+            self._active_recipe_revision = None
             self.nutrunner_result = None
             if code == CommandCode.TARGET_APPLY_MOVE:
                 self._laser_workflow_complete = False
@@ -1685,7 +1760,17 @@ class CoreApplication:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.TRACKING_UNAVAILABLE
             return
-        self._pending_request = (code, seq, expected, {"recipe_id": recipe_id, "point_id": point_id})
+        params = {"recipe_id": recipe_id, "point_id": point_id}
+        if code == CommandCode.NUTRUNNER_DATA_REQUEST:
+            if ((recipe_id, point_id) != (self._active_recipe_id, self._active_point_id)
+                    or not self._vision_target_synced or self._vision_work_suspended
+                    or self._active_motion is not None):
+                self.command.status = CommandStatus.REJECTED
+                self.command.result = CommandResult.TRACKING_UNAVAILABLE
+                self.command.message = "No synchronized applied Vision target for this request"
+                return
+            params["target_seq"] = self._active_target_seq
+        self._pending_request = (code, seq, expected, params)
 
     async def _dispatch_plc_command(
         self, code: int, seq: int, command: str, params: dict[str, Any]
@@ -1728,9 +1813,17 @@ class CoreApplication:
                             break
                         await asyncio.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
                 else:
+                    target_seq = params["target_seq"]
                     response = await self.vision_service.request_nutrunner_data(
-                        int(params["recipe_id"]), int(params["point_id"]), seq,
+                        int(params["recipe_id"]), int(params["point_id"]), target_seq,
                     )
+                    if ((self._active_recipe_id, self._active_point_id, self._active_target_seq)
+                            != (params["recipe_id"], params["point_id"], target_seq)
+                            or not self._vision_target_synced or self._vision_work_suspended):
+                        if seq == self.command.last_seq and self.command.status == CommandStatus.BUSY:
+                            self.command.status = CommandStatus.REJECTED
+                            self.command.result = CommandResult.TRACKING_UNAVAILABLE
+                        return
                 if seq != self.command.last_seq or self.command.status != CommandStatus.BUSY:
                     return
                 if self._device_bypassed("vision"):
@@ -1783,6 +1876,7 @@ class CoreApplication:
                 "seq": seq,
                 "params": params,
                 "accepted_ms": now_ms(),
+                "recipe_revision": response.get("recipe_revision") if isinstance(response, dict) else None,
             }
         except asyncio.CancelledError:
             raise
@@ -1816,6 +1910,12 @@ class CoreApplication:
                     self.command.result = CommandResult.RECIPE_NOT_FOUND
                 elif "unknown point" in self.command.message.lower():
                     self.command.result = CommandResult.POINT_NOT_FOUND
+                elif getattr(exc, "code", None) in {"DISABLED", "RECIPE_STORAGE_ERROR", "CONFIG_OR_CAL_ERROR"}:
+                    self.command.result = CommandResult.CONFIG_OR_CAL_ERROR
+                elif getattr(exc, "code", None) == "HOMING_REQUIRED":
+                    self.command.result = CommandResult.HOMING_REQUIRED
+                elif getattr(exc, "code", None) == "BUSY":
+                    self.command.result = CommandResult.COMMAND_BUSY
                 else:
                     self.command.result = CommandResult.INTERNAL_ERROR
                     if not preparing_laser:
@@ -1842,15 +1942,20 @@ class CoreApplication:
                     self._active_recipe_id = int(motion["params"]["recipe_id"])
                     self._active_point_id = int(motion["params"]["point_id"])
                     self._active_target_seq = self.command.last_seq
+                    self._active_motion_id = motion["id"]
+                    self._active_recipe_revision = motion.get("recipe_revision")
+                    if self._active_recipe_revision:
+                        self._recipe_revisions[self._active_recipe_id] = self._active_recipe_revision
             self._active_motion = None
             return
         if fresh and raw_motion.get("failed_id") == motion["id"]:
             self.command.status = CommandStatus.ERROR
-            self.command.result = (
-                CommandResult.MOTION_TIMEOUT
-                if raw_motion.get("last_error") == "MOTION_TIMEOUT"
-                else CommandResult.INTERNAL_ERROR
-            )
+            self.command.result = {
+                "MOTION_TIMEOUT": CommandResult.MOTION_TIMEOUT,
+                "CONFIG_OR_CAL_ERROR": CommandResult.CONFIG_OR_CAL_ERROR,
+                "RECIPE_STORAGE_ERROR": CommandResult.CONFIG_OR_CAL_ERROR,
+                "HOMING_REQUIRED": CommandResult.HOMING_REQUIRED,
+            }.get(raw_motion.get("last_error"), CommandResult.INTERNAL_ERROR)
             self.command.message = str(raw_motion.get("last_error") or "motion failed")
             fault_bit = (
                 3 if self.command.result == CommandResult.MOTION_TIMEOUT
@@ -1976,13 +2081,42 @@ class CoreApplication:
         except Exception as exc:
             LOGGER.warning("Laser workflow state %s failed: %s", target[0], exc)
 
+    def _ptm_target_errors(self, timestamp_ms: int) -> tuple[float, float] | None:
+        state = self.ptm_service.state
+        raw = state.status.get("raw", {})
+        motion = raw.get("motion", {})
+        target = motion.get("target_position")
+        position = raw.get("position", {})
+        ages = raw.get("position_age_ms", {})
+        if (not self._active_motion_id or self._active_recipe_id <= 0 or self._active_point_id <= 0
+                or not state.online or state.status.get("moving")
+                or motion.get("target_motion_id") != self._active_motion_id
+                or motion.get("completed_id") != self._active_motion_id
+                or (self._active_recipe_revision is not None
+                    and raw.get("selected_recipe_revision") != self._active_recipe_revision)
+                or not isinstance(target, dict) or not isinstance(position, dict) or not isinstance(ages, dict)
+                or state.last_ok_ms <= 0):
+            return None
+        sample_age = max(0, timestamp_ms - state.last_ok_ms)
+        for axis in ("pan", "tilt"):
+            values = (target.get(axis), position.get(axis), ages.get(axis))
+            if any(type(v) not in (int, float) or not math.isfinite(v) for v in values):
+                return None
+            if not 0 <= ages[axis] + sample_age <= 500:
+                return None
+        return (abs((position["pan"] - target["pan"] + 180) % 360 - 180),
+                abs(position["tilt"] - target["tilt"]))
+
     def _build_output(self, timestamp_ms: int) -> None:
         bypass = self._bypass_status()
         ptm_bypassed = bypass["ptm"]["active"]
         vision_bypassed = bypass["vision"]["active"]
         fault_active = self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled) != 0
         restart_pending = self._controller_restart_pending()
-        process_permitted = self.plc_input.run_enable and not self.plc_input.force_stop and not fault_active and not restart_pending
+        process_permitted = (self.plc_input.run_enable and not self.plc_input.force_stop
+                             and not fault_active and not restart_pending
+                             and not self._plc_startup_sync_required and not self._command_protocol_error
+                             and 0 <= self.plc_input.tracking_tolerance_mm_x100 <= 10000)
         tracking_tolerance = self.plc_input.applied_tracking_tolerance(
             self.settings.runtime.tracking_tolerance_default_mm_x100
         )
@@ -1996,18 +2130,31 @@ class CoreApplication:
         )
         position_error_x100 = _scale_or_zero(self.vision_snapshot.position_error_mm)
         wrong_point = self._vision_wrong_point(timestamp_ms)
-        pan_error_x100 = _scale_or_zero(self.vision_snapshot.pan_error_deg)
-        tilt_error_x100 = _scale_or_zero(self.vision_snapshot.tilt_error_deg)
+        axis_errors = self._ptm_target_errors(timestamp_ms)
+        pan_error_x100 = _scale_or_zero(axis_errors[0] if axis_errors else None)
+        tilt_error_x100 = _scale_or_zero(axis_errors[1] if axis_errors else None)
+        vision = self.vision_snapshot
+        vision_age = max(0, timestamp_ms - self.vision_service.state.last_ok_ms)
+        result_age = vision.result_age_seconds
+        fresh_result = bool(
+            self.vision_service.state.last_ok_ms > 0 and vision_age <= 500
+            and vision.point_match is not None
+            and type(vision.point_match.get("age_seconds")) in (int, float)
+            and 0 <= vision.point_match["age_seconds"] * 1000 + vision_age <= 500
+            and (result_age is None or (math.isfinite(result_age) and 0 <= result_age * 1000 + vision_age <= 500)))
 
-        position_ok = self.plc_input.tracking_enable and not self._nutrunner_data_hold and not restart_pending and (
+        position_ok = process_permitted and self.plc_input.tracking_enable and not self._nutrunner_data_hold and (
             process_permitted if vision_bypassed else (
                 self.vision_snapshot.tracker_valid
-                and (self.vision_snapshot.point_match is None or wrong_point is False)
-                and self.vision_snapshot.tracker_present is not False
-                and self.vision_snapshot.result_ready is not False
+                and fresh_result
+                and wrong_point is False
+                and self.vision_snapshot.production_approved
+                and self._vision_target_synced
+                and self.vision_snapshot.tracker_present is True
+                and self.vision_snapshot.result_ready is True
                 and self.vision_snapshot.position_error_mm is not None
                 and math.isfinite(self.vision_snapshot.position_error_mm)
-                and position_error_x100 <= tracking_tolerance
+                and 0 <= self.vision_snapshot.position_error_mm <= tracking_tolerance / 100
             )
         )
         if position_ok:
@@ -2029,12 +2176,9 @@ class CoreApplication:
             and self._active_point_id > 0
             and process_permitted
             and (vision_bypassed or ptm_bypassed or (
-                self.vision_snapshot.pan_error_deg is not None
-                and self.vision_snapshot.tilt_error_deg is not None
-                and math.isfinite(self.vision_snapshot.pan_error_deg)
-                and math.isfinite(self.vision_snapshot.tilt_error_deg)
-                and abs(self.vision_snapshot.pan_error_deg) <= laser_tolerance / 100
-                and abs(self.vision_snapshot.tilt_error_deg) <= laser_tolerance / 100
+                axis_errors is not None
+                and axis_errors[0] <= laser_tolerance / 100
+                and axis_errors[1] <= laser_tolerance / 100
             ))
             and (ptm_bypassed or (
                 self.ptm_service.state.online
@@ -2597,6 +2741,7 @@ class CoreApplication:
             target_context["applied"] = {
                 "recipe_id": self._active_recipe_id,
                 "point_id": self._active_point_id,
+                "recipe_revision": self._active_recipe_revision,
                 "ptm_bypassed": self._device_bypassed("ptm"),
             }
         self._last_status = {
@@ -2646,6 +2791,8 @@ class CoreApplication:
                 "safe_stop_pending": self._safe_stop_task is not None and not self._safe_stop_task.done(),
                 "active_recipe_id": self._active_recipe_id,
                 "active_point_id": self._active_point_id,
+                "plc_startup_sync_required": self._plc_startup_sync_required,
+                "command_protocol_error": self._command_protocol_error,
                 "restart_request": self._controller_restart_request,
             },
             "command": self.command.to_dict(),
@@ -2659,6 +2806,7 @@ class CoreApplication:
                 "moving": bool(self.ptm_service.state.status.get("moving")),
                 "pan_deg": self.ptm_service.state.status.get("pan_deg"),
                 "tilt_deg": self.ptm_service.state.status.get("tilt_deg"),
+                "target_error_deg": self._ptm_target_errors(now_ms()),
             },
             "laser": {
                 "enabled": self.laser_service.state.enabled,
@@ -2675,6 +2823,7 @@ class CoreApplication:
                 "result_ready": self.vision_snapshot.result_ready,
                 "result_age_seconds": self.vision_snapshot.result_age_seconds,
                 "point_match": self.vision_snapshot.point_match,
+                "production_approved": self.vision_snapshot.production_approved,
                 "wrong_point": self._vision_wrong_point(now_ms()),
                 "position_error_mm": self.vision_snapshot.position_error_mm,
                 "camera_ip": self.vision_snapshot.camera_ip,
