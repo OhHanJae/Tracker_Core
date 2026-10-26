@@ -189,6 +189,29 @@ class LaserStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.app._laser_manual_allowed())
         self.assertIn('Core 알람 1001', self.app._laser_manual_block_reason())
 
+    async def test_startup_sync_blocks_automatic_laser_but_allows_explicit_manual_on(self):
+        self.app._plc_startup_sync_required = True
+        for run_enable in (False, True):
+            with self.subTest(run_enable=run_enable):
+                self.app.plc_input.run_enable = run_enable
+                policy = self.app._laser_policy(automatic_off=False)
+                self.assertTrue(policy['local_allowed'])
+                self.assertTrue(policy['manual_allowed'])
+                self.assertEqual(policy['manual_block_reason'], '')
+                self.assertTrue(policy['automatic_off'])
+                self.assertFalse(policy['state_allowed'])
+                self.assertFalse(self.app._laser_permitted())
+                response = await self.app.handle_tcp_command('laser.on', {})
+                self.assertTrue(response.ok)
+                self.assertEqual(self.app.laser_service.command.await_args.args, ('laser.on', {}))
+        self.app.plc_input.laser_mode = 0
+        self.assertFalse(self.app._laser_manual_allowed())
+        self.assertFalse((await self.app.handle_tcp_command('laser.on', {})).ok)
+        self.app.plc_input.laser_mode = 1
+        self.app.alarms.set_fault_word(DeviceSummaryBit.PLC_COMMUNICATION, 1)
+        self.assertFalse(self.app._laser_manual_allowed())
+        self.assertIn('Core 알람', self.app._laser_manual_block_reason())
+
     async def test_changed_block_reason_is_sent_while_permission_remains_false(self):
         self.app.alarms.set_fault_word(DeviceSummaryBit.CONTROLLER, 1)
         self.raw.update(manual_allowed=False, manual_block_reason='old reason',

@@ -918,6 +918,7 @@ class CoreApplication:
         return bool(self.plc_input.laser_enable
                     and (priority or self._effective_laser_mode() != 1 or (
                         self.plc_input.run_enable and not self.power_save.sleeping))
+                    and not self._plc_startup_sync_required
                     and not self._controller_restart_pending()
                     and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
                     and self.laser_service.state.enabled and not self._device_bypassed("laser"))
@@ -933,8 +934,6 @@ class CoreApplication:
         return self._laser_local_block_reason()
 
     def _laser_local_block_reason(self) -> str:
-        if self._plc_startup_sync_required:
-            return "PLC startup synchronization is required"
         if self._controller_restart_pending():
             return "Core 재시작 진행 중"
         faults = self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
@@ -955,7 +954,7 @@ class CoreApplication:
         local_reason = self._laser_local_block_reason()
         return {
             "enabled": self.power_save.sleeping and automatic,
-            "automatic_off": automatic_off if automatic else not self._laser_signaling_permitted(),
+            "automatic_off": (automatic_off or self._plc_startup_sync_required) if automatic else not self._laser_signaling_permitted(),
             "manual_allowed": self._laser_manual_allowed(),
             "manual_block_reason": self._laser_manual_block_reason(),
             "state_allowed": self._laser_signaling_permitted() and (not automatic or not self._nutrunner_data_hold),
@@ -1340,8 +1339,19 @@ class CoreApplication:
         ptm_status = self.ptm_service.state.status
         laser_status = self.laser_service.state.status
         preserve_manual = self._laser_manual_allowed()
+        # Idle/startup stops automatic work once. A fresh, explicitly started
+        # manual JOG may then run until release, unless a hard stop is active.
+        manual_jog = bool(
+            not self.plc_input.force_stop
+            and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
+            and not self._controller_restart_pending()
+            and self.ptm_service.state.online
+            and self.ptm_service.state.last_ok_ms > 0
+            and 0 <= now_ms() - self.ptm_service.state.last_ok_ms <= 1000
+            and ptm_status.get("raw", {}).get("motion", {}).get("state") == "jog"
+        )
         still_active = bool(
-            ptm_status.get("moving") or ((ptm_status.get("laser_on") or laser_status.get("on"))
+            (ptm_status.get("moving") and not manual_jog) or ((ptm_status.get("laser_on") or laser_status.get("on"))
                 and not preserve_laser and not (preserve_manual and self._laser_manual_active()))
         )
         if self._safe_stop_applied and not still_active:

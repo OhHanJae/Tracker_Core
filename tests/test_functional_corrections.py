@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, MagicMock
 
 from src.common.settings import AppSettings, MotorSettings, save_settings
-from src.common.status import CommandStatus, CommandResult, now_ms
+from src.common.status import CommandStatus, CommandResult, DeviceSummaryBit, now_ms
 from src.communication.json_tcp import JsonLineServer, JsonTcpResponse
 from src.communication.plc_memory_mapping import PlcInput, words_to_bytes
 from src.core.application import CoreApplication
@@ -111,6 +111,62 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
         app._read_plc_input(1100)
         self.assertFalse(app._plc_startup_sync_required)
         self.assertEqual(app.command.last_seq, 100)
+
+    async def test_idle_and_startup_stop_once_then_allow_fresh_manual_jog(self):
+        for startup, run_enable in ((False, False), (True, False), (True, True)):
+            with self.subTest(startup=startup, run_enable=run_enable):
+                app = self.app()
+                app.plc_input = PlcInput(run_enable=run_enable, laser_mode=1)
+                app._plc_startup_sync_required = startup
+                app.ptm_service.state.online = True
+                app.ptm_service.state.last_ok_ms = now_ms()
+                app.ptm_service.state.status = {'moving': False, 'raw': {'motion': {'state': 'idle'}}}
+                app._perform_safe_stop = AsyncMock(return_value=True)
+                await app._apply_safe_stop_if_needed()
+                await app._safe_stop_task
+                await app._apply_safe_stop_if_needed()
+                self.assertTrue(app._safe_stop_applied)
+                app.ptm_service.state.status = {'moving': True, 'raw': {'motion': {'state': 'jog'}}}
+                app._safe_stop_retry_ms = 0
+                await app._apply_safe_stop_if_needed()
+                self.assertIsNone(app._safe_stop_task)
+                app._perform_safe_stop.assert_awaited_once_with(preserve_manual=True)
+
+    async def test_manual_jog_still_stops_on_force_stop_fault_or_restart(self):
+        for reason in ('force_stop', 'fault', 'restart'):
+            with self.subTest(reason=reason):
+                app = self.app()
+                app.plc_input = PlcInput(run_enable=False, laser_mode=1)
+                app._plc_startup_sync_required = app._safe_stop_applied = True
+                app.ptm_service.state.online = True
+                app.ptm_service.state.last_ok_ms = now_ms()
+                app.ptm_service.state.status = {'moving': True, 'raw': {'motion': {'state': 'jog'}}}
+                app._perform_safe_stop = AsyncMock(return_value=True)
+                if reason == 'force_stop':
+                    app.plc_input.force_stop = True
+                elif reason == 'fault':
+                    app.alarms.set_fault_word(DeviceSummaryBit.CONTROLLER, 1)
+                else:
+                    app._controller_restart_request = {'requested_ms': now_ms()}
+                await app._apply_safe_stop_if_needed()
+                self.assertIsNotNone(app._safe_stop_task)
+                await app._safe_stop_task
+                app._perform_safe_stop.assert_awaited_once()
+
+    async def test_idle_does_not_exempt_automatic_or_stale_motor_motion(self):
+        for state, age in (('tracking', 0), ('jog', 1001), (None, 0)):
+            with self.subTest(state=state, age=age):
+                app = self.app()
+                app.plc_input = PlcInput(run_enable=False, laser_mode=1)
+                app._safe_stop_applied = True
+                app.ptm_service.state.online = True
+                app.ptm_service.state.last_ok_ms = now_ms() - age
+                app.ptm_service.state.status = {'moving': True, 'raw': {'motion': {'state': state}}}
+                app._perform_safe_stop = AsyncMock(return_value=True)
+                await app._apply_safe_stop_if_needed()
+                self.assertIsNotNone(app._safe_stop_task)
+                await app._safe_stop_task
+                app._perform_safe_stop.assert_awaited_once()
 
     async def test_axis_errors_use_matching_fresh_ptm_feedback_and_pan_wrap(self):
         app = self.app()
