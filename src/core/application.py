@@ -918,7 +918,7 @@ class CoreApplication:
         return bool(self.plc_input.laser_enable
                     and (priority or self._effective_laser_mode() != 1 or (
                         self.plc_input.run_enable and not self.power_save.sleeping))
-                    and not self._plc_startup_sync_required
+                    and (not self._plc_startup_sync_required or self._effective_laser_mode() in {2, 3, 4, 5})
                     and not self._controller_restart_pending()
                     and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
                     and self.laser_service.state.enabled and not self._device_bypassed("laser"))
@@ -1302,7 +1302,8 @@ class CoreApplication:
                                 and not (self._laser_control_priority() or self._effective_laser_mode() in {2, 3, 4, 5}))
                                or not self.plc_input.laser_enable
                                or bool(self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled))
-                               or self._controller_restart_pending() or self._plc_startup_sync_required)
+                               or self._controller_restart_pending()
+                               or (self._plc_startup_sync_required and self._effective_laser_mode() not in {2, 3, 4, 5}))
         preserve_laser = ((self.plc_input.force_stop and not laser_stop_required)
                            or (not laser_stop_required and (self._laser_control_priority() or self._effective_laser_mode() in {2, 3, 4, 5})
                               and self._laser_signaling_permitted()))

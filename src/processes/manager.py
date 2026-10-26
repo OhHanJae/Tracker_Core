@@ -572,6 +572,12 @@ class ProcessManager:
 
     async def restart(self, process_name: str) -> dict[str, Any]:
         async with self._operation_lock:
+            if not self._module(process_name).get("enabled", True):
+                self._last_actions[process_name] = {
+                    "action": "restart", "ok": True, "timestamp_ms": now_ms(),
+                    "message": f"skipped disabled process: {process_name}",
+                }
+                return await self.status(process_name)
             self._manually_stopped.discard(process_name)
             try:
                 await self._stop(process_name)

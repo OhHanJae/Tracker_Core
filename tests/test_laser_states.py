@@ -243,6 +243,53 @@ class LaserStateTests(unittest.IsolatedAsyncioTestCase):
         self.app.alarms.set_fault_word(DeviceSummaryBit.CONTROLLER, 1)
         self.assertFalse(self.app._laser_policy(automatic_off=False)['state_allowed'])
 
+    async def test_plc_signal_modes_work_during_startup_sync_and_remain_safety_gated(self):
+        self.app._plc_startup_sync_required = True
+        self.app.plc_input.run_enable = False
+        self.app.power_save.sleeping = True
+        self.app._fastening_laser_inhibit = self.app._nutrunner_data_hold = True
+        for mode in (2, 3, 4, 5):
+            with self.subTest(mode=mode):
+                self.app.plc_input.laser_mode = mode
+                policy = self.app._laser_policy(automatic_off=True)
+                self.assertTrue(policy['state_allowed'])
+                self.assertFalse(policy['automatic_off'] or policy['enabled'])
+                self.assertFalse(policy['manual_allowed'])
+        self.app.plc_input.laser_mode = 2
+        self.app.alarms.set_fault_word(DeviceSummaryBit.PLC_COMMUNICATION, 1)
+        self.assertFalse(self.app._laser_policy(automatic_off=False)['state_allowed'])
+        self.app.alarms.clear_device(DeviceSummaryBit.PLC_COMMUNICATION)
+        self.app.settings.motor.bypass = True
+        self.assertFalse(self.app._laser_policy(automatic_off=False)['state_allowed'])
+        self.app.settings.motor.bypass = False
+        self.app._controller_restart_request = {'requested_ms': now_ms()}
+        self.assertFalse(self.app._laser_policy(automatic_off=False)['state_allowed'])
+        self.app._controller_restart_request = None
+        self.raw['control_priority'] = True
+        self.assertFalse(self.app._laser_policy(automatic_off=False)['state_allowed'])
+        self.raw['control_priority'] = False
+        self.app.plc_input.laser_mode = 0
+        self.assertFalse(self.app._laser_policy(automatic_off=False)['state_allowed'])
+
+    async def test_startup_stop_preserves_plc_on_without_enabling_auto_commands(self):
+        self.app._plc_startup_sync_required = True
+        self.app.plc_input.laser_mode = 2
+        self.app.ptm_service.command = AsyncMock()
+        self.app._update_power_save()
+        await self.app._power_laser_task
+        policy = self.app.laser_service.command.await_args.args[1]
+        self.assertTrue(policy['state_allowed'])
+        self.assertFalse(policy['automatic_off'])
+        self.app.laser_service.command.reset_mock()
+        await self.app._apply_safe_stop_if_needed()
+        await self.app._safe_stop_task
+        self.app.ptm_service.command.assert_awaited_once_with('motion.stop', {'preserve_laser': True})
+        self.app.laser_service.command.assert_not_awaited()
+        self.app.plc_input.command_code, self.app.plc_input.command_seq = 1, 100
+        await self.app._handle_plc_command()
+        self.assertIsNone(self.app._pending_request)
+        self.assertTrue(self.app._plc_startup_sync_required)
+
     async def test_plc_laser_on_includes_dark_blink_phase_and_excludes_off_profile(self):
         for profile, expected in (('blink', True), ('on', True), ('off', False)):
             with self.subTest(profile=profile):

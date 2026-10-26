@@ -17,6 +17,7 @@ tests
 !/tests/test_command_diagnostics.py
 !/tests/test_functional_corrections.py
 !/tests/test_integrated_monitor.cjs
+!/tests/test_process_restart.cjs
 !/tests/test_vision_preview.py
 logs
 datas/global.json

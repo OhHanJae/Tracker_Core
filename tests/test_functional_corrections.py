@@ -13,6 +13,7 @@ from src.communication.plc_memory_mapping import PlcInput, words_to_bytes
 from src.core.application import CoreApplication
 from src.devices.ptm_service import PtmService
 from src.pt_motor.motor_control import MotorApiClient
+from src.processes.manager import ProcessManager
 
 
 class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
@@ -205,6 +206,34 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 await service.command('point.goto', {'recipe_id': value, 'point_id': 7})
         client.point_goto.assert_not_awaited()
+
+
+class ProcessRestartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_disabled_restart_does_not_stop_start_or_clear_manual_stop(self):
+        manager = ProcessManager({'vision': {'process_name': 'vision_server', 'enabled': False}})
+        manager._stop = AsyncMock()
+        manager._start = AsyncMock()
+        manager.status = AsyncMock(return_value={'process_name': 'vision_server', 'enabled': False})
+        manager._manually_stopped.add('vision_server')
+        result = await manager.restart('vision_server')
+        self.assertFalse(result['enabled'])
+        manager._stop.assert_not_awaited()
+        manager._start.assert_not_awaited()
+        self.assertIn('vision_server', manager._manually_stopped)
+        self.assertIn('skipped disabled', manager._last_actions['vision_server']['message'])
+
+    async def test_enabled_restart_still_stops_then_starts(self):
+        manager = ProcessManager({'ptm': {'process_name': 'ptm_server', 'enabled': True}})
+        calls = []
+        async def stop(name):
+            calls.append(('stop', name))
+        async def start(name):
+            calls.append(('start', name))
+            return {'running': True}
+        manager._stop, manager._start = stop, start
+        result = await manager.restart('ptm_server')
+        self.assertTrue(result['running'])
+        self.assertEqual(calls, [('stop', 'ptm_server'), ('start', 'ptm_server')])
 
 
 class JsonInputBoundaryTests(unittest.IsolatedAsyncioTestCase):

@@ -303,6 +303,7 @@ function bindDynamicEvents() {
       || Object.values(state.moduleActions).some(action => action.busy)) return;
     const targets = state.modules
       .filter(isManagedModule)
+      .filter(module => module.enabled !== false)
       .map(moduleProcessName)
       .filter(Boolean)
       .filter(isConfiguredProcessName);
