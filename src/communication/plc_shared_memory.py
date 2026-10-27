@@ -16,6 +16,8 @@ MAGIC = b"XGSM"
 FLAG_PLC_CONNECTED = 1 << 0
 FLAG_LAST_READ_OK = 1 << 1
 FLAG_LAST_WRITE_OK = 1 << 2
+WRITE_GATE_OFF = b"CWG0"
+WRITE_GATE_ON = b"CWG1"
 
 
 class SharedMemoryError(RuntimeError):
@@ -194,13 +196,7 @@ class PlcSharedMemoryClient:
 
     def write_plc_data(self, payload: bytes) -> int:
         shm = self._require_shm()
-        if self._writer_lock is None:
-            lock = TxWriterLock(self.connected_name or self.name)
-            try:
-                lock.acquire()
-            except OSError as exc:
-                raise SharedMemoryError(str(exc)) from exc
-            self._writer_lock = lock
+        self._acquire_writer_lock()
         header = self.header()
         if len(payload) != header.write_length:
             raise SharedMemoryError(
@@ -224,6 +220,25 @@ class PlcSharedMemoryClient:
         self._write_u32(32, even)
         return even
 
+    def set_write_enabled(self, enabled: bool) -> None:
+        """Publish the Core TX gate after both PLC data areas, outside PLC words."""
+        shm = self._require_shm()
+        header = self.header()
+        offset = (max(header.read_offset + header.read_length,
+                      header.write_offset + header.write_length) + 3) & ~3
+        if offset + 4 > header.total_size:
+            raise SharedMemoryError("shared memory needs 4 spare bytes for the Core PLC write gate")
+        self._acquire_writer_lock()
+        shm.buf[offset:offset + 4] = WRITE_GATE_ON if enabled else WRITE_GATE_OFF
+
+    def _acquire_writer_lock(self) -> None:
+        if self._writer_lock is None:
+            lock = TxWriterLock(self.connected_name or self.name)
+            try:
+                lock.acquire()
+            except OSError as exc:
+                raise SharedMemoryError(str(exc)) from exc
+            self._writer_lock = lock
     def write_acknowledged(self) -> bool:
         header = self.header()
         return (

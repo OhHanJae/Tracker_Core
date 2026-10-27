@@ -27,7 +27,7 @@ Vision 코드는 이번에도 수정하지 않았다. 현재 Vision 웹과 TCP �
 
 카메라 IP는 Vision 서버의 IP와 다르다. Vision 웹에서 실제 카메라 연결 설정을 적용하고, 실제 적용 주소를 `vision.status.cameras[0].ip`에 반환한다. Core는 이를 `camera_ip`로 노출한다. IP가 없는 카메라는 `null`을 반환한다. 재연결·설정 변경 시 이전 검사 결과는 무효화한다.
 
-추적 바이패스는 `tracking_bypass: true/false`, 사유는 `tracking_bypass_reason: string`으로 반환한다. Core는 이 값을 PLC 요청·Core 웹 설정과 함께 Vision 실효 바이패스에 반영한다. 바이패스 중 추적 시작을 요청하지 않고 실행 중인 추적에 stop을 요청하며, Vision·Camera·Tracker 알람을 PLC 공정 출력에서 제외한다. Core는 공정의 Vision 준비·위치 검사를 기존 바이패스 규칙으로 통과시키지만, 실제 `tracker_valid`, 카메라 상태와 측정값은 유효하게 위장하지 않는다. 바이패스 해제 감지를 위해 TCP 상태 폴링은 계속한다. 해제 시 PLC 운전 허가·추적 요청·고장/정지 조건에 따라 다시 시작한다. 생산 승인, PLC 통신, Controller 고장, `FORCE_STOP` 및 `RUN_ENABLE` 조건은 별도로 유지한다. 오래된 Vision은 필드를 생략해도 `false`/빈 사유/`null` 기본값으로 호환된다.
+추적 바이패스는 `tracking_bypass: true/false`, 사유는 `tracking_bypass_reason: string`으로 반환한다. Core는 이 값을 PLC 요청·Core 웹 설정과 함께 Vision 실효 바이패스에 반영한다. 바이패스 중 추적 시작을 요청하지 않고 실행 중인 추적에 stop을 요청하며, Vision·Camera·Tracker 알람을 PLC 공정 출력에서 제외한다. Core는 공정의 Vision 준비·위치 검사를 기존 바이패스 규칙으로 통과시키지만, 실제 `tracker_valid`, 카메라 상태와 측정값은 유효하게 위장하지 않는다. 바이패스 해제 감지를 위해 TCP 상태 폴링은 계속한다. 해제 시 PLC 추적 요청·고장/정지 조건에 따라 다시 시작한다. 생산 승인, PLC 통신, Controller 고장 및 `FORCE_STOP` 조건은 별도로 유지한다. `RUN_ENABLE`은 Controller→PLC 쓰기만 허용하며 추적을 제어하지 않는다. 오래된 Vision은 필드를 생략해도 `false`/빈 사유/`null` 기본값으로 호환된다.
 
 Process Manager의 서버 IP/TCP 8768/실제 웹 포트를 저장하고 Vision 통신 및 프로세스를 활성화한다. `get_devices`의 Vision `status`에서 값이 보이는지 확인한 뒤 웹에서 바이패스 적용·해제와 실제 추적 정지·복귀를 검증한다.
 
@@ -79,7 +79,7 @@ Process Manager의 서버 IP/TCP 8768/실제 웹 포트를 저장하고 Vision �
 
 ### 2.5 이번에 수정한 Core 추적 시작의 자기 차단
 
-기존 Core는 TRACKER bit 0(결과 무효)을 모든 고장과 함께 추적 시작 차단에 사용했다. 정지 중인 정상 Vision은 `tracker_valid=false`이므로 시작하지 못하고, 일시적인 결과 유실 뒤에는 분석을 정지시켜 복구하지 못하는 순환이 있었다. `src/core/orchestration.py`는 이 비트를 Vision 분석 시작 차단에서 제외한다. 2026-10-14 보완부터 대상 부재·기존 결과 무효는 D+61.0 고장 대신 D+60.4 경고로 처리한다. Tracker의 다른 고장, 바이패스하지 않은 다른 장치 고장, FORCE_STOP 및 RUN_ENABLE 해제는 계속 추적을 차단한다. 위치 OK와 생산 승인에 실제 유효 결과가 필요한 조건은 유지된다.
+기존 Core는 TRACKER bit 0(결과 무효)을 모든 고장과 함께 추적 시작 차단에 사용했다. 정지 중인 정상 Vision은 `tracker_valid=false`이므로 시작하지 못하고, 일시적인 결과 유실 뒤에는 분석을 정지시켜 복구하지 못하는 순환이 있었다. `src/core/orchestration.py`는 이 비트를 Vision 분석 시작 차단에서 제외한다. 2026-10-14 보완부터 대상 부재·기존 결과 무효는 D+61.0 고장 대신 D+60.4 경고로 처리한다. Tracker의 다른 고장, 바이패스하지 않은 다른 장치 고장, FORCE_STOP은 계속 추적을 차단한다. RUN_ENABLE 해제는 PLC 쓰기만 중지한다. 위치 OK와 생산 승인에 실제 유효 결과가 필요한 조건은 유지된다.
 
 시작/정지 응답 수락 후 실제 `tracking_active`가 요청 상태와 다르면 최소 1초 간격으로 재시도한다. 이 조치는 2.4의 Vision 재시작 결함을 Core에서 완화하지만 Vision 자체 워커 종료/재시작 처리의 수정 필요성을 없애지는 않는다.
 
@@ -202,7 +202,7 @@ Core의 대상 전송과 Vision의 `CoreVisionBridge.handle()` 내 `vision.targe
 - 레이저 OFF 응답까지 확인하면 명령 `COMPLETE/OK`. OFF 실패는 `ERROR/INTERNAL_ERROR`와 레이저 오류로 기록하며 측정값을 보존한다. 다음 유효한 명령 1 수락 전까지 Core의 자동·수동 레이저 ON/PULSE를 차단한다.
 - 명령 5는 새 SEQ의 요청을 접수한 즉시 `laser.off`를 백그라운드 전송하고 Core의 Position OK 판정을 보류한다. 데이터 응답을 기다리지 않고 PLC `Tracking State=OFF`, `TRACKING_ACTIVE=0`, `POSITION_OK=0`, `POSITION_STABLE=0`, `LASER_TARGET_READY=0`으로 출력하며 자동·수동 레이저 ON/PULSE를 차단한다. Vision의 카메라·측정 수집과 `vision.result` 데이터 요청은 유지한다. 이 상태는 응답 실패나 같은 SEQ 유지, 명령 0, 절전 해제로 풀리지 않으며, 다음 지원 명령(1~6, 새 SEQ)을 접수할 때 해제한다. 다음 명령도 5이면 계속 보류한다. 상태는 `vision.work.position_check_suspended`에서 확인한다.
 - 명령 5에서 지원하지 않는 결과는 `REJECTED/TRACKING_UNAVAILABLE`, 잘못된 식별자/통신 실패/대기 시간 초과는 `ERROR/TRACKING_UNAVAILABLE`이다. Vision이 보낸 `RECIPE_NOT_FOUND`/`POINT_NOT_FOUND`는 해당 PLC 결과로 반환한다. 레이저 OFF 실패는 레이저 오류로 기록하고, 유효 데이터 수신 후 OFF 실패를 확인한 명령은 `ERROR/INTERNAL_ERROR`로 처리한다. 다음 명령을 접수해도 기존 안전 인터록과 명령 6의 유효 결과 수신 후 재점등 차단 규칙은 적용한다.
-- 같은 SEQ를 유지한 명령 6은 재실행하지 않는다. RUN_ENABLE 해제/FORCE_STOP은 진행 중 요청을 취소한다. Vision 바이패스에서는 통신·가짜 측정 없이 `COMPLETE/OK`로 끝난다. 바이패스에서도 기존 안전 인터록은 적용한다.
+- 같은 SEQ를 유지한 명령 6은 재실행하지 않는다. FORCE_STOP은 진행 중 요청을 취소한다. RUN_ENABLE 해제는 요청을 취소하지 않고 PLC 응답 쓰기만 중지한다. Vision 바이패스에서는 통신·가짜 측정 없이 `COMPLETE/OK`로 끝난다. 바이패스에서도 기존 안전 인터록은 적용한다.
 
 ### 7.2 Vision TCP JSON Lines 계약
 
@@ -234,7 +234,7 @@ Core의 TCP 테스트 서버로 대상 전달, 명령 6(SEQ 0 포함), 중복 SE
 
 ### 7.4 대상 수신 설정과 재동기화 확인
 
-- Core는 PTM의 `completed_id`가 이번 이동의 `motion_id`와 일치한 뒤 해당 레시피/포인트/PLC SEQ를 전송한다. PTM 이동 `COMPLETE`와 Vision ACK는 별개다. RUN_ENABLE 해제·FORCE_STOP·고장에 따른 안전 정지·절전은 Core의 적용 대상을 지울 수 있으므로, 과거 `COMPLETE`만 보지 말고 `runtime.target_context.applied`와 `vision.work.target`을 확인한다.
+- Core는 PTM의 `completed_id`가 이번 이동의 `motion_id`와 일치한 뒤 해당 레시피/포인트/PLC SEQ를 전송한다. PTM 이동 `COMPLETE`와 Vision ACK는 별개다. FORCE_STOP·고장에 따른 안전 정지·절전은 Core의 적용 대상을 지울 수 있으므로, 과거 `COMPLETE`만 보지 말고 `runtime.target_context.applied`와 `vision.work.target`을 확인한다.
 - Vision `/api/vision/run-signal`의 `enabled=true`와 실제 레시피/포인트에 대응하는 `mappings`가 필요하다. Vision 레시피 등록, 포인트 등록, CAD 대상·설치 위치·카메라 매핑, 유효한 보정은 각각 확인한다. PTM의 레시피에 포인트가 있어도 Vision에 자동 등록되지는 않는다. 설정을 자동 생성하거나 임의의 CAD 포인트에 연결하지 않는다.
 - 기본 명령은 `vision.target.set`, 필드 위치는 `params.recipe_id`, `params.point_id`, `params.command_seq`다. 저장된 사용자 명령/필드 설정을 사용한다면 Core 계약과 일치시킨다. 비활성 수신도 정상 형식의 요청이면 `last_core_request`에 ID/SEQ와 `run_signal_disabled` 거부 사유를 남긴다. 기존 일반 명령 분기의 `INVALID_PARAMS: params must be an empty object` 대신 `INVALID_TARGET: run_signal_disabled`를 반환해 원인을 구분한다.
 - `/api/vision/run/status`의 `last_core_request.accepted`와 `reason`으로 미수신/수신 거부/적용 성공을 구분한다. Core의 `target_synced=false`와 `vision.work.last_error`도 함께 확인한다.

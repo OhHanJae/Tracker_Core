@@ -91,6 +91,8 @@ class CoreApplication:
         self._command_fingerprint: tuple[int, int, int, int] | None = None
         self._command_protocol_error = ""
         self._plc_startup_sync_required = False
+        self._plc_write_gate_initialized = False
+        self._plc_baseline_read_sequence: int | None = None
         self._plc_heartbeat_observed = False
         self._plc_last_read_sequence: int | None = None
         self._plc_last_read_change_ms = now_ms()
@@ -360,7 +362,7 @@ class CoreApplication:
         }:
             return
         fault_active = self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
-        if self.plc_input.force_stop or not self.plc_input.run_enable or fault_active:
+        if self.plc_input.force_stop or fault_active:
             result = (CommandResult.FORCE_STOP_ACTIVE if self.plc_input.force_stop
                       else CommandResult.FAULT_ACTIVE if fault_active else CommandResult.SYSTEM_NOT_READY)
             self._abort_active_command(result)
@@ -679,7 +681,7 @@ class CoreApplication:
 
     async def start(self) -> None:
         self._validate_operator_settings(self.settings)
-        self._plc_startup_sync_required = self._plc_enabled()
+        self._plc_startup_sync_required = False
         self._plc_heartbeat_observed = False
         self._configure_logging()
         await self.alarm_history.start()
@@ -953,9 +955,7 @@ class CoreApplication:
         priority = self._laser_control_priority()
         return bool(self.plc_input.laser_enable
                     and not self._ptm_test_active()
-                    and (priority or self._effective_laser_mode() != 1 or (
-                        self.plc_input.run_enable and not self.power_save.sleeping))
-                    and (not self._plc_startup_sync_required or self._effective_laser_mode() in {2, 3, 4, 5})
+                    and (priority or self._effective_laser_mode() != 1 or not self.power_save.sleeping)
                     and not self._controller_restart_pending()
                     and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
                     and self.laser_service.state.enabled and not self._device_bypassed("laser"))
@@ -991,7 +991,7 @@ class CoreApplication:
         local_reason = self._laser_local_block_reason()
         return {
             "enabled": self.power_save.sleeping and automatic,
-            "automatic_off": (automatic_off or self._plc_startup_sync_required) if automatic else not self._laser_signaling_permitted(),
+            "automatic_off": automatic_off if automatic else not self._laser_signaling_permitted(),
             "manual_allowed": self._laser_manual_allowed(),
             "manual_block_reason": self._laser_manual_block_reason(),
             "state_allowed": self._laser_signaling_permitted() and (not automatic or not self._nutrunner_data_hold),
@@ -1101,6 +1101,9 @@ class CoreApplication:
         try:
             if not self.plc_memory.connected:
                 self.plc_memory.connect()
+            if not self._plc_write_gate_initialized:
+                self.plc_memory.set_write_enabled(False)
+                self._plc_write_gate_initialized = True
             header = self.plc_memory.header()
             self._plc_status_header = header
             if not header.status_flags & FLAG_PLC_CONNECTED:
@@ -1117,6 +1120,11 @@ class CoreApplication:
                 raise ValueError(
                     f"PLC input length {len(payload)} != {BYTE_COUNT}"
                 )
+            if not self._command_seen:
+                if self._plc_baseline_read_sequence is None:
+                    self._plc_baseline_read_sequence = header.read_sequence
+                if header.read_sequence == self._plc_baseline_read_sequence:
+                    return  # Wait for a new Gateway sample, not a pre-restart cache.
             self.plc_input = PlcInput.from_bytes(payload)
             self._monitor_plc_cache.update(
                 name=self.plc_memory.connected_name or self.plc_memory.name,
@@ -1137,15 +1145,13 @@ class CoreApplication:
                     self._plc_heartbeat_observed = True
                 self._last_plc_heartbeat = self.plc_input.heartbeat
                 self._last_plc_heartbeat_change_ms = timestamp_ms
-            if (self._plc_startup_sync_required and self._plc_heartbeat_observed
-                    and not self.plc_input.run_enable and self.plc_input.command_code == 0):
-                self._plc_startup_sync_required = False
-                self._command_protocol_error = ""
+            if not self._command_seen:
+                # Baseline the first snapshot automatically; only a new SEQ runs.
                 self._command_seen = True
                 self.command.last_seq = self.plc_input.command_seq
                 self._command_fingerprint = None
         except SharedMemoryError as exc:
-            self._plc_startup_sync_required = True
+            self._plc_write_gate_initialized = False
             self._plc_heartbeat_observed = False
             self._plc_read_error = str(exc) or type(exc).__name__
             LOGGER.debug("PLC shared memory read failed: %s", exc)
@@ -1159,7 +1165,7 @@ class CoreApplication:
                 self.settings.runtime.fault_latch_enabled,
             )
         except Exception as exc:
-            self._plc_startup_sync_required = True
+            self._plc_write_gate_initialized = False
             self._plc_heartbeat_observed = False
             LOGGER.debug("PLC read failed: %s", exc)
             self._plc_read_error = str(exc) or type(exc).__name__
@@ -1198,7 +1204,6 @@ class CoreApplication:
             self.settings.runtime.fault_latch_enabled,
         )
         if heartbeat_fault:
-            self._plc_startup_sync_required = True
             self._plc_heartbeat_observed = False
             self.plc_input = PlcInput()
 
@@ -1353,22 +1358,17 @@ class CoreApplication:
                 and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
                 and self.plc_input.laser_enable and not self._device_bypassed("laser")):
             return
-        laser_stop_required = ((not self.plc_input.run_enable
-                                and not (self._laser_control_priority() or self._effective_laser_mode() in {2, 3, 4, 5}))
-                               or not self.plc_input.laser_enable
+        laser_stop_required = (not self.plc_input.laser_enable
                                or bool(self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled))
                                or self._controller_restart_pending()
-                               or (self._plc_startup_sync_required and self._effective_laser_mode() not in {2, 3, 4, 5})
                                or testing)
         preserve_laser = ((self.plc_input.force_stop and not laser_stop_required)
                            or (not laser_stop_required and (self._laser_control_priority() or self._effective_laser_mode() in {2, 3, 4, 5})
                               and self._laser_signaling_permitted()))
         safe_stop_requested = (
             self.plc_input.force_stop
-            or not self.plc_input.run_enable
             or bool(self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled))
             or self._controller_restart_pending()
-            or self._plc_startup_sync_required
             or testing
         )
         if not safe_stop_requested:
@@ -1382,7 +1382,7 @@ class CoreApplication:
             self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY}
             and self.command.last_code not in {CommandCode.ERROR_RESET, CommandCode.CONTROLLER_RESTART}
             and (self.command.last_code not in {CommandCode.NUTRUNNER_DATA_REQUEST, CommandCode.FASTENING_COMPLETE}
-                 or self.plc_input.force_stop or not self.plc_input.run_enable)
+                 or self.plc_input.force_stop)
         ):
             result = (
                 CommandResult.FORCE_STOP_ACTIVE if self.plc_input.force_stop
@@ -1396,8 +1396,7 @@ class CoreApplication:
             self._safe_stop_task = None
         ptm_status = self.ptm_service.state.status
         preserve_manual = not testing and self._laser_manual_allowed()
-        # Idle/startup stops automatic work once. A fresh, explicitly started
-        # manual motion may then run until release/completion, unless a hard stop is active.
+        # Explicit stop/fault conditions take precedence over manual motion.
         raw_motion = ptm_status.get("raw", {}).get("motion", {})
         manual_motion = bool(
             not self.plc_input.force_stop
@@ -1588,7 +1587,7 @@ class CoreApplication:
         seq = self.plc_input.command_seq
         fingerprint = (seq, code, self.plc_input.req_recipe_id, self.plc_input.req_point_id)
         if code == 0:
-            if self.command.status != CommandStatus.BUSY and not self.plc_input.run_enable:
+            if self.command.status != CommandStatus.BUSY:
                 self._command_protocol_error = ""
                 self._recipe_revisions.clear()
             return
@@ -1630,11 +1629,6 @@ class CoreApplication:
             self.command.result = CommandResult.COMMAND_BUSY
             self.command.message = "PTM recipe test session is active"
             return
-        if self._plc_startup_sync_required and not self._ptm_test_active():
-            self.command.status = CommandStatus.REJECTED
-            self.command.result = CommandResult.SYSTEM_NOT_READY
-            self.command.message = "PLC startup synchronization required: RUN_ENABLE=0 and COMMAND_CODE=0 with live heartbeat"
-            return
         self._nutrunner_data_hold = code == CommandCode.NUTRUNNER_DATA_REQUEST
         if self._nutrunner_data_hold:
             self._fastening_laser_inhibit = True
@@ -1646,10 +1640,6 @@ class CoreApplication:
             if self.plc_input.force_stop:
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.FORCE_STOP_ACTIVE
-                return
-            if not self.plc_input.run_enable:
-                self.command.status = CommandStatus.REJECTED
-                self.command.result = CommandResult.SYSTEM_NOT_READY
                 return
             if (code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.NUTRUNNER_DATA_REQUEST, CommandCode.FASTENING_COMPLETE}
                     and self.plc_input.tracking_tolerance_mm_x100 > 10000):
@@ -1691,6 +1681,7 @@ class CoreApplication:
                     or any(not task.done() for task in self._bypass_stop_tasks)):
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.SYSTEM_NOT_READY
+                self.command.message = "PTM safe stop or bypass transition is still pending"
                 return
             if (
                 not self.ptm_service.state.online
@@ -1699,6 +1690,10 @@ class CoreApplication:
             ):
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.SYSTEM_NOT_READY
+                self.command.message = (
+                    "PTM status is offline" + (f": {self.ptm_service.state.last_error}" if self.ptm_service.state.last_error else "")
+                    if not self.ptm_service.state.online else "PTM serial is not connected"
+                    if not self.ptm_service.state.status.get("connected") else "PTM is not ready")
                 return
         entry = self.settings.command_map.get(str(code))
         expected = {
@@ -1752,7 +1747,7 @@ class CoreApplication:
     def _update_vision_work(self) -> None:
         available = bool(
             self.vision_service.state.enabled and not self._device_bypassed("vision")
-            and self.plc_input.run_enable and not self.plc_input.force_stop
+            and not self.plc_input.force_stop
             and not self._controller_restart_pending() and not self.power_save.sleeping
             and not self._ptm_test_active()
             and not self._gateway_update_in_progress and not self._stop_event.is_set()
@@ -2247,10 +2242,10 @@ class CoreApplication:
         fault_active = self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled) != 0
         restart_pending = self._controller_restart_pending()
         operation_mode = self._ptm_operation_mode()
-        process_permitted = (self.plc_input.run_enable and not self.plc_input.force_stop
+        process_permitted = (not self.plc_input.force_stop
                              and not fault_active and not restart_pending
                              and operation_mode != "testing"
-                             and not self._plc_startup_sync_required and not self._command_protocol_error
+                             and not self._command_protocol_error
                              and 0 <= self.plc_input.tracking_tolerance_mm_x100 <= 10000)
         tracking_tolerance = self.plc_input.applied_tracking_tolerance(
             self.settings.runtime.tracking_tolerance_default_mm_x100
@@ -2351,8 +2346,6 @@ class CoreApplication:
             controller_state = ControllerState.TARGET_MOVING
         elif operation_mode == "manual":
             controller_state = ControllerState.MANUAL
-        elif not self.plc_input.run_enable:
-            controller_state = ControllerState.STOPPED
         elif self.plc_input.tracking_enable and tracking_active:
             controller_state = ControllerState.TRACKING
         elif system_ready:
@@ -2384,7 +2377,7 @@ class CoreApplication:
                 laser_on=bool(laser_status.get("on", ptm_status.get("laser_on", False)) or (
                     active_laser_state and active_laser_profile.get("mode") in {"on", "blink"})),
                 homed=ptm_bypassed or bool(ptm_status.get("homed")),
-                stop_active=self.plc_input.force_stop or not self.plc_input.run_enable or restart_pending,
+                stop_active=self.plc_input.force_stop or restart_pending,
                 force_stop_active=self.plc_input.force_stop,
                 camera_ready=vision_bypassed or self.vision_service.state.enabled and _mask_ready(
                     self.vision_snapshot.camera_required_mask,
@@ -2418,6 +2411,7 @@ class CoreApplication:
         )
 
     def _reset_plc_write_tracking(self) -> None:
+        self._plc_write_gate_initialized = False
         self._plc_status_header: SharedMemoryHeader | None = None
         self._plc_write_sequence: int | None = None
         self._plc_write_ack_sequence: int | None = None
@@ -2439,6 +2433,14 @@ class CoreApplication:
             header = self.plc_memory.header()
             self._plc_status_header = header
             timestamp = now_ms()
+            if not self.plc_input.run_enable:
+                self.plc_memory.set_write_enabled(False)
+                self._plc_write_last_ack_ms = timestamp
+                self._plc_write_error = ""
+                self.alarms.set_fault_word(DeviceSummaryBit.PLC_COMMUNICATION,
+                    self.alarms.fault_word(DeviceSummaryBit.PLC_COMMUNICATION, latch_enabled=False) & ~(1 << 4),
+                    self.settings.runtime.fault_latch_enabled)
+                return
             if header.write_length != BYTE_COUNT:
                 raise SharedMemoryError(
                     f"PLC output length {header.write_length} != {BYTE_COUNT}"
@@ -2455,6 +2457,7 @@ class CoreApplication:
                 self._plc_write_error = ""
                 self._plc_write_ack_seen = bool(header.last_write_time_ns)
             self._plc_write_sequence = self.plc_memory.write_plc_data(payload)
+            self.plc_memory.set_write_enabled(True)
             self._plc_write_payload = payload
             self._monitor_plc_cache.update(write_words=words_from_bytes(payload), write_sample_ms=timestamp)
             self._plc_write_last_commit_ms = timestamp
@@ -2551,7 +2554,7 @@ class CoreApplication:
                     age = now_ms() - self._last_cycle_ms if self._last_cycle_ms else None
                     if age is None or age > 2000 or self._run_task is None or self._run_task.done():
                         return JsonTcpResponse(False, error={"code": "STATE_UNAVAILABLE", "message": "A fresh running Main Core loop is required"})
-                    if self.plc_input.run_enable or bool(self.ptm_service.state.status.get("moving")) or (
+                    if self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY} or bool(self.ptm_service.state.status.get("moving")) or (
                         self._safe_stop_task is not None and not self._safe_stop_task.done()
                     ):
                         return JsonTcpResponse(False, error={"code": "RUNNING", "message": "Stop PLC operation and motion before applying configuration"})
@@ -2871,6 +2874,8 @@ class CoreApplication:
             delivery_state = "disabled"
         elif not self._gateway_configured:
             delivery_state = "waiting_gateway"
+        elif not self.plc_input.run_enable:
+            delivery_state = "paused"
         elif header is None:
             delivery_state = "disconnected"
         elif self._plc_write_error:
@@ -2893,7 +2898,7 @@ class CoreApplication:
             "commit_count": self._plc_write_commit_count,
             "committed_sequence": self._plc_write_sequence,
             "acknowledged_sequence": header.write_ack_sequence if header else None,
-            "pending": bool(header and self._plc_write_sequence is not None
+            "pending": bool(self.plc_input.run_enable and header and self._plc_write_sequence is not None
                             and self._plc_write_sequence != header.write_ack_sequence),
             "last_commit_age_ms": timestamp - self._plc_write_last_commit_ms
             if self._plc_write_last_commit_ms else None,
@@ -2985,7 +2990,7 @@ class CoreApplication:
                 "safe_stop_pending": self._safe_stop_task is not None and not self._safe_stop_task.done(),
                 "active_recipe_id": self._active_recipe_id,
                 "active_point_id": self._active_point_id,
-                "plc_startup_sync_required": self._plc_startup_sync_required,
+                "plc_startup_sync_required": False,
                 "command_protocol_error": self._command_protocol_error,
                 "restart_request": self._controller_restart_request,
             },

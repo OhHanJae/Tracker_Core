@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, MagicMock
+from unittest.mock import AsyncMock, Mock, MagicMock, patch
 
 from src.common.settings import AppSettings, MotorSettings, save_settings
 from src.common.status import CommandStatus, CommandResult, DeviceSummaryBit, now_ms
@@ -116,49 +116,137 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(app.command.status, CommandStatus.RECEIVED)
                     self.assertEqual(app._pending_request[3]['point_id'], 8)
 
-    async def test_startup_rejection_acknowledges_new_sequence_without_replaying_after_sync(self):
-        app = self.app()
-        app._plc_startup_sync_required = True
-        app._command_seen = True
-        app._command_fingerprint = (100, 2, 0, 0)
-        app.command.last_code, app.command.last_seq = 2, 100
-        app.command.status, app.command.result = CommandStatus.REJECTED, CommandResult.COMMAND_BUSY
-        app.plc_input = PlcInput(run_enable=True, command_code=2, command_seq=101)
-        await app._handle_plc_command()
-        self.assertEqual(app.command.last_seq, 101)
-        self.assertEqual(app.command.status, CommandStatus.REJECTED)
-        self.assertEqual(app.command.result, CommandResult.SYSTEM_NOT_READY)
-        self.assertIn('startup', app.command.message.lower())
-        self.assertIsNone(app._pending_request)
-        app._plc_startup_sync_required = False
-        await app._handle_plc_command()
-        self.assertIsNone(app._pending_request)
-        app.ptm_service.state.online = True
-        app.ptm_service.state.status = {'connected': True, 'ready': True}
-        app.plc_input.command_seq = 102
-        await app._handle_plc_command()
-        self.assertEqual(app.command.last_seq, 102)
-        self.assertEqual(app.command.status, CommandStatus.RECEIVED)
+    async def test_run_enable_does_not_gate_command_execution(self):
+        for run in (False, True):
+            app = self.app()
+            app.ptm_service.state.online = True
+            app.ptm_service.state.status = {'connected': True, 'ready': True}
+            app.plc_input = PlcInput(run_enable=run, command_code=2, command_seq=101)
+            await app._handle_plc_command()
+            self.assertEqual(app.command.last_seq, 101)
+            self.assertEqual(app.command.status, CommandStatus.RECEIVED)
+            self.assertIsNotNone(app._pending_request)
 
-    async def test_startup_uses_live_heartbeat_and_idle_slot_not_synthetic_defaults(self):
+    async def test_run_enable_only_pauses_writes_and_resumes_with_latest_values(self):
         app = self.app()
-        app._plc_startup_sync_required = app._gateway_configured = True
+        app._gateway_configured = True
+        header = SimpleNamespace(write_length=200, write_ack_sequence=0, last_write_time_ns=0, status_flags=3)
+        app.plc_memory = MagicMock(connected=True)
+        app.plc_memory.header.return_value = header
+        events = []
+        def commit(payload):
+            events.append(('commit', payload))
+            return len([event for event in events if event[0] == 'commit']) * 2
+        app.plc_memory.write_plc_data.side_effect = commit
+        app.plc_memory.set_write_enabled.side_effect = lambda value: events.append(('gate', value))
+        app.plc_input.run_enable = False
+        app._write_plc_output()
+        self.assertEqual(events, [('gate', False)])
+        self.assertEqual(app._plc_write_snapshot(header)['state'], 'paused')
+        app.plc_input.run_enable = True
+        app.command.last_seq = 10
+        app._build_output(now_ms())
+        latest = app.output.to_bytes()
+        app._write_plc_output()
+        self.assertEqual(events[-2:], [('commit', latest), ('gate', True)])
+        self.assertEqual(app._plc_write_commit_count, 1)
+        app.plc_input.run_enable = False
+        with patch('src.core.application.now_ms', return_value=now_ms() + 100000):
+            app._write_plc_output()
+        self.assertEqual(app._plc_write_commit_count, 1)
+        self.assertEqual(app.alarms.fault_word(DeviceSummaryBit.PLC_COMMUNICATION), 0)
+        self.assertFalse(app._plc_write_snapshot(header)['pending'])
+        app.plc_input.run_enable = True
+        app.command.last_seq = 11
+        app._build_output(now_ms())
+        app._write_plc_output()
+        self.assertEqual(events[-2:], [('commit', app.output.to_bytes()), ('gate', True)])
+        self.assertEqual(app._plc_write_commit_count, 2)
+
+    async def test_run_enable_does_not_change_controller_ready_or_stop_flags(self):
+        app = self.app()
+        app.settings.vision.bypass = True
+        app.ptm_service.state.online = True
+        app.ptm_service.state.status = {'connected': True, 'ready': True, 'homed': True}
+        states = []
+        for run in (False, True):
+            app.plc_input = PlcInput(run_enable=run, laser_mode=1)
+            app._build_output(now_ms())
+            states.append((app.output.to_words()[0], app.output.to_words()[2]))
+            self.assertTrue(app.output.flags.system_ready)
+            self.assertFalse(app.output.flags.stop_active)
+        self.assertEqual(states[0], states[1])
+
+    async def test_run_enable_does_not_gate_tracking_or_laser_permission(self):
+        app = self.app()
+        app.vision_service.command = AsyncMock(return_value={'accepted': True})
+        app.vision_service.state.enabled = True
+        app.vision_service.state.status = {'tracking_active': False}
+        for run in (False, True):
+            app.orchestrator.cancel_tracking()
+            app.plc_input = PlcInput(run_enable=run, tracking_enable=True, laser_mode=1)
+            app.orchestrator.tick(app.plc_input)
+            await app.orchestrator._task
+            self.assertEqual(app.vision_service.command.await_args.args, ('tracking.start',))
+            self.assertTrue(app._laser_permitted())
+        app.plc_input.force_stop = True
+        app.orchestrator.tick(app.plc_input)
+        await app.orchestrator._task
+        self.assertEqual(app.vision_service.command.await_args.args, ('tracking.stop',))
+
+    async def test_system_not_ready_reports_the_specific_blocker(self):
+        for blocker, expected in (
+            ('stop', 'safe stop'),
+            ('offline', 'PTM status is offline: connection refused'),
+            ('disconnected', 'PTM serial is not connected'),
+            ('ready', 'PTM is not ready'),
+        ):
+            with self.subTest(blocker=blocker):
+                app = self.app()
+                app.plc_input = PlcInput(run_enable=True, command_code=2, command_seq=10)
+                app.ptm_service.state.online = True
+                app.ptm_service.state.status = {'connected': True, 'ready': True}
+                if blocker == 'stop':
+                    app._safe_stop_task = asyncio.get_running_loop().create_future()
+                elif blocker == 'offline':
+                    app.ptm_service.state.online = False
+                    app.ptm_service.state.last_error = 'connection refused'
+                elif blocker == 'disconnected':
+                    app.ptm_service.state.status['connected'] = False
+                else:
+                    app.ptm_service.state.status['ready'] = False
+                await app._handle_plc_command()
+                self.assertEqual(app.command.result, CommandResult.SYSTEM_NOT_READY)
+                self.assertEqual(app.command.last_seq, 10)
+                self.assertIn(expected, app.command.message)
+                self.assertIsNone(app._pending_request)
+
+    async def test_first_live_snapshot_needs_no_idle_or_heartbeat_handshake(self):
+        app = self.app()
+        app._gateway_configured = True
         app.plc_memory = MagicMock()
         header = SimpleNamespace(status_flags=3, last_read_time_ns=1, read_sequence=2)
         app.plc_memory.header.return_value = header
         words = [0] * 100
-        words[0], words[7], words[12], words[13] = 1, 1, 1, 100
+        words[0], words[1], words[12], words[13] = 1, 1, 2, 100
         app.plc_memory.read_plc_data.return_value = words_to_bytes(words)
         app._read_plc_input(1000)
         await app._handle_plc_command()
-        self.assertTrue(app._plc_startup_sync_required)
+        self.assertFalse(app._plc_startup_sync_required)
         self.assertIsNone(app._pending_request)
-        words[0], words[7], words[12] = 0, 2, 0
         header.read_sequence = 4
         app.plc_memory.read_plc_data.return_value = words_to_bytes(words)
         app._read_plc_input(1100)
-        self.assertFalse(app._plc_startup_sync_required)
         self.assertEqual(app.command.last_seq, 100)
+        self.assertIsNone(app._pending_request)
+        words[13], header.read_sequence = 101, 6
+        app.plc_memory.read_plc_data.return_value = words_to_bytes(words)
+        app._read_plc_input(1200)
+        app.ptm_service.state.online = True
+        app.ptm_service.state.status = {'connected': True, 'ready': True}
+        await app._handle_plc_command()
+        self.assertEqual(app.command.status, CommandStatus.RECEIVED)
+        app.plc_memory.set_write_enabled.assert_called_once_with(False)
 
     async def test_received_slot_overwrite_is_not_queued_after_original_completion(self):
         for replacement_seq in (100, 101):
@@ -185,25 +273,17 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
                 await app._handle_plc_command()
                 self.assertEqual(app._command_protocol_error, '')
 
-    async def test_idle_and_startup_stop_once_then_allow_fresh_manual_jog(self):
-        for startup, run_enable in ((False, False), (True, False), (True, True)):
-            with self.subTest(startup=startup, run_enable=run_enable):
-                app = self.app()
-                app.plc_input = PlcInput(run_enable=run_enable, laser_mode=1)
-                app._plc_startup_sync_required = startup
-                app.ptm_service.state.online = True
-                app.ptm_service.state.last_ok_ms = now_ms()
-                app.ptm_service.state.status = {'moving': False, 'raw': {'motion': {'state': 'idle'}}}
-                app._perform_safe_stop = AsyncMock(return_value=True)
-                await app._apply_safe_stop_if_needed()
-                await app._safe_stop_task
-                await app._apply_safe_stop_if_needed()
-                self.assertTrue(app._safe_stop_applied)
-                app.ptm_service.state.status = {'moving': True, 'raw': {'motion': {'state': 'jog'}}}
-                app._safe_stop_retry_ms = 0
-                await app._apply_safe_stop_if_needed()
-                self.assertIsNone(app._safe_stop_task)
-                app._perform_safe_stop.assert_awaited_once_with(preserve_manual=True)
+    async def test_run_enable_off_does_not_stop_motion(self):
+        for state, age in (('jog', 0), ('tracking', 0), ('tracking', 1001), (None, 0)):
+            app = self.app()
+            app.plc_input = PlcInput(run_enable=False, laser_mode=1)
+            app.ptm_service.state.online = True
+            app.ptm_service.state.last_ok_ms = now_ms() - age
+            app.ptm_service.state.status = {'moving': True, 'raw': {'motion': {'state': state}}}
+            app._perform_safe_stop = AsyncMock(return_value=True)
+            await app._apply_safe_stop_if_needed()
+            app._perform_safe_stop.assert_not_awaited()
+            self.assertIsNone(app._safe_stop_task)
 
     async def test_manual_jog_still_stops_on_force_stop_fault_or_restart(self):
         for reason in ('force_stop', 'fault', 'restart'):
@@ -226,20 +306,6 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
                 await app._safe_stop_task
                 app._perform_safe_stop.assert_awaited_once()
 
-    async def test_idle_does_not_exempt_automatic_or_stale_motor_motion(self):
-        for state, age in (('tracking', 0), ('jog', 1001), (None, 0)):
-            with self.subTest(state=state, age=age):
-                app = self.app()
-                app.plc_input = PlcInput(run_enable=False, laser_mode=1)
-                app._safe_stop_applied = True
-                app.ptm_service.state.online = True
-                app.ptm_service.state.last_ok_ms = now_ms() - age
-                app.ptm_service.state.status = {'moving': True, 'raw': {'motion': {'state': state}}}
-                app._perform_safe_stop = AsyncMock(return_value=True)
-                await app._apply_safe_stop_if_needed()
-                self.assertIsNotNone(app._safe_stop_task)
-                await app._safe_stop_task
-                app._perform_safe_stop.assert_awaited_once()
 
     async def test_axis_errors_use_matching_fresh_ptm_feedback_and_pan_wrap(self):
         app = self.app()
@@ -257,51 +323,7 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
         raw['motion']['target_motion_id'] = 'other'
         self.assertIsNone(app._ptm_target_errors(1000))
 
-    async def test_idle_allows_identified_manual_recipe_motion_after_initial_stop(self):
-        for command in ('point.goto', 'motion.goto', 'home.start'):
-            with self.subTest(command=command):
-                app = self.app()
-                app.plc_input = PlcInput(run_enable=False, laser_mode=1)
-                app._plc_startup_sync_required = True
-                app._safe_stop_applied = True
-                app.ptm_service.state.online = True
-                app.ptm_service.state.last_ok_ms = now_ms()
-                app.ptm_service.state.status = {'moving': True, 'raw': {'motion': {
-                    'state': 'tracking', 'id': 'manual-1', 'automatic': False, 'command': command}}}
-                app._perform_safe_stop = AsyncMock(return_value=True)
-                await app._apply_safe_stop_if_needed()
-                app._perform_safe_stop.assert_not_awaited()
-                self.assertIsNone(app._safe_stop_task)
 
-    async def test_manual_recipe_motion_requires_explicit_fresh_identity_and_initial_stop(self):
-        for field, value in (('automatic', True), ('automatic', None), ('id', None),
-                             ('command', None), ('initial_stop', False), ('force_stop', True),
-                             ('fault', True), ('restart', True), ('stale', True)):
-            with self.subTest(field=field, value=value):
-                app = self.app()
-                app.plc_input = PlcInput(run_enable=False, laser_mode=1)
-                app._safe_stop_applied = True
-                app.ptm_service.state.online = True
-                app.ptm_service.state.last_ok_ms = now_ms()
-                motion = {'state': 'tracking', 'id': 'manual-1', 'automatic': False, 'command': 'point.goto'}
-                app.ptm_service.state.status = {'moving': True, 'raw': {'motion': motion}}
-                if field == 'initial_stop':
-                    app._safe_stop_applied = False
-                elif field == 'force_stop':
-                    app.plc_input.force_stop = True
-                elif field == 'fault':
-                    app.alarms.set_fault_word(DeviceSummaryBit.CONTROLLER, 1)
-                elif field == 'restart':
-                    app._controller_restart_request = {'requested_ms': now_ms()}
-                elif field == 'stale':
-                    app.ptm_service.state.last_ok_ms -= 1001
-                else:
-                    motion[field] = value
-                app._perform_safe_stop = AsyncMock(return_value=True)
-                await app._apply_safe_stop_if_needed()
-                self.assertIsNotNone(app._safe_stop_task)
-                await app._safe_stop_task
-                app._perform_safe_stop.assert_awaited_once()
 
     async def test_previous_pulse_cache_does_not_stop_next_manual_test_point(self):
         for mode in ('ptm', 'gpio'):
@@ -333,6 +355,7 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
         for reason in ('real_on', 'tcp', 'stale', 'offline', 'unknown'):
             with self.subTest(reason=reason):
                 app = self.app()
+                app.alarms.set_fault_word(DeviceSummaryBit.CONTROLLER, 1)
                 app.settings.laser.mode = 'tcp' if reason == 'tcp' else 'gpio'
                 app.plc_input = PlcInput(run_enable=False, laser_mode=1)
                 app._safe_stop_applied = True

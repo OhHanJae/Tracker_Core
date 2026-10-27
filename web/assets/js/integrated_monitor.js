@@ -15,7 +15,7 @@ const plcCommands = {0: '명령 없음', 1: '레시피·포인트 적용 및 이
 const writeNames = {
   disabled: '비활성', waiting_gateway: 'Gateway 대기', disconnected: '공유메모리 단절',
   waiting_commit: '기록 대기', pending: '응답 대기', transmitting: '전송 중 · 응답 정상',
-  confirmed: '전송 확인', error: '쓰기 오류',
+  confirmed: '전송 확인', error: '쓰기 오류', paused: 'RUN_ENABLE OFF · 쓰기 중지',
 };
 const alarmStates = { active: '발생 중', latched: '원인 복구 · 리셋 대기', recovered: '복구됨', unknown: '원인 미확인' };
 let snapshot = null;
@@ -133,7 +133,7 @@ function updateIntegrated() {
   const fault = counts.faults > 0 || run.controller_state === 'FAULT';
   const tone = !live ? 'muted' : fault ? 'bad' : counts.warnings ? 'warn' : run.system_ready ? 'good' : 'info';
   const main = pollError ? 'Core 연결 확인 필요' : !receivedAt ? '상태 수신 중' : !live ? '운전 상태 미확인' : fault ? '오류 확인 필요' : controllerNames[run.controller_state] || run.controller_state || '운전 상태 미보고';
-  updateHtml('imSystemState', `${pill(main, tone)}<small>${!live ? '최근 수신값 · 제어 상태 확인 필요' : fault ? `현재 오류 ${counts.faults}건 · ${esc(controllerNames[run.controller_state] || run.controller_state || '상태 확인')}` : run.power_save?.sleeping ? '자동 절전 중' : `RUN ${run.run_enable ? 'ON' : 'OFF'} · ${run.system_ready ? 'SYSTEM READY' : '준비 조건 확인'}`}</small>`);
+  updateHtml('imSystemState', `${pill(main, tone)}<small>${!live ? '최근 수신값 · 제어 상태 확인 필요' : fault ? `현재 오류 ${counts.faults}건 · ${esc(controllerNames[run.controller_state] || run.controller_state || '상태 확인')}` : run.power_save?.sleeping ? '자동 절전 중' : `PLC 쓰기 ${run.run_enable ? 'ON' : 'OFF'} · ${run.system_ready ? 'SYSTEM READY' : '준비 조건 확인'}`}</small>`);
   updateHtml('imUpdated', live ? `<i class="im-live-dot"></i>${esc(new Date(receivedAt).toLocaleTimeString('ko-KR', {hour12: false}))} · 1초 갱신` : '상태 수신 대기');
   document.getElementById('integratedMonitor').dataset.stale = String(!live);
   const ptmOnline = deviceReady('ptm', ptm.online);

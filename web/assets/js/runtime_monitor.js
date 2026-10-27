@@ -14,6 +14,7 @@ const writeLabels = {
   disabled: '비활성', waiting_gateway: 'Gateway 설정 조회 대기', disconnected: '공유메모리 단절',
   waiting_commit: '첫 기록 대기', pending: 'PLC 응답 대기',
   transmitting: '전송 중 · PLC 응답 정상', confirmed: '최신 기록 전송 확인', error: '쓰기 오류',
+  paused: 'RUN_ENABLE OFF · PLC 쓰기 중지',
 };
 
 function age(value) {
@@ -61,7 +62,6 @@ export function renderRuntimeMonitor() {
   const blockers = [];
   if (power.sleeping) blockers.push('자동 절전 중');
   if (runtime.force_stop) blockers.push('FORCE_STOP');
-  if (runtime.run_enable === false) blockers.push('RUN_ENABLE 꺼짐');
   if (alarms.fault_summary) blockers.push(`Fault ${alarms.primary_fault_code}`);
   if (ptm.enabled && !ptm.online) blockers.push('PTM TCP 단절');
   if (ptm.enabled && ptm.serial_connected === false) blockers.push('PTM RS-485 단절');

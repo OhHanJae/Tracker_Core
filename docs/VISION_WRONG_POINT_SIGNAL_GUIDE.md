@@ -61,7 +61,7 @@ Core 숫자 ID와 CAD ID는 별개다. `G3-020`을 잘라 숫자 20으로 만들
 - `VisionSnapshot.point_match`로 정규화한다. Core `get_status`와 HTTP `/api/status`의 `vision.point_match`는 수신 내용이고, `vision.wrong_point`는 현재 적용 가능한 판정(`true/false/null`)이다.
 - 현재 적용 레시피/포인트/이동 SEQ와 정확히 일치해야 한다. 추적 요청·실행, 대상 존재, 필수 카메라 online/valid, Vision 정상 통신과 이동/체결 결과 처리 중이 아닌 상태를 확인한다.
 - `age_seconds`에 Core의 마지막 정상 수신 후 경과 시간을 더해 `runtime.vision_status_max_age_ms` 이하인지 검사한다. 다른 측정의 `result_age_seconds`로 대신하지 않는다.
-- 다른 점 확정은 기존 PTM `laser.state(state="wrong_point")` 표시로 전달한다. 레이저 프로필·수동 우선권·FORCE_STOP·RUN_ENABLE·안전 인터록은 유지한다. 새 PLC 알람 비트나 고장 래치를 만들지 않는다.
+- 다른 점 확정은 기존 PTM `laser.state(state="wrong_point")` 표시로 전달한다. 레이저 프로필·수동 우선권·FORCE_STOP·안전 인터록은 유지한다. RUN_ENABLE은 PLC 쓰기 허가에만 사용한다. 새 PLC 알람 비트나 고장 래치를 만들지 않는다.
 - 새 신호가 제공되면 다른 점 또는 판단 불가 상태에서 기존 `POSITION_OK` 및 이에 의존하는 `LASER_TARGET_READY`를 허용하지 않는다. 현재 점 `false`도 기존 `tracker_valid`·위치 오차·안정 시간 조건을 만족해야 위치 OK다. Vision 바이패스 정책은 유지한다.
 - 현재 점으로 복귀하면 표시를 자동 복구한다. 이 신호로 `tracker_valid`나 생산 승인을 참으로 만들지 않는다.
 

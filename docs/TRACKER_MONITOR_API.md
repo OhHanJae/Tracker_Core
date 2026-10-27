@@ -47,7 +47,7 @@ Camera 2 PLC 알람 및 새 Vision frame/calibration 계약은 미지원으로 �
 - `instance_id`는 `CoreApplication` 생성 시 한 번 생성한 UUID4 hex다. 같은 인스턴스의 조회에서는 유지되며 Core 재시작 경계를 구분한다. 개별 작업/사이클 ID나 command_seq의 고유성을 보장하지 않는다.
 - `requested`는 마지막 캐시 PLC 입력이다. 명령 1(`TARGET_APPLY_MOVE`)/5(`NUTRUNNER_DATA_REQUEST`)이며 recipe/point가 각각 1~65535이면 반환하고, 나머지는 null이다. 수락/검증/완료를 뜻하지 않는다. `command_seq=0`도 유효하며 같은 신호가 유지되면 계속 보인다.
 - `applied`는 기존 `runtime.active_recipe_id/active_point_id`가 유효할 때 같은 값을 반환하고, 없으면 null이다. 기존 성공/초기화 시점은 바꾸지 않는다. `ptm_bypassed`는 조회 당시 Core의 PTM 바이패스 캐시다. true이면 실제 이동 확인으로 해석하지 않는다.
-- 요청과 적용이 서로 다른 체결점일 수 있다. 처리 결과는 기존 최상위 `command`를, 운전 제약은 `runtime.run_enable/force_stop/tracking_enable/restart_request` 등을 함께 확인한다. 새 상태 머신이나 생산 체결 허가를 추가한 것이 아니다.
+- 요청과 적용이 서로 다른 체결점일 수 있다. 처리 결과는 기존 최상위 `command`를, 운전 제약은 `runtime.force_stop/tracking_enable/restart_request` 등을 함께 확인한다. `runtime.run_enable`은 Controller→PLC 쓰기 허가만 나타낸다. 새 상태 머신이나 생산 체결 허가를 추가한 것이 아니다.
 - Vision Run에서 이 컨텍스트를 표시하는 후속 작업은 Monitor 구현 지침서를 따른다. 기존 Vision DEV arrival/simulation API를 생산 타깃 설정으로 호출하지 않는다.
 
 ## 알람
@@ -99,7 +99,7 @@ PTM Pan/Tilt는 D+62/63 한 사건으로 합산한다. Summary Word는 별도 �
 
 expected는 변경하는 모든 leaf 또는 list의 점 구분 경로와 마지막으로 읽은 값을 포함한다.
 worker는 마지막 cycle이 2초 이내이고 실제 loop가 실행 중인지 확인하고,
-현재 PLC RUN_ENABLE, PTM 이동 또는 safe-stop 진행 중이면 거절한다.
+PLC 명령이 RECEIVED/BUSY이거나 PTM 이동 또는 safe-stop 진행 중이면 거절한다. RUN_ENABLE ON 자체는 설정 변경을 차단하지 않는다.
 최신 디스크 설정과 expected를 비교한 뒤 기존 부분 patch validation과 persistence를 사용한다.
 JSON 숫자는 정수/실수 표현이 같으면 동등하게 비교하지만 bool과 숫자는 구분한다.
 성공 응답 result는 전체 설정이며 클라이언트는 다시 읽어 저장과 반영 상태를 확인한다.
@@ -128,7 +128,7 @@ RDK 및 실제 PLC/PTM와 패널의 운전 검증은 별도 수행한다.
 - `monitor.capabilities.commands`에 wake 명령, `power_save`에 timeout과 PLC wake 주소를 추가했다.
 - PLC `D+00.4 WAKE_UP` 상승 에지. 자세한 PLC 확장은 `PLC_WAKEUP_EXTENSION.md` 참조. Gateway 공유메모리 크기/프로토콜 변경은 없다.
 - 절전 시 기존 Vision `tracking.stop`으로 분석을 중지한다. 카메라 acquisition/전원 절전은 미구현이며 Vision 후속 계약으로 남겼다.
-- `runtime.orchestration_enabled=false`여도 절전으로 실제 활성 추적을 중지했다면 Wake 뒤 PLC RUN_ENABLE/TRACKING_ENABLE 및 기존 Fault/FORCE_STOP/재시작 조건을 통과할 때만 추적을 재개한다. 원래 정지 상태·일반 시작에서는 자동 추적을 시작하지 않는다. 장치 비활성/바이패스는 재개 예약을 취소한다.
+- `runtime.orchestration_enabled=false`여도 절전으로 실제 활성 추적을 중지했다면 Wake 뒤 PLC TRACKING_ENABLE 및 기존 Fault/FORCE_STOP/재시작 조건을 통과할 때만 추적을 재개한다. 원래 정지 상태·일반 시작에서는 자동 추적을 시작하지 않는다. 장치 비활성/바이패스는 재개 예약을 취소한다.
 - 포인트 dispatch가 OFF 응답 후 PTM을 움직인다. 허용된 move의 실제 위치 완료 후만 GPIO ON. OFF/정지/허가 해제는 예약 ON generation을 무효화한다. Core PLC 완료는 기존 fresh/matching motion ID 검증을 유지한다.
 
 ### 임시 수동 ON·GPIO 알람 정정
@@ -140,7 +140,7 @@ FORCE_STOP/Fault/재시작/장치 비활성/바이패스는 우선한다. Core �
 `status.laser`에는 control_mode/manual_override/manual_remaining_s가 추가됐다.
 PTM 바이패스는 레이저 탭에서 설정한다. 내부 `laser.power_save`의
 automatic_off/manual_allowed로 일반 자동 OFF와 강제 차단을 원자적으로 구분한다.
-RUN_ENABLE=OFF의 내부 모터 정리만 preserve_laser_manual을 사용한다.
+RUN_ENABLE=OFF는 PLC 쓰기만 중지하며 모터 정리나 레이저 OFF를 발생시키지 않는다. PLC 입력 읽기와 명령 처리는 계속된다.
 레이저는 출력 검출이 없으며 GPIO 입력/readback을 읽지 않는다.
 PLC D+66/D+67, D+20.5, 레이저 경고/고장 요약과 대표 코드 5000~5099는 Reserved/0이다.
 `laser.on` 상태값은 마지막 성공한 GPIO 명령을 뜻한다. PLC LASER_ON은 연속 ON 또는 점멸 활성 상태이며 점멸의 OFF 구간도 1을 유지한다. 실제 방출 검출값은 아니다.

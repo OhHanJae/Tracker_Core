@@ -52,7 +52,7 @@ class CoreOrchestrator:
             return
         status = getattr(self.vision.state, "status", {})
         desired = bool(
-            plc.run_enable and plc.tracking_enable
+            plc.tracking_enable
             and not plc.force_stop and not fault_active
             and not power_saving
             and status.get("tracking_bypass") is not True
