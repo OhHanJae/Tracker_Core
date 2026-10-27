@@ -1341,18 +1341,26 @@ class CoreApplication:
         laser_status = self.laser_service.state.status
         preserve_manual = self._laser_manual_allowed()
         # Idle/startup stops automatic work once. A fresh, explicitly started
-        # manual JOG may then run until release, unless a hard stop is active.
-        manual_jog = bool(
+        # manual motion may then run until release/completion, unless a hard stop is active.
+        raw_motion = ptm_status.get("raw", {}).get("motion", {})
+        manual_motion = bool(
             not self.plc_input.force_stop
             and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
             and not self._controller_restart_pending()
             and self.ptm_service.state.online
             and self.ptm_service.state.last_ok_ms > 0
             and 0 <= now_ms() - self.ptm_service.state.last_ok_ms <= 1000
-            and ptm_status.get("raw", {}).get("motion", {}).get("state") == "jog"
+            and (raw_motion.get("state") == "jog" or (
+                raw_motion.get("state") == "tracking"
+                and raw_motion.get("id")
+                and raw_motion.get("automatic") is False
+                and raw_motion.get("command") in {"point.goto", "motion.goto", "home.start"}
+                and self._pending_request is None and self._active_motion is None
+                and self.command.status not in {CommandStatus.RECEIVED, CommandStatus.BUSY}
+            ))
         )
         still_active = bool(
-            (ptm_status.get("moving") and not manual_jog) or ((ptm_status.get("laser_on") or laser_status.get("on"))
+            (ptm_status.get("moving") and not manual_motion) or ((ptm_status.get("laser_on") or laser_status.get("on"))
                 and not preserve_laser and not (preserve_manual and self._laser_manual_active()))
         )
         if self._safe_stop_applied and not still_active:
@@ -1472,6 +1480,13 @@ class CoreApplication:
             LOGGER.info("%s safe stop recovered: %s", device, previous)
         self._safe_stop_errors[device] = error
 
+    def _ptm_exclusive_motion_active(self) -> bool:
+        state = self.ptm_service.state
+        motion = state.status.get("raw", {}).get("motion", {})
+        return bool(state.online and state.last_ok_ms > 0
+                    and 0 <= now_ms() - state.last_ok_ms <= 1000
+                    and motion.get("id") and motion.get("exclusive") is True)
+
     async def _handle_plc_command(self) -> None:
         self._sync_bypass_state()
         self._progress_motion_command(now_ms())
@@ -1490,6 +1505,14 @@ class CoreApplication:
         if self._controller_restart_request is not None:
             return
         if self._pending_request is not None:
+            fingerprint = (self.plc_input.command_seq, self.plc_input.command_code,
+                           self.plc_input.req_recipe_id, self.plc_input.req_point_id)
+            if (self.plc_input.command_code and self._command_fingerprint is not None
+                    and fingerprint != self._command_fingerprint):
+                self._command_protocol_error = (
+                    "same sequence has different command or target"
+                    if self.plc_input.command_seq == self.command.last_seq
+                    else "request slot changed before terminal acknowledgement")
             code, seq, expected, params = self._pending_request
             self._pending_request = None
             self.command.status = CommandStatus.BUSY
@@ -1582,6 +1605,11 @@ class CoreApplication:
             if self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled):
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.FAULT_ACTIVE
+                return
+            if self._ptm_exclusive_motion_active():
+                self.command.status = CommandStatus.REJECTED
+                self.command.result = CommandResult.COMMAND_BUSY
+                self.command.message = "PTM recipe test movement is active"
                 return
             if code == CommandCode.TARGET_APPLY_MOVE and self.ptm_service.state.status.get("homed") is not True:
                 self.command.status = CommandStatus.REJECTED
@@ -1788,6 +1816,11 @@ class CoreApplication:
     ) -> None:
         preparing_laser = False
         try:
+            if code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME} and self._ptm_exclusive_motion_active():
+                self.command.status = CommandStatus.REJECTED
+                self.command.result = CommandResult.COMMAND_BUSY
+                self.command.message = "PTM recipe test movement is active"
+                return
             if code == CommandCode.ERROR_RESET and self._laser_manual_active():
                 try:
                     await self.laser_service.command(self.settings.laser.off_command)
@@ -1862,7 +1895,10 @@ class CoreApplication:
                     and self._effective_laser_mode() not in {2, 3, 4, 5}):
                 async with self._laser_control_lock:
                     preparing_laser = True
-                    off = await self.laser_service.command(self.settings.laser.off_command)
+                    if self.settings.laser.mode.lower() in {"ptm", "gpio"}:
+                        off = await self.laser_service.command(self.settings.laser.off_command, {"require_idle": True})
+                    else:
+                        off = await self.laser_service.command(self.settings.laser.off_command)
                     permitted = self._laser_permitted()
                     move_params = {**params, "laser_after_move": permitted}
                     if self.settings.laser.mode.lower() in {"ptm", "gpio"}:
@@ -1926,6 +1962,7 @@ class CoreApplication:
                 elif getattr(exc, "code", None) == "HOMING_REQUIRED":
                     self.command.result = CommandResult.HOMING_REQUIRED
                 elif getattr(exc, "code", None) == "BUSY":
+                    self.command.status = CommandStatus.REJECTED
                     self.command.result = CommandResult.COMMAND_BUSY
                 else:
                     self.command.result = CommandResult.INTERNAL_ERROR
@@ -1966,13 +2003,15 @@ class CoreApplication:
                 "CONFIG_OR_CAL_ERROR": CommandResult.CONFIG_OR_CAL_ERROR,
                 "RECIPE_STORAGE_ERROR": CommandResult.CONFIG_OR_CAL_ERROR,
                 "HOMING_REQUIRED": CommandResult.HOMING_REQUIRED,
+                "MOTION_STOPPED": CommandResult.FORCE_STOP_ACTIVE,
             }.get(raw_motion.get("last_error"), CommandResult.INTERNAL_ERROR)
             self.command.message = str(raw_motion.get("last_error") or "motion failed")
             fault_bit = (
                 3 if self.command.result == CommandResult.MOTION_TIMEOUT
                 else 2 if motion["code"] == CommandCode.HOME else 6
             )
-            if not str(raw_motion.get("last_error", "")).startswith("LASER_"):
+            if (raw_motion.get("last_error") != "MOTION_STOPPED"
+                    and not str(raw_motion.get("last_error", "")).startswith("LASER_")):
                 self._set_motion_fault(fault_bit)
             self._active_motion = None
             return
@@ -2585,6 +2624,11 @@ class CoreApplication:
                     return JsonTcpResponse(True, {"accepted": False, "bypassed": True})
                 if service is not None and not service.state.enabled:
                     return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": f"device is disabled: {device_id}"})
+                if (device_id == "ptm" and device_command in {"motion.stop", "motion.force_stop"}
+                        and self.command.last_code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME}
+                        and self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY}):
+                    self._abort_active_command(CommandResult.FORCE_STOP_ACTIVE)
+                    self.command.message = "PTM movement stopped by operator"
                 manual_on = device_command == "laser.on"
                 if self.power_save.sleeping and not manual_on and device_command in {"laser.on", "laser.pulse"}:
                     return JsonTcpResponse(False, error={"code": "POWER_SAVING", "message": "Wake Core before enabling laser output"})
@@ -2643,6 +2687,10 @@ class CoreApplication:
                     return JsonTcpResponse(True, {"accepted": False, "bypassed": True})
                 if not self.ptm_service.state.enabled:
                     return JsonTcpResponse(False, error={"code": "DEVICE_DISABLED", "message": "PTM is disabled"})
+                if (self.command.last_code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME}
+                        and self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY}):
+                    self._abort_active_command(CommandResult.FORCE_STOP_ACTIVE)
+                    self.command.message = "PTM movement stopped by operator"
                 await self.ptm_service.command("motion.stop")
                 return JsonTcpResponse(True, {"accepted": True})
             if command == "laser.on":

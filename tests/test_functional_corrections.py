@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock, MagicMock
 
 from src.common.settings import AppSettings, MotorSettings, save_settings
 from src.common.status import CommandStatus, CommandResult, DeviceSummaryBit, now_ms
-from src.communication.json_tcp import JsonLineServer, JsonTcpResponse
+from src.communication.json_tcp import JsonLineServer, JsonTcpResponse, JsonTcpError
 from src.communication.plc_memory_mapping import PlcInput, words_to_bytes
 from src.core.application import CoreApplication
 from src.devices.ptm_service import PtmService
@@ -113,6 +113,31 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(app._plc_startup_sync_required)
         self.assertEqual(app.command.last_seq, 100)
 
+    async def test_received_slot_overwrite_is_not_queued_after_original_completion(self):
+        for replacement_seq in (100, 101):
+            with self.subTest(replacement_seq=replacement_seq):
+                app = self.app()
+                app.plc_input = PlcInput(run_enable=True, command_code=2, command_seq=100)
+                app.ptm_service.state.online = True
+                app.ptm_service.state.status = {'connected': True, 'ready': True, 'homed': True}
+                await app._handle_plc_command()
+                self.assertEqual(app.command.status, CommandStatus.RECEIVED)
+                async def finish(*_):
+                    app.command.status = CommandStatus.COMPLETE
+                app._dispatch_plc_command = AsyncMock(side_effect=finish)
+                app.plc_input.command_seq = replacement_seq
+                app.plc_input.req_point_id = 7
+                await app._handle_plc_command()
+                await app._command_task
+                app._dispatch_plc_command.assert_awaited_once_with(2, 100, 'home.start', {})
+                self.assertTrue(app._command_protocol_error)
+                await app._handle_plc_command()
+                self.assertIsNone(app._pending_request)
+                self.assertEqual(app.command.last_seq, 100)
+                app.plc_input = PlcInput(command_code=0)
+                await app._handle_plc_command()
+                self.assertEqual(app._command_protocol_error, '')
+
     async def test_idle_and_startup_stop_once_then_allow_fresh_manual_jog(self):
         for startup, run_enable in ((False, False), (True, False), (True, True)):
             with self.subTest(startup=startup, run_enable=run_enable):
@@ -185,6 +210,140 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
         raw['motion']['target_motion_id'] = 'other'
         self.assertIsNone(app._ptm_target_errors(1000))
 
+    async def test_idle_allows_identified_manual_recipe_motion_after_initial_stop(self):
+        for command in ('point.goto', 'motion.goto', 'home.start'):
+            with self.subTest(command=command):
+                app = self.app()
+                app.plc_input = PlcInput(run_enable=False, laser_mode=1)
+                app._plc_startup_sync_required = True
+                app._safe_stop_applied = True
+                app.ptm_service.state.online = True
+                app.ptm_service.state.last_ok_ms = now_ms()
+                app.ptm_service.state.status = {'moving': True, 'raw': {'motion': {
+                    'state': 'tracking', 'id': 'manual-1', 'automatic': False, 'command': command}}}
+                app._perform_safe_stop = AsyncMock(return_value=True)
+                await app._apply_safe_stop_if_needed()
+                app._perform_safe_stop.assert_not_awaited()
+                self.assertIsNone(app._safe_stop_task)
+
+    async def test_manual_recipe_motion_requires_explicit_fresh_identity_and_initial_stop(self):
+        for field, value in (('automatic', True), ('automatic', None), ('id', None),
+                             ('command', None), ('initial_stop', False), ('force_stop', True),
+                             ('fault', True), ('restart', True), ('stale', True)):
+            with self.subTest(field=field, value=value):
+                app = self.app()
+                app.plc_input = PlcInput(run_enable=False, laser_mode=1)
+                app._safe_stop_applied = True
+                app.ptm_service.state.online = True
+                app.ptm_service.state.last_ok_ms = now_ms()
+                motion = {'state': 'tracking', 'id': 'manual-1', 'automatic': False, 'command': 'point.goto'}
+                app.ptm_service.state.status = {'moving': True, 'raw': {'motion': motion}}
+                if field == 'initial_stop':
+                    app._safe_stop_applied = False
+                elif field == 'force_stop':
+                    app.plc_input.force_stop = True
+                elif field == 'fault':
+                    app.alarms.set_fault_word(DeviceSummaryBit.CONTROLLER, 1)
+                elif field == 'restart':
+                    app._controller_restart_request = {'requested_ms': now_ms()}
+                elif field == 'stale':
+                    app.ptm_service.state.last_ok_ms -= 1001
+                else:
+                    motion[field] = value
+                app._perform_safe_stop = AsyncMock(return_value=True)
+                await app._apply_safe_stop_if_needed()
+                self.assertIsNotNone(app._safe_stop_task)
+                await app._safe_stop_task
+                app._perform_safe_stop.assert_awaited_once()
+
+    async def test_operator_stop_cancels_queued_plc_move_before_dispatch(self):
+        for command, params in (('motion.stop', {}),
+                                ('device.command', {'device': 'ptm', 'command': 'motion.stop'})):
+            with self.subTest(command=command):
+                app = self.app()
+                app.plc_input = PlcInput(run_enable=True, laser_mode=2, command_code=1,
+                                         command_seq=100, req_recipe_id=2, req_point_id=7)
+                app.ptm_service.state.online = True
+                app.ptm_service.state.status = {'connected': True, 'ready': True, 'homed': True}
+                app.ptm_service.command = AsyncMock(return_value={'accepted': True})
+                await app._handle_plc_command()
+                self.assertIsNotNone(app._pending_request)
+                response = await app.handle_tcp_command(command, params)
+                self.assertTrue(response.ok)
+                await app._handle_plc_command()
+                self.assertIsNone(app._pending_request)
+                self.assertIsNone(app._command_task)
+                self.assertEqual(app.command.status, CommandStatus.ERROR)
+                self.assertEqual(app.command.result, CommandResult.FORCE_STOP_ACTIVE)
+                if command == 'motion.stop':
+                    app.ptm_service.command.assert_awaited_once_with('motion.stop')
+                else:
+                    app.ptm_service.command.assert_awaited_once_with('motion.stop', {})
+
+    async def test_plc_move_rejects_exclusive_web_motion_without_changing_laser(self):
+        for code in (1, 2):
+            for before_accept in (True, False):
+                with self.subTest(code=code, before_accept=before_accept):
+                    app = self.app()
+                    app.plc_input = PlcInput(run_enable=True, laser_mode=1, command_code=code,
+                                             command_seq=100, req_recipe_id=2, req_point_id=7)
+                    app.ptm_service.state.online = True
+                    app.ptm_service.state.last_ok_ms = now_ms()
+                    motion = {'id': 'web-test', 'exclusive': before_accept}
+                    app.ptm_service.state.status = {'connected': True, 'ready': True,
+                        'homed': True, 'raw': {'motion': motion}}
+                    app.ptm_service.command = AsyncMock()
+                    app.laser_service.command = AsyncMock()
+                    await app._handle_plc_command()
+                    if not before_accept:
+                        self.assertEqual(app.command.status, CommandStatus.RECEIVED)
+                        motion['exclusive'] = True
+                        await app._handle_plc_command()
+                        await app._command_task
+                    self.assertEqual(app.command.status, CommandStatus.REJECTED)
+                    self.assertEqual(app.command.result, CommandResult.COMMAND_BUSY)
+                    self.assertEqual(app.alarms.fault_summary(), 0)
+                    app.ptm_service.command.assert_not_awaited()
+                    app.laser_service.command.assert_not_awaited()
+
+    async def test_operator_stop_cancels_inflight_plc_motion_without_motor_fault(self):
+        app = self.app()
+        app.plc_input = PlcInput(run_enable=True, laser_mode=2, command_code=1,
+                                 command_seq=100, req_recipe_id=2, req_point_id=7)
+        app.ptm_service.state.online = True
+        app.ptm_service.state.status = {'connected': True, 'ready': True, 'homed': True}
+        dispatched = asyncio.Event()
+        async def send(command, params=None):
+            if command == 'point.goto':
+                dispatched.set()
+                await asyncio.Event().wait()
+            return {'accepted': True}
+        app.ptm_service.command = AsyncMock(side_effect=send)
+        await app._handle_plc_command()
+        await app._handle_plc_command()
+        task = app._command_task
+        await asyncio.wait_for(dispatched.wait(), 1)
+        self.assertTrue((await app.handle_tcp_command('motion.stop', {})).ok)
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertIsNone(app._active_motion)
+        self.assertEqual(app.command.result, CommandResult.FORCE_STOP_ACTIVE)
+        self.assertEqual(app.alarms.fault_summary(), 0)
+
+    async def test_web_motion_starting_after_cached_status_blocks_move_preparation_atomically(self):
+        app = self.app()
+        app.settings.laser.mode = 'gpio'
+        app.plc_input = PlcInput(run_enable=True, laser_mode=1)
+        app.command.last_seq, app.command.status = 100, CommandStatus.BUSY
+        app.ptm_service.command = AsyncMock()
+        app.laser_service.command = AsyncMock(side_effect=JsonTcpError('manual motion is active', code='BUSY'))
+        await app._dispatch_plc_command(1, 100, 'point.goto', {'recipe_id': 2, 'point_id': 7})
+        app.laser_service.command.assert_awaited_once_with(app.settings.laser.off_command, {'require_idle': True})
+        app.ptm_service.command.assert_not_awaited()
+        self.assertEqual(app.command.status, CommandStatus.REJECTED)
+        self.assertEqual(app.command.result, CommandResult.COMMAND_BUSY)
+        self.assertEqual(app.alarms.fault_summary(), 0)
+
     async def test_recipe_change_during_motion_keeps_configuration_error_result(self):
         app = self.app()
         app.command.status = CommandStatus.BUSY
@@ -206,6 +365,22 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 await service.command('point.goto', {'recipe_id': value, 'point_id': 7})
         client.point_goto.assert_not_awaited()
+
+    async def test_ptm_operator_stop_is_not_latched_as_hardware_fault(self):
+        for code in (1, 2):
+            with self.subTest(code=code):
+                app = self.app()
+                app.command.status = CommandStatus.BUSY
+                app._active_motion = {'id': 'move', 'code': code, 'accepted_ms': 1000}
+                app.ptm_service.state.online = True
+                app.ptm_service.state.last_ok_ms = 1100
+                app.ptm_service.state.status = {'raw': {'motion': {
+                    'failed_id': 'move', 'last_error': 'MOTION_STOPPED'}}}
+                app._progress_motion_command(1100)
+                self.assertEqual(app.command.status, CommandStatus.ERROR)
+                self.assertEqual(app.command.result, CommandResult.FORCE_STOP_ACTIVE)
+                self.assertEqual(app.alarms.fault_summary(), 0)
+                self.assertIsNone(app._active_motion)
 
 
 class ProcessRestartTests(unittest.IsolatedAsyncioTestCase):
