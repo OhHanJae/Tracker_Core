@@ -1592,10 +1592,9 @@ class CoreApplication:
                 self._command_protocol_error = ""
                 self._recipe_revisions.clear()
             return
-        if self._plc_startup_sync_required and not self._ptm_test_active():
-            return
         if self._command_seen and seq == self.command.last_seq:
-            if self._command_fingerprint is not None and fingerprint != self._command_fingerprint:
+            if (self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY}
+                    and self._command_fingerprint is not None and fingerprint != self._command_fingerprint):
                 self._command_protocol_error = "same sequence has different command or target"
             return
         if self._command_protocol_error:
@@ -1630,6 +1629,11 @@ class CoreApplication:
             self.command.status = CommandStatus.REJECTED
             self.command.result = CommandResult.COMMAND_BUSY
             self.command.message = "PTM recipe test session is active"
+            return
+        if self._plc_startup_sync_required and not self._ptm_test_active():
+            self.command.status = CommandStatus.REJECTED
+            self.command.result = CommandResult.SYSTEM_NOT_READY
+            self.command.message = "PLC startup synchronization required: RUN_ENABLE=0 and COMMAND_CODE=0 with live heartbeat"
             return
         self._nutrunner_data_hold = code == CommandCode.NUTRUNNER_DATA_REQUEST
         if self._nutrunner_data_hold:

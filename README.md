@@ -211,7 +211,7 @@ TCP JSON Lines 방식은 한 줄에 JSON 객체 하나와 LF(`\n`)를 보냅니�
 
 PLC `FORCE_STOP=1`, 고장 또는 Core 재시작 중에는 수동 동작도 정지합니다. `RUN_ENABLE=0` 또는 PLC 시작 동기화 대기 진입 시에는 자동 동작을 먼저 정지하며, 이후 명시적으로 시작한 수동 JOG·포인트 이동·HOME은 해제·완료·STOP까지 유지합니다. 수동 포인트 이동·HOME은 PTM이 현재 이동 ID·명령·수동 여부를 명시하고 Core 자동 명령이 대기/진행하지 않을 때만 허용합니다. PTM 상태가 오래되거나 이동 종류를 확인할 수 없으면 정지를 유지합니다. 안전 인증 E-Stop 대체 기능은 아닙니다.
 
-Core의 수동 STOP은 대기/진행 중인 PLC 이동·HOME도 취소하며, 같은 PLC SEQ를 다시 실행하지 않습니다. PTM에서 보고한 `MOTION_STOPPED`는 정지된 명령으로 종료하고 모터 하드웨어 고장으로 래치하지 않습니다. PLC 요청 슬롯은 RECEIVED부터 terminal 상태까지 유지해야 하며, 중간에 다른 요청으로 덮으면 RUN_ENABLE=0·COMMAND_CODE=0으로 복구하기 전까지 새 요청을 실행하지 않습니다.
+Core의 수동 STOP은 대기/진행 중인 PLC 이동·HOME도 취소하며, 같은 PLC SEQ를 다시 실행하지 않습니다. PTM에서 보고한 `MOTION_STOPPED`는 정지된 명령으로 종료하고 모터 하드웨어 고장으로 래치하지 않습니다. PLC 요청 슬롯은 RECEIVED부터 terminal 상태까지 유지해야 하며, 중간에 다른 요청으로 덮으면 RUN_ENABLE=0·COMMAND_CODE=0으로 복구하기 전까지 새 요청을 실행하지 않습니다. COMPLETE·REJECTED·ERROR 이후에는 다음 명령과 목표값을 먼저 기록하고 COMMAND_SEQ를 마지막에 변경합니다. 시작 동기화 대기 중 새 SEQ는 해당 SEQ와 SYSTEM_NOT_READY로 응답하며, 동기화 이후에도 같은 SEQ를 자동 재실행하지 않습니다.
 
 웹 순차/랜덤 테스트의 독점 이동 중에는 새 PLC 이동·HOME을 `REJECTED/COMMAND_BUSY`로 거부합니다. PTM/GPIO 이동 준비용 `laser.off(require_idle=true)`도 서버에서 다른 이동/JOG가 없을 때만 실행하므로, 상태 조회 이후 웹 이동이 시작되더라도 기존 테스트의 레이저 허가를 취소하지 않습니다. 일반 사용자 STOP/OFF는 계속 허용합니다.
 

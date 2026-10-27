@@ -93,6 +93,53 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
         await app._handle_plc_command()
         self.assertEqual(app._command_protocol_error, '')
 
+    async def test_terminal_result_allows_staging_new_target_before_sequence_commit(self):
+        for terminal in (CommandStatus.COMPLETE, CommandStatus.REJECTED, CommandStatus.ERROR):
+            for old_seq, next_seq in ((100, 101), (65535, 0)):
+                with self.subTest(terminal=terminal, old_seq=old_seq):
+                    app = self.app()
+                    app.ptm_service.state.online = True
+                    app.ptm_service.state.status = {'connected': True, 'ready': True, 'homed': True}
+                    app._command_seen = True
+                    app._command_fingerprint = (old_seq, 2, 0, 0)
+                    app.command.last_code, app.command.last_seq = 2, old_seq
+                    app.command.status, app.command.result = terminal, CommandResult.COMMAND_BUSY
+                    app.plc_input = PlcInput(run_enable=True, command_code=1, command_seq=old_seq,
+                        req_recipe_id=2, req_point_id=8)
+                    await app._handle_plc_command()
+                    self.assertEqual(app.command.status, terminal)
+                    self.assertIsNone(app._pending_request)
+                    app.plc_input.command_seq = next_seq
+                    await app._handle_plc_command()
+                    self.assertEqual(app._command_protocol_error, '')
+                    self.assertEqual(app.command.last_seq, next_seq)
+                    self.assertEqual(app.command.status, CommandStatus.RECEIVED)
+                    self.assertEqual(app._pending_request[3]['point_id'], 8)
+
+    async def test_startup_rejection_acknowledges_new_sequence_without_replaying_after_sync(self):
+        app = self.app()
+        app._plc_startup_sync_required = True
+        app._command_seen = True
+        app._command_fingerprint = (100, 2, 0, 0)
+        app.command.last_code, app.command.last_seq = 2, 100
+        app.command.status, app.command.result = CommandStatus.REJECTED, CommandResult.COMMAND_BUSY
+        app.plc_input = PlcInput(run_enable=True, command_code=2, command_seq=101)
+        await app._handle_plc_command()
+        self.assertEqual(app.command.last_seq, 101)
+        self.assertEqual(app.command.status, CommandStatus.REJECTED)
+        self.assertEqual(app.command.result, CommandResult.SYSTEM_NOT_READY)
+        self.assertIn('startup', app.command.message.lower())
+        self.assertIsNone(app._pending_request)
+        app._plc_startup_sync_required = False
+        await app._handle_plc_command()
+        self.assertIsNone(app._pending_request)
+        app.ptm_service.state.online = True
+        app.ptm_service.state.status = {'connected': True, 'ready': True}
+        app.plc_input.command_seq = 102
+        await app._handle_plc_command()
+        self.assertEqual(app.command.last_seq, 102)
+        self.assertEqual(app.command.status, CommandStatus.RECEIVED)
+
     async def test_startup_uses_live_heartbeat_and_idle_slot_not_synthetic_defaults(self):
         app = self.app()
         app._plc_startup_sync_required = app._gateway_configured = True
