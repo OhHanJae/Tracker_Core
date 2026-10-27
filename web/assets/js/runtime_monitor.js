@@ -4,6 +4,7 @@ const controllerLabels = {
   INIT: '초기화', STANDBY: '대기', READY: '운전 준비', HOMING: '원점 복귀 중',
   TARGET_MOVING: '목표 이동 중', TRACKING: '추적 중', STOPPED: '정지',
   FAULT: '오류', TEACH_CALIBRATION: '티칭 / 캘리브레이션',
+  TESTING: '테스트 중', MANUAL: '수동 조작 중',
 };
 const commandLabels = {
   IDLE: '명령 대기', RECEIVED: '수신', BUSY: '처리 중',
@@ -73,7 +74,7 @@ export function renderRuntimeMonitor() {
       ${[
         ['Core 주기', loopHealthy ? 'Online' : 'Offline', `${runtime.cycle_count ?? 0} cycles`],
         ['운전 상태', fresh ? controller : 'Offline', runtime.system_ready ? 'SYSTEM_READY' : '준비 조건 확인',
-          !fresh ? 'Offline' : runtime.controller_state === 'FAULT' ? 'Error' : ['READY', 'HOMING', 'TARGET_MOVING', 'TRACKING'].includes(runtime.controller_state) ? 'Running' : 'IDLE'],
+          !fresh ? 'Offline' : runtime.controller_state === 'FAULT' ? 'Error' : ['READY', 'HOMING', 'TARGET_MOVING', 'TRACKING', 'TESTING', 'MANUAL'].includes(runtime.controller_state) ? 'Running' : 'IDLE'],
         ['현재 명령', fresh ? commandLabels[command.status] || 'N/A' : 'Offline', `SEQ ${command.last_seq ?? '-'} · CODE ${command.last_code ?? '-'}`,
           !fresh ? 'Offline' : ['ERROR', 'REJECTED'].includes(command.status) ? 'Error' : command.status === 'COMPLETE' ? 'OK' : command.status === 'BUSY' ? 'Running' : 'IDLE'],
         ['PLC 쓰기', fresh ? writeHealthy ? 'Online' : write.state === 'error' ? 'Error' : write.state === 'disabled' ? 'Disabled' : 'Waiting' : 'Offline', writeLabels[write.state] || '상태 대기',

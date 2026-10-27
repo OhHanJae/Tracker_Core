@@ -182,6 +182,7 @@ class CoreApplication:
         self._command_request_params: dict[str, Any] = {}
         self._pending_request: tuple[int, int, str, dict[str, Any]] | None = None
         self._active_motion: dict[str, Any] | None = None
+        self._ptm_test_reservation: dict[str, Any] | None = None
         self._active_recipe_id = 0
         self._active_point_id = 0
         self._last_status: dict[str, Any] = {}
@@ -877,6 +878,8 @@ class CoreApplication:
         self._write_plc_output()
 
     def _update_power_save_tracking(self) -> None:
+        if self._ptm_test_active():
+            return
         state = self.vision_service.state
         if (not state.enabled or state.bypassed or self._device_bypassed("vision")
                 or state.status.get("tracking_bypass") is True):
@@ -904,10 +907,43 @@ class CoreApplication:
     def _laser_control_priority(self) -> bool:
         return self.ptm_service.state.status.get("raw", {}).get("laser", {}).get("control_priority") is True
 
+    def _ptm_operation_mode(self) -> str:
+        state = self.ptm_service.state
+        operation = state.status.get("raw", {}).get("operation", {})
+        reservation = self._ptm_test_reservation
+        if reservation is not None:
+            if (now_ms() >= reservation["expires_ms"] or self._device_bypassed("ptm")
+                    or (not state.online and state.error_count > reservation["error_count"])):
+                self._ptm_test_reservation = None
+            elif operation.get("test_active") is True and state.ok_count > reservation["ok_count"]:
+                reservation["observed"] = True
+                reservation["ok_count"] = state.ok_count
+            elif reservation["observed"] and state.ok_count > reservation["ok_count"]:
+                self._ptm_test_reservation = None
+            if self._ptm_test_reservation is not None:
+                return "testing"
+        if (not state.online or state.last_ok_ms <= 0
+                or state.last_error
+                or self._device_bypassed("ptm")):
+            return "idle"
+        age_ms = now_ms() - state.last_ok_ms
+        lease_ms = operation.get("lease_remaining_ms")
+        if (operation.get("mode") == "testing" and operation.get("test_active") is True
+                and type(lease_ms) in (int, float) and math.isfinite(lease_ms)
+                and 0 <= age_ms < min(5000, lease_ms)):
+            return "testing"
+        if (operation.get("mode") == "manual" and operation.get("manual_active") is True
+                and 0 <= age_ms <= 1000):
+            return "manual"
+        return "idle"
+
+    def _ptm_test_active(self) -> bool:
+        return self._ptm_operation_mode() == "testing"
+
     def _effective_laser_mode(self) -> int:
         if self.plc_input.laser_mode not in {1, 2, 3, 4, 5}:
             return 0
-        return 1 if self._laser_control_priority() else self.plc_input.laser_mode
+        return 1 if self._ptm_test_active() or self._laser_control_priority() else self.plc_input.laser_mode
 
     def _laser_permitted(self) -> bool:
         return self._laser_signaling_permitted() and (
@@ -916,6 +952,7 @@ class CoreApplication:
     def _laser_signaling_permitted(self) -> bool:
         priority = self._laser_control_priority()
         return bool(self.plc_input.laser_enable
+                    and not self._ptm_test_active()
                     and (priority or self._effective_laser_mode() != 1 or (
                         self.plc_input.run_enable and not self.power_save.sleeping))
                     and (not self._plc_startup_sync_required or self._effective_laser_mode() in {2, 3, 4, 5})
@@ -960,7 +997,7 @@ class CoreApplication:
             "state_allowed": self._laser_signaling_permitted() and (not automatic or not self._nutrunner_data_hold),
             "local_allowed": not local_reason,
             "local_block_reason": local_reason,
-            "plc_mode": self.plc_input.laser_mode,
+            "plc_mode": 1 if self._ptm_test_active() and self.plc_input.laser_enable else self.plc_input.laser_mode,
         }
 
     def _laser_manual_active(self) -> bool:
@@ -991,8 +1028,10 @@ class CoreApplication:
                                             plc.req_recipe_id, plc.req_point_id)
         self.power_save.timeout_s = self.settings.runtime.power_save_timeout_s
         entered = self.power_save.tick(busy=bool(
-            self.command.status == CommandStatus.BUSY or self._pending_request
+            self._ptm_test_active() or self.command.status == CommandStatus.BUSY or self._pending_request
             or self.ptm_service.state.status.get("moving")))
+        if self._ptm_test_active() and not self.plc_input.force_stop and not self._laser_local_block_reason():
+            return
         if entered:
             LOGGER.info("PLC work requests idle: entering Vision/laser power saving")
             self._active_recipe_id = self._active_point_id = 0
@@ -1038,6 +1077,8 @@ class CoreApplication:
     async def _power_laser_off(self) -> None:
         try:
             async with self._laser_control_lock:
+                if self._ptm_test_active() and not self.plc_input.force_stop and not self._laser_local_block_reason():
+                    return
                 if self.settings.laser.mode.lower() in {"ptm", "gpio"}:
                     await self.laser_service.command("laser.power_save", self._laser_policy(automatic_off=True))
                 else:
@@ -1307,12 +1348,18 @@ class CoreApplication:
             self.alarms.clear_device(device)
 
     async def _apply_safe_stop_if_needed(self) -> None:
+        testing = self._ptm_test_active()
+        if (testing and not self.plc_input.force_stop and not self._controller_restart_pending()
+                and not self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled)
+                and self.plc_input.laser_enable and not self._device_bypassed("laser")):
+            return
         laser_stop_required = ((not self.plc_input.run_enable
                                 and not (self._laser_control_priority() or self._effective_laser_mode() in {2, 3, 4, 5}))
                                or not self.plc_input.laser_enable
                                or bool(self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled))
                                or self._controller_restart_pending()
-                               or (self._plc_startup_sync_required and self._effective_laser_mode() not in {2, 3, 4, 5}))
+                               or (self._plc_startup_sync_required and self._effective_laser_mode() not in {2, 3, 4, 5})
+                               or testing)
         preserve_laser = ((self.plc_input.force_stop and not laser_stop_required)
                            or (not laser_stop_required and (self._laser_control_priority() or self._effective_laser_mode() in {2, 3, 4, 5})
                               and self._laser_signaling_permitted()))
@@ -1322,6 +1369,7 @@ class CoreApplication:
             or bool(self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled))
             or self._controller_restart_pending()
             or self._plc_startup_sync_required
+            or testing
         )
         if not safe_stop_requested:
             self._safe_stop_applied = False
@@ -1347,7 +1395,7 @@ class CoreApplication:
             self._safe_stop_applied = self._safe_stop_task.result()
             self._safe_stop_task = None
         ptm_status = self.ptm_service.state.status
-        preserve_manual = self._laser_manual_allowed()
+        preserve_manual = not testing and self._laser_manual_allowed()
         # Idle/startup stops automatic work once. A fresh, explicitly started
         # manual motion may then run until release/completion, unless a hard stop is active.
         raw_motion = ptm_status.get("raw", {}).get("motion", {})
@@ -1362,7 +1410,9 @@ class CoreApplication:
                 raw_motion.get("state") == "tracking"
                 and raw_motion.get("id")
                 and raw_motion.get("automatic") is False
-                and raw_motion.get("command") in {"point.goto", "motion.goto", "home.start"}
+                and (raw_motion.get("command") in {"point.goto", "motion.goto", "home.start"}
+                     or (self._ptm_operation_mode() == "manual"
+                         and raw_motion.get("command") in {"motion.absolute", "motion.relative"}))
                 and self._pending_request is None and self._active_motion is None
                 and self.command.status not in {CommandStatus.RECEIVED, CommandStatus.BUSY}
             ))
@@ -1497,6 +1547,11 @@ class CoreApplication:
 
     async def _handle_plc_command(self) -> None:
         self._sync_bypass_state()
+        if (self._ptm_test_active() and self.command.last_code != CommandCode.ERROR_RESET
+                and self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY}):
+            self._abort_active_command(CommandResult.COMMAND_BUSY, preserve_laser=True)
+            self.command.status = CommandStatus.REJECTED
+            self.command.message = "PTM recipe test session is active"
         self._progress_motion_command(now_ms())
         self._update_vision_work()
         restart_expired = bool(self._controller_restart_request and
@@ -1537,7 +1592,7 @@ class CoreApplication:
                 self._command_protocol_error = ""
                 self._recipe_revisions.clear()
             return
-        if self._plc_startup_sync_required:
+        if self._plc_startup_sync_required and not self._ptm_test_active():
             return
         if self._command_seen and seq == self.command.last_seq:
             if self._command_fingerprint is not None and fingerprint != self._command_fingerprint:
@@ -1571,6 +1626,11 @@ class CoreApplication:
             LOGGER.warning("PLC command rejected: code=%s seq=%s reason=unsupported_command", code, seq)
             return
         previous_data_hold = self._nutrunner_data_hold
+        if self._ptm_test_active() and code != CommandCode.ERROR_RESET:
+            self.command.status = CommandStatus.REJECTED
+            self.command.result = CommandResult.COMMAND_BUSY
+            self.command.message = "PTM recipe test session is active"
+            return
         self._nutrunner_data_hold = code == CommandCode.NUTRUNNER_DATA_REQUEST
         if self._nutrunner_data_hold:
             self._fastening_laser_inhibit = True
@@ -1653,6 +1713,8 @@ class CoreApplication:
                            code, seq, expected)
             return
         params = self._resolve_params(entry.get("params") or {})
+        if code == CommandCode.HOME:
+            params["automatic"] = True
         if code == CommandCode.TARGET_APPLY_MOVE:
             params["require_homed"] = True
             revision = self._recipe_revisions.get(self.plc_input.req_recipe_id)
@@ -1688,6 +1750,7 @@ class CoreApplication:
             self.vision_service.state.enabled and not self._device_bypassed("vision")
             and self.plc_input.run_enable and not self.plc_input.force_stop
             and not self._controller_restart_pending() and not self.power_save.sleeping
+            and not self._ptm_test_active()
             and not self._gateway_update_in_progress and not self._stop_event.is_set()
         )
         target = ({"recipe_id": self._active_recipe_id, "point_id": self._active_point_id,
@@ -1744,6 +1807,8 @@ class CoreApplication:
         async def turn_off() -> None:
             try:
                 async with self._laser_control_lock:
+                    if self._ptm_test_active() and not self.plc_input.force_stop and not self._laser_local_block_reason():
+                        return
                     if self._effective_laser_mode() in {2, 3, 4, 5} and self._laser_signaling_permitted():
                         return
                     if not self._device_bypassed("laser"):
@@ -1824,12 +1889,17 @@ class CoreApplication:
     ) -> None:
         preparing_laser = False
         try:
+            if self._ptm_test_active() and code != CommandCode.ERROR_RESET:
+                self.command.status = CommandStatus.REJECTED
+                self.command.result = CommandResult.COMMAND_BUSY
+                self.command.message = "PTM recipe test session is active"
+                return
             if code in {CommandCode.TARGET_APPLY_MOVE, CommandCode.HOME} and self._ptm_exclusive_motion_active():
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.COMMAND_BUSY
                 self.command.message = "PTM recipe test movement is active"
                 return
-            if code == CommandCode.ERROR_RESET and self._laser_manual_active():
+            if code == CommandCode.ERROR_RESET and self._laser_manual_active() and not self._ptm_test_active():
                 try:
                     await self.laser_service.command(self.settings.laser.off_command)
                 except Exception as exc:
@@ -2088,6 +2158,7 @@ class CoreApplication:
         raw = self.ptm_service.state.status.get("raw", {}).get("laser", {})
         supported = self.settings.laser.mode.lower() in {"ptm", "gpio"} and isinstance(raw.get("state_profiles"), dict)
         ready = (supported and self.ptm_service.state.online and self.laser_service.state.online
+                 and not self._ptm_test_active()
                  and self._active_recipe_id > 0 and self._active_point_id > 0
                  and not self.ptm_service.state.status.get("moving") and not self._nutrunner_data_hold
                  and self._laser_signaling_permitted() and not self._stop_event.is_set()
@@ -2123,7 +2194,7 @@ class CoreApplication:
     async def _dispatch_laser_state(self, target: tuple[str, int, int, int]) -> None:
         try:
             async with self._laser_control_lock:
-                if target != self._laser_state_desired or not self._laser_signaling_permitted():
+                if target != self._laser_state_desired or not self._laser_signaling_permitted() or self._ptm_test_active():
                     return
                 await self.laser_service.command("laser.power_save", self._laser_policy(automatic_off=not self._laser_permitted()))
                 if target != self._laser_state_desired or not self._laser_signaling_permitted():
@@ -2171,8 +2242,10 @@ class CoreApplication:
         vision_bypassed = bypass["vision"]["active"]
         fault_active = self.alarms.fault_summary(self.settings.runtime.fault_latch_enabled) != 0
         restart_pending = self._controller_restart_pending()
+        operation_mode = self._ptm_operation_mode()
         process_permitted = (self.plc_input.run_enable and not self.plc_input.force_stop
                              and not fault_active and not restart_pending
+                             and operation_mode != "testing"
                              and not self._plc_startup_sync_required and not self._command_protocol_error
                              and 0 <= self.plc_input.tracking_tolerance_mm_x100 <= 10000)
         tracking_tolerance = self.plc_input.applied_tracking_tolerance(
@@ -2258,18 +2331,24 @@ class CoreApplication:
             and (self._safe_stop_task is None or self._safe_stop_task.done())
             and not any(not task.done() for task in self._bypass_stop_tasks)
         )
-        tracking_active = not self._nutrunner_data_hold and (
+        tracking_active = operation_mode != "testing" and not self._nutrunner_data_hold and (
             self.plc_input.tracking_enable and process_permitted if vision_bypassed
             else self.vision_service.state.enabled and not restart_pending and self.vision_snapshot.tracking_active
         )
         if fault_active:
             controller_state = ControllerState.FAULT
-        elif self.plc_input.force_stop or not self.plc_input.run_enable or restart_pending:
+        elif self.plc_input.force_stop or restart_pending or (operation_mode == "testing" and not self.plc_input.laser_enable):
             controller_state = ControllerState.STOPPED
+        elif operation_mode == "testing":
+            controller_state = ControllerState.TESTING
         elif self.command.status == CommandStatus.BUSY and self.command.last_code == CommandCode.HOME:
             controller_state = ControllerState.HOMING
         elif self.command.status == CommandStatus.BUSY and self.command.last_code == CommandCode.TARGET_APPLY_MOVE:
             controller_state = ControllerState.TARGET_MOVING
+        elif operation_mode == "manual":
+            controller_state = ControllerState.MANUAL
+        elif not self.plc_input.run_enable:
+            controller_state = ControllerState.STOPPED
         elif self.plc_input.tracking_enable and tracking_active:
             controller_state = ControllerState.TRACKING
         elif system_ready:
@@ -2278,7 +2357,7 @@ class CoreApplication:
             controller_state = ControllerState.STANDBY
 
         tracking_state = TrackingState.OFF
-        if (self.plc_input.tracking_enable and not self._nutrunner_data_hold
+        if (operation_mode != "testing" and self.plc_input.tracking_enable and not self._nutrunner_data_hold
                 and not restart_pending and (vision_bypassed or self.vision_service.state.enabled)):
             if fault_active:
                 tracking_state = TrackingState.FAULT
@@ -2414,6 +2493,45 @@ class CoreApplication:
     ) -> JsonTcpResponse:
         try:
             command = _normalize_command(command)
+            if command in {"operation.test.begin", "operation.test.renew", "operation.test.end"}:
+                token = params.get("test_token")
+                lease_ms = params.get("lease_ms", 5000)
+                if (not isinstance(token, str) or not token or len(token) > 256
+                        or type(lease_ms) is not int or not 1 <= lease_ms <= 5000):
+                    return JsonTcpResponse(False, error={"code": "BAD_REQUEST", "message": "Valid test_token and lease_ms in 1..5000 are required"})
+                self._ptm_operation_mode()
+                reservation = self._ptm_test_reservation
+                if command == "operation.test.end":
+                    if reservation is not None and reservation["token"] != token:
+                        return JsonTcpResponse(False, error={"code": "BUSY", "message": "Another test session owns Core"})
+                    self._ptm_test_reservation = None
+                    return JsonTcpResponse(True, {"accepted": True})
+                if ((reservation is not None and reservation["token"] != token)
+                        or self._controller_restart_pending() or self.plc_input.force_stop
+                        or self._laser_local_block_reason()
+                        or (command == "operation.test.begin" and reservation is None and (
+                            self.command.status in {CommandStatus.RECEIVED, CommandStatus.BUSY}
+                            or self._pending_request is not None or self._active_motion is not None
+                            or any(task is not None and not task.done() for task in (
+                                self._safe_stop_task, self._command_task, self._vision_laser_off_task,
+                                self._laser_state_task, self._power_laser_task))
+                            or any(not task.done() for task in self._bypass_stop_tasks)))):
+                    return JsonTcpResponse(False, error={"code": "BUSY", "message": "Core operation must stop before starting or renewing a test"})
+                if command == "operation.test.renew" and reservation is None:
+                    return JsonTcpResponse(False, error={"code": "TEST_SESSION_EXPIRED", "message": "Core test reservation is no longer active"})
+                if command == "operation.test.begin" and reservation is None and self._ptm_test_active():
+                    return JsonTcpResponse(False, error={"code": "BUSY", "message": "A PTM test session is already active"})
+                self._ptm_test_reservation = {
+                    "token": token, "expires_ms": now_ms() + lease_ms,
+                    "ok_count": self.ptm_service.state.ok_count,
+                    "error_count": self.ptm_service.state.error_count,
+                    "observed": bool(reservation and reservation["observed"]),
+                }
+                return JsonTcpResponse(True, {"accepted": True, "lease_ms": lease_ms})
+            if (self._ptm_test_active() and command in {
+                    "controller.restart_request", "process.start", "process.restart", "laser.on",
+                    "reload_config", "xgt.configure", "monitor.config.apply", "update_config"}):
+                return JsonTcpResponse(False, error={"code": "BUSY", "message": "PTM recipe test session is active"})
             if command in {"device.command", "motion.stop", "laser.on", "laser.off"}:
                 self._sync_bypass_state()
             if command in {"runtime.snapshot", "monitor.snapshot"}:
@@ -2628,6 +2746,11 @@ class CoreApplication:
                         },
                     )
                 service = self.devices.get(device_id)
+                if (self._ptm_test_active() and device_command not in {
+                        "motion.stop", "motion.force_stop", "laser.off", "alarm.reset", "system.heartbeat"}
+                        and device_command not in {"test.renew", "test.stop"}
+                        and not device_command.endswith((".status", ".list", ".get", ".query"))):
+                    return JsonTcpResponse(False, error={"code": "BUSY", "message": "PTM recipe test session is active"})
                 if self._device_bypassed(device_id):
                     return JsonTcpResponse(True, {"accepted": False, "bypassed": True})
                 if service is not None and not service.state.enabled:

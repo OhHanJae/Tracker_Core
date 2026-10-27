@@ -39,7 +39,7 @@ class CoreOrchestrator:
             tracking_blockers &= ~(1 << int(DeviceSummaryBit.TRACKER))
         self.tick(
             core.plc_input,
-            bool(tracking_blockers) or core._controller_restart_pending(),
+            bool(tracking_blockers) or core._controller_restart_pending() or core._ptm_test_active(),
             power_saving=core.power_save.sleeping,
         )
         await core._handle_plc_command()

@@ -7,6 +7,7 @@ const controllerNames = {
   INIT: '초기화', STANDBY: '운전 대기', READY: '운전 준비 완료', HOMING: '원점 복귀 중',
   TARGET_MOVING: '목표 위치로 이동', TRACKING: '추적 중', STOPPED: '운전 정지',
   FAULT: '오류 확인 필요', TEACH_CALIBRATION: '티칭 / 캘리브레이션',
+  TESTING: '테스트 중', MANUAL: '수동 조작 중',
 };
 const commandNames = { IDLE: '대기', RECEIVED: '수신', BUSY: '처리 중', COMPLETE: '완료', REJECTED: '거부', ERROR: '오류' };
 const plcCommands = {0: '명령 없음', 1: '레시피·포인트 적용 및 이동', 2: '원점 복귀', 3: '알람 리셋',

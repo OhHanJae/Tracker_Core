@@ -28,6 +28,8 @@ class ControllerState(IntEnum):
     STOPPED = 6
     FAULT = 7
     TEACH_CALIBRATION = 8
+    TESTING = 9
+    MANUAL = 10
 
 
 class TrackingState(IntEnum):

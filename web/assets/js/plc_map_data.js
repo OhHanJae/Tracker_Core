@@ -1215,11 +1215,11 @@ window.TRACK_EYE_PLC_MAP = {
           "-",
           "CONTROLLER_STATE",
           "Controller 전체 상태",
-          "0 = INIT (초기화)\n1 = STANDBY (운전 대기)\n2 = READY (운전 준비완료)\n3 = HOMING (원점복귀 중)\n4 = TARGET_MOVING (목표 위치 이동 중)\n5 = TRACKING (Tracking 운전 중)\n6 = STOPPED (정지 상태)\n7 = FAULT (Fault 상태)\n8 = TEACH/CALIBRATION (관리자/Calibration 상태)",
+          "0 = INIT (초기화)\n1 = STANDBY (운전 대기)\n2 = READY (운전 준비완료)\n3 = HOMING (원점복귀 중)\n4 = TARGET_MOVING (목표 위치 이동 중)\n5 = TRACKING (Tracking 운전 중)\n6 = STOPPED (정지 상태)\n7 = FAULT (Fault 상태)\n8 = TEACH/CALIBRATION (관리자/Calibration 상태)\n9 = TESTING (순차/랜덤 테스트 중)\n10 = MANUAL (수동 조작 중)",
           "ENUM",
           "State",
           "전체",
-          "0~8"
+          "0~10"
         ],
         [
           "운전 상태",

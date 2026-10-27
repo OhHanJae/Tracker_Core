@@ -129,7 +129,7 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
                 app.plc_input.req_point_id = 7
                 await app._handle_plc_command()
                 await app._command_task
-                app._dispatch_plc_command.assert_awaited_once_with(2, 100, 'home.start', {})
+                app._dispatch_plc_command.assert_awaited_once_with(2, 100, 'home.start', {'automatic': True})
                 self.assertTrue(app._command_protocol_error)
                 await app._handle_plc_command()
                 self.assertIsNone(app._pending_request)
