@@ -256,6 +256,52 @@ class FunctionalCorrectionsTests(unittest.IsolatedAsyncioTestCase):
                 await app._safe_stop_task
                 app._perform_safe_stop.assert_awaited_once()
 
+    async def test_previous_pulse_cache_does_not_stop_next_manual_test_point(self):
+        for mode in ('ptm', 'gpio'):
+            with self.subTest(mode=mode):
+                app = self.app()
+                app.settings.laser.mode = mode
+                app.plc_input = PlcInput(run_enable=False, laser_mode=1)
+                app._plc_startup_sync_required = app._safe_stop_applied = True
+                app._laser_mode_previous = 1
+                app._laser_priority_previous = False
+                app._power_sleeping_previous = app.power_save.sleeping
+                app.ptm_service.state.online = True
+                app.ptm_service.state.last_ok_ms = now_ms()
+                app.ptm_service.state.status = {'moving': True, 'laser_on': False, 'raw': {
+                    'motion': {'state': 'tracking', 'id': 'second-point', 'automatic': False,
+                               'command': 'point.goto'},
+                    'laser': {'on': False, 'manual_override': False}}}
+                # Laser polling still holds the preceding point's pulse snapshot.
+                app.laser_service.state.online = True
+                app.laser_service.state.status = {'on': True, 'manual_override': True}
+                app._perform_safe_stop = AsyncMock(return_value=True)
+                app._update_power_save()
+                self.assertIsNone(app._power_laser_task)
+                await app._apply_safe_stop_if_needed()
+                self.assertIsNone(app._safe_stop_task)
+                app._perform_safe_stop.assert_not_awaited()
+
+    async def test_laser_observation_retains_real_on_and_uncertain_status_stops(self):
+        for reason in ('real_on', 'tcp', 'stale', 'offline', 'unknown'):
+            with self.subTest(reason=reason):
+                app = self.app()
+                app.settings.laser.mode = 'tcp' if reason == 'tcp' else 'gpio'
+                app.plc_input = PlcInput(run_enable=False, laser_mode=1)
+                app._safe_stop_applied = True
+                app.ptm_service.state.online = reason != 'offline'
+                app.ptm_service.state.last_ok_ms = now_ms() - (1001 if reason == 'stale' else 0)
+                app.ptm_service.state.status = {'moving': False, 'laser_on': False, 'raw': {
+                    'motion': {'state': 'completed'},
+                    'laser': {'on': True if reason == 'real_on' else None if reason == 'unknown' else False,
+                              'manual_override': False}}}
+                app.laser_service.state.status = {'on': True}
+                app._perform_safe_stop = AsyncMock(return_value=True)
+                await app._apply_safe_stop_if_needed()
+                self.assertIsNotNone(app._safe_stop_task)
+                await app._safe_stop_task
+                app._perform_safe_stop.assert_awaited_once()
+
     async def test_operator_stop_cancels_queued_plc_move_before_dispatch(self):
         for command, params in (('motion.stop', {}),
                                 ('device.command', {'device': 'ptm', 'command': 'motion.stop'})):

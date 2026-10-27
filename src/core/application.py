@@ -968,6 +968,16 @@ class CoreApplication:
         return bool(state.online and state.status.get("raw", {}).get("laser", {}).get("manual_override")
                     and now_ms() - state.last_ok_ms <= 1000)
 
+    def _laser_observed_on(self) -> bool:
+        state = self.ptm_service.state
+        on = state.status.get("raw", {}).get("laser", {}).get("on")
+        if (self.settings.laser.mode.lower() in {"ptm", "gpio"}
+                and state.online and state.last_ok_ms > 0
+                and 0 <= now_ms() - state.last_ok_ms <= 1000 and isinstance(on, bool)):
+            # LaserService is a separately polled copy of this PTM snapshot.
+            return on
+        return bool(state.status.get("laser_on") or self.laser_service.state.status.get("on"))
+
     def _update_power_save(self) -> None:
         plc = self.plc_input
         if plc.wake_up and not self._wake_up_previous:
@@ -988,8 +998,7 @@ class CoreApplication:
             self._active_recipe_id = self._active_point_id = 0
         permitted = self._laser_permitted()
         laser = self.laser_service.state
-        need_off = (entered or self._laser_permit_previous or
-                    self.ptm_service.state.status.get("laser_on") or laser.status.get("on"))
+        need_off = entered or self._laser_permit_previous or self._laser_observed_on()
         changed = self._power_sleeping_previous != self.power_save.sleeping
         mode_changed = self._laser_mode_previous != plc.laser_mode
         priority_changed = self._laser_priority_previous != self._laser_control_priority()
@@ -1338,7 +1347,6 @@ class CoreApplication:
             self._safe_stop_applied = self._safe_stop_task.result()
             self._safe_stop_task = None
         ptm_status = self.ptm_service.state.status
-        laser_status = self.laser_service.state.status
         preserve_manual = self._laser_manual_allowed()
         # Idle/startup stops automatic work once. A fresh, explicitly started
         # manual motion may then run until release/completion, unless a hard stop is active.
@@ -1360,7 +1368,7 @@ class CoreApplication:
             ))
         )
         still_active = bool(
-            (ptm_status.get("moving") and not manual_motion) or ((ptm_status.get("laser_on") or laser_status.get("on"))
+            (ptm_status.get("moving") and not manual_motion) or (self._laser_observed_on()
                 and not preserve_laser and not (preserve_manual and self._laser_manual_active()))
         )
         if self._safe_stop_applied and not still_active:
