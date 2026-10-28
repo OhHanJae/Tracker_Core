@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from src.common.settings import MotorSettings
+from src.communication.json_tcp import JsonTcpError
 from src.devices.base import DeviceService
 from src.pt_motor.motor_control import MotorApiClient
 
@@ -22,11 +24,20 @@ class PtmService(DeviceService):
         self._poll_motion_id: str | None = None
 
     async def read_status(self) -> dict[str, Any]:
-        try:
-            data = await self.client.status()
-        except Exception:
-            self.state.poll_interval_ms = 200
-            raise
+        attempts = self.settings.status_retries + 1
+        for attempt in range(attempts):
+            if self.state.bypassed:
+                return self.state.status
+            try:
+                data = await asyncio.wait_for(self.client.status(), timeout=self.settings.timeout_s)
+                break
+            except Exception as exc:
+                self.state.poll_interval_ms = 200
+                if attempt == attempts - 1:
+                    raise JsonTcpError(
+                        f"PTM status failed after {attempts} attempts: {str(exc) or type(exc).__name__}"
+                    ) from exc
+                await asyncio.sleep(self.state.poll_interval_ms / 1000)
         motion = _dict(data.get("motion"))
         if self._poll_motion_id is not None and self._poll_motion_id in (
             motion.get("completed_id"), motion.get("failed_id")

@@ -1676,6 +1676,7 @@ class CoreApplication:
             if code == CommandCode.TARGET_APPLY_MOVE and self.ptm_service.state.status.get("homed") is not True:
                 self.command.status = CommandStatus.REJECTED
                 self.command.result = CommandResult.HOMING_REQUIRED
+                self.command.message = "PTM homing is required before automatic movement"
                 return
             if ((self._safe_stop_task is not None and not self._safe_stop_task.done())
                     or any(not task.done() for task in self._bypass_stop_tasks)):

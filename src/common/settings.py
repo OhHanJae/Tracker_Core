@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 from dataclasses import MISSING, asdict, dataclass, field
 from pathlib import Path
@@ -95,6 +96,7 @@ class MotorSettings:
     web_port: int = 8080
     web_enabled: bool = True
     timeout_s: float = 3.0
+    status_retries: int = 2
     enabled: bool = True
     status_command: str = "system.status"
     bypass: bool = False
@@ -326,6 +328,13 @@ def settings_from_dict(data: dict[str, Any]) -> AppSettings:
     for section in ("motor", "vision"):
         if not isinstance(merged[section]["bypass"], bool):
             raise ValueError(f"{section}.bypass must be a boolean")
+    timeout = merged["motor"]["timeout_s"]
+    if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+            or not 0.1 <= timeout <= 60):
+        raise ValueError("motor.timeout_s must be between 0.1 and 60 seconds")
+    retries = merged["motor"]["status_retries"]
+    if type(retries) is not int or not 0 <= retries <= 10:
+        raise ValueError("motor.status_retries must be an integer in 0..10")
     return AppSettings(
         core=_coerce_dataclass(CoreServerSettings, merged["core"]),
         discovery=_coerce_dataclass(DiscoverySettings, merged["discovery"]),
