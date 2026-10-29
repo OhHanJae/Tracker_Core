@@ -84,18 +84,48 @@ class DeviceSummaryBit(IntEnum):
     CALIBRATION = 12
 
 
+class PtmFaultMask(IntEnum):
+    COMMUNICATION_LOST = 1 << 0
+    DRIVER_FAULT = 1 << 1
+    COMMUNICATION_TIMEOUT = 1 << 8
+
+
+class VisionFaultMask(IntEnum):
+    REQUIRED_CAMERA_UNAVAILABLE = 1 << 0
+    PIPELINE_STOPPED = 1 << 2
+    RESULT_TIMEOUT = 1 << 5
+    COMMUNICATION_TIMEOUT = 1 << 6
+    STATUS_STALE = 1 << 7
+    COMMUNICATION_LOST = 1 << 8
+
+
+VISION_COMMUNICATION_FAULT_MASK = (
+    VisionFaultMask.COMMUNICATION_TIMEOUT
+    | VisionFaultMask.STATUS_STALE
+    | VisionFaultMask.COMMUNICATION_LOST
+)
+
+
 # Status faults recover from current data; motion, configuration and calibration
 # faults still require an explicit reset.
 AUTO_RESET_FAULT_MASKS = {
     DeviceSummaryBit.PLC_COMMUNICATION: 0x003F,
-    DeviceSummaryBit.VISION_COMMON: (1 << 0) | (1 << 5),
+    DeviceSummaryBit.VISION_COMMON: (
+        VisionFaultMask.REQUIRED_CAMERA_UNAVAILABLE
+        | VisionFaultMask.RESULT_TIMEOUT
+        | VISION_COMMUNICATION_FAULT_MASK
+    ),
     DeviceSummaryBit.CAMERA_1: (1 << 0) | (1 << 1) | (1 << 6),
     DeviceSummaryBit.CAMERA_2: (1 << 0) | (1 << 1) | (1 << 6),
     DeviceSummaryBit.CAMERA_3: (1 << 0) | (1 << 1) | (1 << 6),
     DeviceSummaryBit.CAMERA_4: (1 << 0) | (1 << 1) | (1 << 6),
     DeviceSummaryBit.TRACKER: (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 6),
-    DeviceSummaryBit.PAN_TILT_MOTOR: 1 << 0,
-    DeviceSummaryBit.TILT_MOTOR: 1 << 0,
+    DeviceSummaryBit.PAN_TILT_MOTOR: (
+        PtmFaultMask.COMMUNICATION_LOST | PtmFaultMask.COMMUNICATION_TIMEOUT
+    ),
+    DeviceSummaryBit.TILT_MOTOR: (
+        PtmFaultMask.COMMUNICATION_LOST | PtmFaultMask.COMMUNICATION_TIMEOUT
+    ),
 }
 
 
@@ -128,6 +158,41 @@ WARNING_PRIORITY = [
 ]
 
 
+# PLC v6: low byte = device kind, high byte = detail number (old bit + 1).
+# Kind 10 (separate Tilt) and 11 (GPIO laser) remain unallocated.
+PLC_ALARM_KINDS = {device: int(device) + 1 for device, _ in FAULT_PRIORITY}
+
+
+def plc_alarm_code(device: DeviceSummaryBit, detail_bit: int) -> int:
+    """Legacy v6 API code; not a v7 PLC word."""
+    return ((detail_bit + 1) << 8) | PLC_ALARM_KINDS[device]
+
+
+PLC_ALARM_MODULES = {
+    "core": (DeviceSummaryBit.CONTROLLER, DeviceSummaryBit.RECIPE, DeviceSummaryBit.CALIBRATION),
+    "ptm": (DeviceSummaryBit.PAN_TILT_MOTOR,),
+    "vision": (DeviceSummaryBit.VISION_COMMON, DeviceSummaryBit.CAMERA_1,
+               DeviceSummaryBit.CAMERA_2, DeviceSummaryBit.CAMERA_3,
+               DeviceSummaryBit.CAMERA_4, DeviceSummaryBit.TRACKER),
+    "plc": (DeviceSummaryBit.PLC_COMMUNICATION,),
+}
+PLC_MODULE_WORD_OFFSETS = {"core": 21, "ptm": 22, "vision": 23, "plc": 24}
+PLC_MODULE_CODE_BASES = {
+    device: index * 16
+    for devices in PLC_ALARM_MODULES.values()
+    for index, device in enumerate(devices)
+}
+PLC_DEVICE_MODULES = {
+    device: module for module, devices in PLC_ALARM_MODULES.items() for device in devices
+}
+
+
+def plc_module_alarm_code(device: DeviceSummaryBit, detail_bit: int) -> int:
+    if device == DeviceSummaryBit.TILT_MOTOR:
+        device = DeviceSummaryBit.PAN_TILT_MOTOR
+    return PLC_MODULE_CODE_BASES[device] + detail_bit + 1
+
+
 def now_ms() -> int:
     return int(time.monotonic() * 1000)
 
@@ -148,9 +213,14 @@ class AlarmBook:
     last_fault_code: int = 0
     alarm_sequence: int = 0
     suppressed_devices: set[int] = field(default_factory=set)
+    last_plc_fault_code: int = 0
 
     def set_warning_word(self, device: DeviceSummaryBit, word: int) -> None:
+        canonical = DeviceSummaryBit.PAN_TILT_MOTOR if device == DeviceSummaryBit.TILT_MOTOR else device
+        previous = self.warning_word(canonical)
         self.warnings[int(device)] = 0 if device == DeviceSummaryBit.LASER else word & 0xFFFF
+        if self.warning_word(canonical) & ~previous:
+            self.alarm_sequence = (self.alarm_sequence + 1) & 0xFFFF
 
     def clear_device(self, device: DeviceSummaryBit) -> None:
         self.warnings.pop(int(device), None)
@@ -160,21 +230,26 @@ class AlarmBook:
     def set_fault_word(
         self, device: DeviceSummaryBit, word: int, latch_enabled: bool = True
     ) -> None:
+        canonical = DeviceSummaryBit.PAN_TILT_MOTOR if device == DeviceSummaryBit.TILT_MOTOR else device
+        previous = self.fault_word(canonical, False)
         word &= 0xFFFF
         if device == DeviceSummaryBit.LASER:
             word = 0  # GPIO output only; no laser warning/fault feedback exists.
             self.latched_faults[int(device)] = 0
         self.faults[int(device)] = word
         if latch_enabled:
-            previous = self.latched_faults.get(int(device), 0)
+            previous_latched = self.latched_faults.get(int(device), 0)
             self.latched_faults[int(device)] = (
-                (previous | word) & ~AUTO_RESET_FAULT_MASKS.get(device, 0)
+                (previous_latched | word) & ~AUTO_RESET_FAULT_MASKS.get(device, 0)
             )
+        raised = self.fault_word(canonical, False) & ~previous
+        if raised and canonical in PLC_ALARM_KINDS:
+            self.last_plc_fault_code = plc_alarm_code(canonical, (raised & -raised).bit_length() - 1)
+            self.alarm_sequence = (self.alarm_sequence + 1) & 0xFFFF
         if word:
             code = self.primary_fault_code()
             if code and code != self.last_fault_code:
                 self.last_fault_code = code
-                self.alarm_sequence = (self.alarm_sequence + 1) & 0xFFFF
 
     def reset_latched_faults(self) -> None:
         self.latched_faults.clear()
@@ -234,6 +309,46 @@ class AlarmBook:
             if self.warning_word(device):
                 return code
         return 0
+
+    def plc_fault_code(self, latch_enabled: bool = True) -> int:
+        for device, _ in FAULT_PRIORITY:
+            word = self.fault_word(device, latch_enabled)
+            if word:
+                return plc_alarm_code(device, (word & -word).bit_length() - 1)
+        return 0
+
+    def plc_warning_code(self) -> int:
+        for device, _ in WARNING_PRIORITY:
+            word = self.warning_word(device)
+            if word:
+                return plc_alarm_code(device, (word & -word).bit_length() - 1)
+        return 0
+
+    def visible_last_plc_fault_code(self) -> int:
+        kind = self.last_plc_fault_code & 0xFF
+        if any(PLC_ALARM_KINDS[device] == kind and int(device) in self.suppressed_devices
+               for device, _ in FAULT_PRIORITY):
+            return 0
+        return self.last_plc_fault_code
+
+    def module_alarm_codes(self, module: str, latch_enabled: bool = True) -> tuple[int, int]:
+        fault_code = warning_code = 0
+        for device in PLC_ALARM_MODULES[module]:
+            fault = self.fault_word(device, latch_enabled)
+            warning = self.warning_word(device)
+            if fault and not fault_code:
+                fault_code = plc_module_alarm_code(device, (fault & -fault).bit_length() - 1)
+            if warning and not warning_code:
+                warning_code = plc_module_alarm_code(device, (warning & -warning).bit_length() - 1)
+        return fault_code, warning_code
+
+    def module_alarm_status(self, latch_enabled: bool = True) -> dict[str, dict[str, int]]:
+        result = {}
+        for module, offset in PLC_MODULE_WORD_OFFSETS.items():
+            fault, warning = self.module_alarm_codes(module, latch_enabled)
+            result[module] = {"word_offset": offset, "word": (fault << 8) | warning,
+                              "fault_code": fault, "warning_code": warning}
+        return result
 
     def active_fault_count(self, latch_enabled: bool = True) -> int:
         return sum(

@@ -22,6 +22,17 @@ class JsonTcpError(RuntimeError):
         self.code = code
 
 
+def is_timeout_error(error: BaseException) -> bool:
+    seen: set[int] = set()
+    cause: BaseException | None = error
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, TimeoutError):
+            return True
+        cause = cause.__cause__
+    return False
+
+
 @dataclass
 class JsonTcpResponse:
     ok: bool

@@ -1,16 +1,18 @@
 # Tracker Monitor 추가 API
 
+현재 규격은 v7이다. D+21 코어, D+22 PTM, D+23 비전, D+24 PLC가 각각 1 WORD이며 상위 BYTE=오류, 하위 BYTE=경고다. 모듈 안에서 오류·경고를 각각 우선순위 1건씩 표시한다. D+25는 알람 순번, D+27/28은 전체 원인 개수, D+20/26/50~79는 Reserved(0)다. 전체 규격은 [PLC 모듈별 알람 v7](PLC_ALARM_CODES_V7.md)을 따른다.
+
 2026-10-15. 기존 UTF-8 JSON Lines 요청/응답과 Core 설정 스키마를 유지한다.
 Monitor 연결/종료는 운전 허가, 안전 정지, tracking 시작/정지 조건이 아니다.
 
 ## 조회
 
-`monitor.capabilities`는 `schema_version:1`, 지원 `commands`, `map_version:"v4.2"`,
+`monitor.capabilities`는 `schema_version:1`, 지원 `commands`, `map_version:"v7"`,
 기본 `alarm_retention_days:30`, `endpoints`, `allow_remote_process_control`,
 `unsupported`를 반환한다. `endpoints.ptm/vision/plc`는 `enabled`, `tcp:{host,port}`,
 `http:{host,port}`다. 실제 process runtime TCP 포트가 알려지면 해당 값을 사용한다.
 서버의 loopback 주소는 원격 패널에서 서버 주소로 해석해야 하며 패널 자신에게 연결하지 않는다.
-Camera 2 PLC 알람 및 새 Vision frame/calibration 계약은 미지원으로 명시한다.
+Camera 2 PLC 알람은 비전 D+23의 Camera 2 코드 33~48로 지원한다. 새 Vision frame/calibration 계약의 지원 여부는 별도 capability를 따른다.
 
 `monitor.snapshot`은 기존 상태 키에 아래 키를 추가한다. 상태는 캐시에서 읽으며
 장비 TCP/HTTP probe나 새 shared-memory 읽기를 수행하지 않는다.
@@ -70,10 +72,10 @@ active의 session_id 변경 시 기존 활성 사건 동기화를 새 발생으�
 장치 대표 `code`, `relative_address`, `bit`, `message`, `description`, `clear_policy`,
 `map_version`, `occurred_at`, `recovered_at`, `closed_at`, `cause_active`, `latched`,
 `suppressed`, `cause_observed`, `status`, `reset_result`. 영속 조회 행에는 페이지용 `cursor`도 있다.
-장치 대표 코드는 상세 bit마다 새로 정의한 코드가 아니다.
+v7 사건은 module, byte(high/low), byte_code와 모듈 WORD 주소를 기록한다. plc_code는 해당 사건만의 WORD 기여값이며 현재 모듈 WORD와 다를 수 있다. 기존 code는 장치 대표 번호, bit는 내부 원인 식별용이다. 과거 v5/v6 사건은 변환하지 않는다.
 `reset_result`는 마지막 reset 요청의 `timestamp`, `cause_still_active`, `latch_cleared`다.
 
-PTM Pan/Tilt는 D+62/63 한 사건으로 합산한다. Summary Word는 별도 사건을 만들지 않는다.
+PTM Pan/Tilt의 동일 원인은 한 사건으로 합산한다. PLC는 D+22의 상위 오류·하위 경고 BYTE로 보고한다.
 바이패스로 기존 내부/출력 word가 0이 되어도 기존 사건의 실제 복구를 추정하지 않는다.
 이때 `cause_observed:false`이며 cause/latch는 마지막 확인 값을 보존한다.
 원인이 해제된 latch는 `status:latched`, 원인 없는 수동 reset 완료는 `recovered`다.
@@ -142,7 +144,7 @@ PTM 바이패스는 레이저 탭에서 설정한다. 내부 `laser.power_save`�
 automatic_off/manual_allowed로 일반 자동 OFF와 강제 차단을 원자적으로 구분한다.
 RUN_ENABLE=OFF는 PLC 쓰기만 중지하며 모터 정리나 레이저 OFF를 발생시키지 않는다. PLC 입력 읽기와 명령 처리는 계속된다.
 레이저는 출력 검출이 없으며 GPIO 입력/readback을 읽지 않는다.
-PLC D+66/D+67, D+20.5, 레이저 경고/고장 요약과 대표 코드 5000~5099는 Reserved/0이다.
+PLC v7의 D+20/26과 D+50~79는 모두 Reserved/0이다. GPIO 레이저 알람은 미사용이며 API 장치 대표 코드 5000~5099도 사용하지 않는다.
 `laser.on` 상태값은 마지막 성공한 GPIO 명령을 뜻한다. PLC LASER_ON은 연속 ON 또는 점멸 활성 상태이며 점멸의 OFF 구간도 1을 유지한다. 실제 방출 검출값은 아니다.
 PTM 레이저 탭의 `제어 우선권 사용`은 `laser.settings.control_priority`로 즉시 저장된다.
 활성화하면 PLC 레이저 모드·운전 허가 및 자동 절전과 관계없이 PTM 수동/자동 레이저 제어를 사용할 수 있다.
@@ -150,3 +152,18 @@ PTM 레이저 탭의 `제어 우선권 사용`은 `laser.settings.control_priori
 `system.status.laser`는 `feedback_available=false`, `on_source=commanded_gpio_level`을 제공하고 armed 필드는 없다.
 GPIO 호출 오류는 `laser.error`/Core `command_error`와 API 응답·로그에 남긴다.
 PTM TCP·모터 RS485 통신 알람은 기존대로 유지한다. 자세한 계약은 Monitor 지침서 18절을 따른다.
+
+## v7 모듈별 WORD와 통신 코드
+
+| WORD | 상위 BYTE 오류 | 하위 BYTE 경고 |
+| --- | --- | --- |
+| D+21 Core | Controller → Recipe → Calibration의 대표 1건 | 같은 모듈의 대표 1건 |
+| D+22 PTM | Pan/Tilt 공통 대표 1건 | Pan/Tilt 공통 대표 1건 |
+| D+23 Vision | Vision Common → Camera 1~4 → Tracker의 대표 1건 | 같은 모듈의 대표 1건 |
+| D+24 PLC | PLC 통신 대표 1건 | PLC 통신 대표 1건 |
+
+WORD=(오류<<8)|경고이며 각 BYTE 0은 해당 등급 없음이다. PTM 타임아웃은 D+22 상위=9, Vision 통신 타임아웃/상태 만료/통신 끊김/결과 지연은 D+23 상위=7/8/9/6이다. 예를 들어 PTM 오류 9·경고 5 동시 발생은 D+22=0x0905다. 네 모듈을 독립적으로 동시에 표시하며 전체 원인은 알람 API/이력에 남긴다.
+
+v6의 전체 오류·경고·마지막 오류 WORD는 현재 해석에 사용하지 않는다. 알람 순번은 D+24에서 D+25로 이동했고 마지막 오류는 API/이력으로 조회한다. 신규 API는 alarms.plc_alarm_format=module_bytes_v7 및 alarms.plc_module_alarms다. 기존 plc_fault_code/plc_warning_code/plc_last_fault_code는 v6 호환용이며 현재 PLC WORD가 아니다.
+
+PTM 상태 조회는 timeout_s와 status_retries를 모두 적용하며 이동·HOME 명령을 자동 재전송하지 않는다. 통신 복구 시 Auto, 보호 고장은 기존 latch/reset 조건을 유지한다. 이력 bit는 PLC의 bit 주소가 아니다. 방향별 100 WORD 및 명령·좌표·Heartbeat 주소는 유지한다.

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.common.status import now_ms
+from src.communication.json_tcp import is_timeout_error
 
 
 @dataclass
@@ -28,6 +29,7 @@ class DeviceState:
     status: dict[str, Any] = field(default_factory=dict)
     bypassed: bool = False
     bypass_source: str | None = None
+    communication_timeout: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,6 +48,7 @@ class DeviceState:
             "ok_count": self.ok_count,
             "error_count": self.error_count,
             "last_error": self.last_error,
+            "communication_timeout": self.communication_timeout,
             "status": self.status,
             "bypassed": self.bypassed,
             "bypass_source": self.bypass_source,
@@ -99,10 +102,12 @@ class DeviceService:
     async def poll_once(self) -> None:
         if self.state.bypassed:
             self.state.last_error = ""
+            self.state.communication_timeout = False
             return
         if not self.state.enabled:
             self.state.online = False
             self.state.running = False
+            self.state.communication_timeout = False
             return
 
         started = now_ms()
@@ -120,14 +125,19 @@ class DeviceService:
             self.state.response_ms = response_ms
             self.state.last_ok_ms = now_ms()
             self.state.last_error = ""
+            self.state.communication_timeout = False
             self.state.ok_count += 1
         except Exception as exc:
             if self.state.bypassed:
                 return
-            self.state.online = False
             self.state.response_ms = max(0, now_ms() - started)
-            self.state.last_error = str(exc)
-            self.state.error_count += 1
+            self.record_communication_error(exc)
+
+    def record_communication_error(self, error: BaseException) -> None:
+        self.state.online = False
+        self.state.last_error = str(error) or type(error).__name__
+        self.state.communication_timeout = is_timeout_error(error)
+        self.state.error_count += 1
 
     async def read_status(self) -> dict[str, Any]:
         raise NotImplementedError
@@ -139,6 +149,7 @@ class DeviceService:
         result = self.state.to_dict()
         if self.state.bypassed:
             result["last_error"] = ""
+            result["communication_timeout"] = False
             result["status"] = {
                 key: value for key, value in self.state.status.items()
                 if "fault" not in key and "warning" not in key and key != "raw"

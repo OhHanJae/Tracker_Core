@@ -20,6 +20,7 @@ const {chromium} = require('playwright');
   Object.assign(input, {0: 5, 7: 218, 10: 3, 11: 15, 12: 2, 13: 41});
   const written = Array(80).fill(0);
   written[15] = 0;
+  written[22] = 0x0905;
   const data = {
     core: {running: true, status_age_ms: 100, resources: {}}, processes: {},
     runtime: {loop_running: true, controller_state: 'TRACKING', system_ready: true, run_enable: true,
@@ -42,12 +43,15 @@ const {chromium} = require('playwright');
   };
   const fault = {occurrence_id: 'fault-1', severity: 'Fault', device: 'pan_tilt_motor', device_name: 'PTM', code: 4001,
     message: '모터 보호 오류', description: '모터 상태와 배선을 확인하세요.', clear_policy: '원인 해제 후 수동 리셋',
-    status: 'active', cause_active: true, cause_observed: true, relative_address: 'D+63', bit: 1,
+    status: 'active', cause_active: true, cause_observed: true, relative_address: 'D+22', bit: 1,
+    map_version: 'v7', module: 'ptm', byte: 'high', byte_code: 2, plc_code: 0x0200,
     occurred_at: '2026-10-21T03:00:00+00:00'};
   const warning = {occurrence_id: 'warning-1', severity: 'Warning', device: 'plc_communication', device_name: 'PLC',
     code: 6000, message: '하트비트 지연', description: 'PLC 응답 주기를 확인하세요.', status: 'active', cause_active: true,
     occurred_at: '2026-10-21T03:01:00+00:00'};
   const old = {...fault, occurrence_id: 'old-1', status: 'recovered', cause_active: false,
+    relative_address: 'D+63', map_version: 'v5', module: undefined, byte: undefined,
+    byte_code: undefined, plc_code: undefined,
     recovered_at: '2026-10-21T03:03:00+00:00'};
   const webRoot = path.resolve(__dirname, '../web');
   const fixture = '<!doctype html><html><body style="margin:0;background:#101b23;color:#afc4d1;font-family:Segoe UI,sans-serif"><header style="padding:12px;border-bottom:1px solid #30414c;font-size:13px">FVP　 RUN · 운전 화면 <span style="float:right;color:#58dbaf">위치 OK</span></header><div style="padding:18px;text-align:center"><svg viewBox="0 0 700 290" style="width:100%;max-height:320px"><path d="M110 55H570L610 100V240H80V100Z" fill="#84929c" stroke="#d1e0e8" stroke-width="3"/><path d="M150 100H530V195H150Z" fill="#273a47" stroke="#597585" stroke-width="3"/><g fill="#b7c8d2" stroke="#172934" stroke-width="6"><circle cx="120" cy="100" r="12"/><circle cx="570" cy="100" r="12"/><circle cx="120" cy="210" r="12"/><circle cx="570" cy="210" r="12"/><circle cx="240" cy="75" r="12"/><circle cx="430" cy="75" r="12"/></g><circle cx="430" cy="75" r="24" fill="none" stroke="#28d2a0" stroke-width="3"/><path d="M390 75h80M430 35v80" stroke="#28d2a0"/><text x="465" y="45" fill="#7debc9" font-size="18">P015</text></svg><p style="font-size:12px">레시피 3 / 포인트 15　·　목표 대비 오차 0.42 mm</p><small style="color:#698593">브라우저 검증용 모의 Vision 화면</small></div></body></html>';
@@ -140,6 +144,11 @@ const {chromium} = require('playwright');
     await runRow.click();
     await waitText('.im-plc-row-detail', 'Controller→PLC 데이터 쓰기 허용');
     await page.locator('[data-plc-back]').click();
+    const ptmAlarmRow = page.getByRole('button', {name: 'PTM_ALARM_WORD 전체 설명', exact: true});
+    for (let count = 0; count < 12 && !await ptmAlarmRow.count(); count++)
+      await page.locator('[data-direction="write"][data-plc-page="1"]').click();
+    assert.match(await ptmAlarmRow.innerText(), /D3022/);
+    assert.equal(await ptmAlarmRow.locator('td strong').innerText(), '2309 (오류 9 / 경고 5)');
     assert.equal(await page.locator('#imPlcModalBody').evaluate(element => element.scrollHeight > element.clientHeight + 1), false);
     if (process.env.MONITOR_SCREENSHOT_DIR) await page.screenshot({path: path.join(process.env.MONITOR_SCREENSHOT_DIR, 'plc-communication.png')});
     await page.keyboard.press('Escape');
@@ -162,6 +171,18 @@ const {chromium} = require('playwright');
       selector + ' remains visible on the compact desktop');
     }
 
+    data.alarms = {plc_alarm_format: 'module_bytes_v7', plc_module_alarms: {
+      core: {word_offset: 21, word: 0x0101, fault_code: 1, warning_code: 1},
+      ptm: {word_offset: 22, word: 0x0905, fault_code: 9, warning_code: 5},
+      vision: {word_offset: 23, word: 0x0721, fault_code: 7, warning_code: 33},
+      plc: {word_offset: 24, word: 0x0201, fault_code: 2, warning_code: 1},
+    }};
+    await waitText('#imAlarmBar', 'PTM 오류 코드 9');
+    await page.locator('#imAlarmBar').click();
+    assert.equal(await page.locator('#imAlarmRows tr').count(), 8, 'all four modules expose both byte priorities without history');
+    assert.match(await page.locator('#imAlarmRows').innerText(), /VISION 경고 코드 33/);
+    data.alarms = {};
+    await page.locator('#imBackToMonitor').click();
     data.alarm_history.entries = [fault, warning];
     await waitText('#imAlarmBar', '모터 보호 오류');
     assert.equal(await page.locator('#imAlarmBar').getAttribute('data-level'), 'fault');
@@ -173,6 +194,7 @@ const {chromium} = require('playwright');
     await page.waitForTimeout(1250);
     assert.equal(await page.locator('#imAlarmRows details').first().getAttribute('open'), '', 'expanded alarm details survive refresh');
     assert.match(await page.locator('#imAlarmRows').innerText(), /수동 리셋/);
+    assert.match(await page.locator('#imAlarmRows').innerText(), /D\+22 · ptm · 오류 코드 2/);
     await page.locator('#imAlarmSeverity').selectOption('Warning');
     assert.equal(await page.locator('#imAlarmRows tr').count(), 1);
     assert.match(await page.locator('#imAlarmRows').innerText(), /하트비트 지연/);
@@ -187,6 +209,9 @@ const {chromium} = require('playwright');
     await page.locator('#imAlarmMore').click();
     await waitText('#imAlarmRows', '복구됨');
     assert.equal(await page.locator('#imAlarmRows tr').count(), 3);
+    const legacyRow = page.locator('#imAlarmRows tr').filter({hasText: 'D+63'});
+    await legacyRow.locator('summary').click();
+    assert.match(await legacyRow.innerText(), /D\+63 · bit 1/, 'historical bit addresses remain readable');
     await page.locator('#imAlarmSeverity').selectOption('Warning');
     await waitText('#imAlarmCount', '1건 / 전체 1건');
     assert.match(await page.locator('#imAlarmRows').innerText(), /하트비트 지연/);

@@ -1,5 +1,7 @@
 # Vision 연동 점검 및 수정 지침
 
+현재 규격은 v7이다. D+21 코어, D+22 PTM, D+23 비전, D+24 PLC가 각각 1 WORD이며 상위 BYTE=오류, 하위 BYTE=경고다. 모듈 안에서 오류·경고를 각각 우선순위 1건씩 표시한다. D+25는 알람 순번, D+27/28은 전체 원인 개수, D+20/26/50~79는 Reserved(0)다. 전체 규격은 [PLC 모듈별 알람 v7](PLC_ALARM_CODES_V7.md)을 따른다.
+
 점검일: 2026-10-09. Core 연동 추가: 2026-10-10. 알람·바이패스 계약 보완: 2026-10-14. 체결 완료 명령 6 추가: 2026-10-16. 대상: Windows 11 x64 / RDK X5 3.5 이미지.
 
 사용자 요청에 따라 Vision 저장소의 코드·설정·런처는 변경하지 않았다. 아래 항목은 실제 소스에서 확인한 제약과 수정 방향이다. 카메라, RDK, PLC 실장비 성능 검증은 이 Windows 작업 공간에서 수행하지 않았다.
@@ -79,7 +81,7 @@ Process Manager의 서버 IP/TCP 8768/실제 웹 포트를 저장하고 Vision �
 
 ### 2.5 이번에 수정한 Core 추적 시작의 자기 차단
 
-기존 Core는 TRACKER bit 0(결과 무효)을 모든 고장과 함께 추적 시작 차단에 사용했다. 정지 중인 정상 Vision은 `tracker_valid=false`이므로 시작하지 못하고, 일시적인 결과 유실 뒤에는 분석을 정지시켜 복구하지 못하는 순환이 있었다. `src/core/orchestration.py`는 이 비트를 Vision 분석 시작 차단에서 제외한다. 2026-10-14 보완부터 대상 부재·기존 결과 무효는 D+61.0 고장 대신 D+60.4 경고로 처리한다. Tracker의 다른 고장, 바이패스하지 않은 다른 장치 고장, FORCE_STOP은 계속 추적을 차단한다. RUN_ENABLE 해제는 PLC 쓰기만 중지한다. 위치 OK와 생산 승인에 실제 유효 결과가 필요한 조건은 유지된다.
+기존 Core는 TRACKER bit 0(결과 무효)을 모든 고장과 함께 추적 시작 차단에 사용했다. 정지 중인 정상 Vision은 `tracker_valid=false`이므로 시작하지 못하고, 일시적인 결과 유실 뒤에는 분석을 정지시켜 복구하지 못하는 순환이 있었다. `src/core/orchestration.py`는 이 비트를 Vision 분석 시작 차단에서 제외한다. 2026-10-14 보완부터 대상 부재·기존 결과 무효는 D+23 상위=81(미사용) 고장 대신 D+23 하위=85 경고로 처리한다. Tracker의 다른 고장, 바이패스하지 않은 다른 장치 고장, FORCE_STOP은 계속 추적을 차단한다. RUN_ENABLE 해제는 PLC 쓰기만 중지한다. 위치 OK와 생산 승인에 실제 유효 결과가 필요한 조건은 유지된다.
 
 시작/정지 응답 수락 후 실제 `tracking_active`가 요청 상태와 다르면 최소 1초 간격으로 재시도한다. 이 조치는 2.4의 Vision 재시작 결함을 Core에서 완화하지만 Vision 자체 워커 종료/재시작 처리의 수정 필요성을 없애지는 않는다.
 
@@ -164,16 +166,18 @@ MIPI 경로의 `tools/start_fvp_single_camera.sh`는 `/opt/tros/humble/setup.bas
 
 | 상태 | Core의 PLC 처리 |
 |---|---|
-| 추적 요청 또는 실행 중 대상이 안 보임 | D+61.0 Tracker 고장은 사용하지 않고 D+60.4 경고로 처리. 위치 OK는 해제 |
-| 대상 부재 또는 존재 여부 불명 | 결과 생성 지연으로 D+59.5를 생성하지 않으며 Vision이 보낸 해당 비트도 제외 |
-| 추적 요청 또는 실제 추적 중, 필수 카메라 online·valid, 대상 존재 확인 | `result_ready=false`가 `runtime.vision_status_max_age_ms`를 넘겨 지속되거나 `result_age_seconds`가 이 기준을 넘으면 D+59.5 결과 생성 Timeout |
-| 정상 TCP 응답이지만 필수 카메라 미연결 | D+51.0 Camera 1 고장과 D+59.0 Vision 카메라 누락 고장. TCP 상태 Timeout과 구분 |
-| 실제 TCP 조회 실패 또는 수신 상태 만료 | 기존 D+59.5 통신·상태 Timeout 유지 |
+| 추적 요청 또는 실행 중 대상이 안 보임 | D+23 상위=81(미사용) Tracker 고장은 사용하지 않고 D+23 하위=85 경고로 처리. 위치 OK는 해제 |
+| 대상 부재 또는 존재 여부 불명 | 결과 생성 지연으로 D+23 상위=6를 생성하지 않으며 Vision이 보낸 해당 비트도 제외 |
+| 추적 요청 또는 실제 추적 중, 필수 카메라 online·valid, 대상 존재 확인 | `result_ready=false`가 `runtime.vision_status_max_age_ms`를 넘겨 지속되거나 `result_age_seconds`가 이 기준을 넘으면 D+23 상위=6 결과 생성 Timeout |
+| 정상 TCP 응답이지만 필수 카메라 미연결 | 내부 원인은 Camera 1 미연결과 Vision 카메라 누락이며 API/이력에 모두 기록. D+23 상위 BYTE에는 우선순위가 높은 Vision 카메라 누락 코드 1만 표시. TCP 상태 Timeout과 구분 |
+| 실제 TCP 연결/응답 시간 초과 | D+23 상위=7 VISION_COMM_TIMEOUT |
+| 마지막 정상 상태 수신 이후 허용 시간 초과 | D+23 상위=8 VISION_STATUS_STALE |
+| 연결 거절·종료 등 시간 초과 이외의 TCP 실패 | D+23 상위=9 VISION_COMM_LOST |
 | Vision 실효 바이패스 | Vision·Camera·Tracker의 활성·래치 Warning/Fault를 PLC 출력·대표 코드에서 제외. 실제 장치 상태는 보존 |
 
-D+59.5는 기존 주소를 유지하므로 통신·상태 Timeout과 대상 존재 중 결과 생성 Timeout을 함께 표현한다. 화면/로그에서 원인을 구분하고 주소를 임의로 새로 배정하지 않는다. 정상 응답의 `online=false`만으로 TCP 조회 실패로 취급하지 않는다. 대상이 사라지면 진행 중인 결과 대기 시간을 취소하고, 다시 검출됐을 때 새 대기를 시작한다.
+D+23 상위 BYTE=6은 결과 생성/결과 나이 Timeout만 표현한다. 통신 Timeout은 상위 BYTE=7, 상태 수신 만료는 8, 일반 통신 실패는 9로 구분한다. 경고가 없을 때의 WORD는 각각 0x0700, 0x0800, 0x0900이다. 통신·상태 수신 오류는 정상 조회 복구 시 자동 해제하며, 보호·설정 고장의 latch/reset 조건은 유지한다. 정상 응답의 `online=false`만으로 TCP 조회 실패로 취급하지 않는다. 대상이 사라지면 진행 중인 결과 대기 시간을 취소하고, 다시 검출됐을 때 새 대기를 시작한다.
 
-Vision은 대상 부재만으로 `fault=true`, D+61.0 또는 D+59.5를 보내지 않는다. 카메라 미연결은 `cameras[0].online=false`, `valid=false`, 각 마스크 bit 0 해제로 사실을 반환한다. 마스크와 배열은 서로 일치시킨다. 실제 분석 워커 오류·설정 오류는 대상 부재와 구분해 기존 고장 계약으로 보고한다. 카메라 연결 여부를 웹 접속 성공이나 TCP `ok=true`로 대체하지 않는다.
+Vision은 대상 부재만으로 `fault=true`, D+23 상위=81(미사용) 또는 D+23 상위=6를 보내지 않는다. 카메라 미연결은 `cameras[0].online=false`, `valid=false`, 각 마스크 bit 0 해제로 사실을 반환한다. 마스크와 배열은 서로 일치시킨다. 실제 분석 워커 오류·설정 오류는 대상 부재와 구분해 기존 고장 계약으로 보고한다. 카메라 연결 여부를 웹 접속 성공이나 TCP `ok=true`로 대체하지 않는다.
 
 ### 6.3 웹 iframe 점검
 
@@ -181,9 +185,9 @@ Vision은 대상 부재만으로 `fault=true`, D+61.0 또는 D+59.5를 보내지
 
 ### 6.4 후속 검증
 
-1. 추적 요청 또는 실행 중 카메라 정상·대상 부재 상태를 유지한다. D+60.4만 경고로 켜지고 D+61.0 및 결과 생성 D+59.5는 꺼져야 한다.
-2. 대상 존재 상태에서 계산 결과만 중단한다. 정해진 대기 시간 이후 D+59.5가 켜져야 한다. 계산이 복구되거나 대상이 사라지면 자동 해제되어야 한다.
-3. 정상 TCP 응답을 유지한 채 카메라를 분리한다. D+51.0과 D+59.0이 켜지고 결과 생성 Timeout으로 잘못 분류하지 않아야 한다. 재연결 후 현재 상태에 따라 자동 복구해야 한다.
+1. 추적 요청 또는 실행 중 카메라 정상·대상 부재 상태를 유지한다. 다른 원인이 없으면 D+23 하위 BYTE=85, 상위 BYTE=0이어야 한다. 대상 부재로 Tracker 고장이나 결과 생성 타임아웃을 만들지 않아야 한다.
+2. 대상 존재 상태에서 계산 결과만 중단한다. 정해진 대기 시간 이후 결과 생성 타임아웃이 기록되고, 더 높은 우선순위 고장이 없으면 D+23 상위 BYTE=6이어야 한다. 계산이 복구되거나 대상이 사라지면 자동 해제되어야 한다.
+3. 정상 TCP 응답을 유지한 채 카메라를 분리한다. 내부 Camera 1 미연결과 Vision 카메라 누락 원인은 모두 기록되고 D+23 상위 BYTE에는 우선순위가 높은 코드 1만 표시되어야 한다. 결과 생성 Timeout으로 잘못 분류하지 않으며 재연결 후 현재 상태에 따라 자동 복구해야 한다.
 4. PLC 요청·Core 웹·Vision 웹 각각에서 바이패스를 적용한다. Vision 계열 알람과 대표 오류/경고가 PLC 출력에서 제외되고 실제 측정값을 만들지 않아야 한다. Vision 웹 바이패스 해제를 Core가 계속되는 상태 폴링으로 감지해야 한다.
 5. Vision TCP 서비스를 끊는다. 바이패스가 없으면 기존 통신 Timeout이 발생해야 한다. 별도로 웹 URL이 살아 있으면 Core 사이드바 iframe은 로드되어야 한다.
 6. 실제 카메라·RDK·PLC에서 같은 조건을 검증한다. Core의 테스트 대역 검증은 실제 검출 상태와 영상 처리 지연의 증거를 대신하지 않는다.
@@ -248,3 +252,22 @@ Core의 TCP 테스트 서버로 대상 전달, 명령 6(SEQ 0 포함), 중복 SE
 4. PLC에서 새 SEQ의 `TARGET_APPLY_MOVE`를 실행한다. 이동 후 Core `vision.work.target_synced=true`, Vision `last_core_request.accepted=true`와 ID/SEQ 일치를 확인하고, 새 추적 표본으로 위치 판정이 진행되는지 확인한다.
 
 저장 파일은 Vision 데이터 폴더 아래 `vision_recipes/recipes.json`(ID·이름), `core_integration/run_signal.json`(수신 설정·CAD 연결), `cad_targets/group_settings.json`(CAD 그룹 사용 설정)이다. 기본 데이터 폴더는 `vision/data`이며 `FVP_DATA_DIR` 설정 시 그 경로를 사용한다. 데이터는 Git 관리 대상이 아니므로 소스 코드만 배포하면 로컬 등록 내용은 장비로 옮겨지지 않는다. 장비의 기존 카메라·제품 보정 파일은 보존한다.
+
+## v7 오류 정의의 소유 범위
+
+Vision 원본 `vision_fault_word`에서 통신 타임아웃·상태 만료·통신 끊김에 대응하는 내부 bit 6/7/8은 Core가 판정한다. 원본 상태가 정상 도착했을 때 이 세 원인을 Vision이 재전송하여 유지시키지 않는다. 결과 타임아웃 bit 5는 대상 존재·필수 카메라 정상·추적 요청 조건을 함께 확인한다. 장치 내부 진단 비트와 PLC 코드 워드를 서로 직접 대입하지 않는다.
+
+## v7 모듈별 WORD와 통신 코드
+
+| WORD | 상위 BYTE 오류 | 하위 BYTE 경고 |
+| --- | --- | --- |
+| D+21 Core | Controller → Recipe → Calibration의 대표 1건 | 같은 모듈의 대표 1건 |
+| D+22 PTM | Pan/Tilt 공통 대표 1건 | Pan/Tilt 공통 대표 1건 |
+| D+23 Vision | Vision Common → Camera 1~4 → Tracker의 대표 1건 | 같은 모듈의 대표 1건 |
+| D+24 PLC | PLC 통신 대표 1건 | PLC 통신 대표 1건 |
+
+WORD=(오류<<8)|경고이며 각 BYTE 0은 해당 등급 없음이다. PTM 타임아웃은 D+22 상위=9, Vision 통신 타임아웃/상태 만료/통신 끊김/결과 지연은 D+23 상위=7/8/9/6이다. 예를 들어 PTM 오류 9·경고 5 동시 발생은 D+22=0x0905다. 네 모듈을 독립적으로 동시에 표시하며 전체 원인은 알람 API/이력에 남긴다.
+
+v6의 전체 오류·경고·마지막 오류 WORD는 현재 해석에 사용하지 않는다. 알람 순번은 D+24에서 D+25로 이동했고 마지막 오류는 API/이력으로 조회한다. 신규 API는 alarms.plc_alarm_format=module_bytes_v7 및 alarms.plc_module_alarms다. 기존 plc_fault_code/plc_warning_code/plc_last_fault_code는 v6 호환용이며 현재 PLC WORD가 아니다.
+
+PTM 상태 조회는 timeout_s와 status_retries를 모두 적용하며 이동·HOME 명령을 자동 재전송하지 않는다. 통신 복구 시 Auto, 보호 고장은 기존 latch/reset 조건을 유지한다. 이력 bit는 PLC의 bit 주소가 아니다. 방향별 100 WORD 및 명령·좌표·Heartbeat 주소는 유지한다.

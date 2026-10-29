@@ -37,10 +37,13 @@ from src.common.status import (
     CommandStatus,
     ControllerState,
     DeviceSummaryBit,
+    PtmFaultMask,
+    VisionFaultMask,
+    VISION_COMMUNICATION_FAULT_MASK,
     TrackingState,
     now_ms,
 )
-from src.communication.json_tcp import JsonTcpResponse, JsonLineServer
+from src.communication.json_tcp import JsonTcpResponse, JsonLineServer, is_timeout_error
 from src.communication.plc_memory_mapping import (
     BYTE_COUNT,
     CameraMasks,
@@ -1235,9 +1238,15 @@ class CoreApplication:
         if (vision_state.ok_count or vision_state.error_count) and (transport_failed or stale):
             self.vision_snapshot = VisionSnapshot(online=False)
             self._vision_result_missing_since_ms = None
+            if vision_state.communication_timeout:
+                communication_fault = VisionFaultMask.COMMUNICATION_TIMEOUT
+            elif transport_failed:
+                communication_fault = VisionFaultMask.COMMUNICATION_LOST
+            else:
+                communication_fault = VisionFaultMask.STATUS_STALE
             self.alarms.set_fault_word(
                 DeviceSummaryBit.VISION_COMMON,
-                1 << 5,
+                communication_fault,
                 self.settings.runtime.fault_latch_enabled,
             )
             return
@@ -1256,9 +1265,14 @@ class CoreApplication:
         warning = _safe_int(status.get("warning_word"))
         fault = _safe_int(status.get("fault_word"))
         if status.get("fault"):
-            fault |= 1 << 1
-        if (state.ok_count or state.error_count) and (not state.online or status.get("connected") is False):
-            fault |= 1 << 0
+            fault |= PtmFaultMask.DRIVER_FAULT
+        if (state.ok_count or state.error_count) and not state.online:
+            if state.communication_timeout:
+                fault = (fault & ~PtmFaultMask.COMMUNICATION_LOST) | PtmFaultMask.COMMUNICATION_TIMEOUT
+            else:
+                fault |= PtmFaultMask.COMMUNICATION_LOST
+        elif (state.ok_count or state.error_count) and status.get("connected") is False:
+            fault |= PtmFaultMask.COMMUNICATION_LOST
         self.alarms.set_warning_word(DeviceSummaryBit.PAN_TILT_MOTOR, warning)
         self.alarms.set_fault_word(
             DeviceSummaryBit.PAN_TILT_MOTOR,
@@ -1291,7 +1305,8 @@ class CoreApplication:
         camera_count = 2 if self.settings.vision.camera_count == 2 else 1
         required_mask = snapshot.camera_required_mask & ((1 << camera_count) - 1)
         required_missing = bool(required_mask & ~(snapshot.camera_online_mask & snapshot.camera_valid_mask))
-        vision_fault = snapshot.vision_fault_word
+        # Transport/status timeouts are observed by Core, independently of results.
+        vision_fault = snapshot.vision_fault_word & ~VISION_COMMUNICATION_FAULT_MASK
         tracking_requested = not getattr(self, "_nutrunner_data_hold", False) and (
             self.plc_input.tracking_enable or snapshot.tracking_active)
         tracker_present = snapshot.tracker_present is True or (snapshot.tracker_present is None and snapshot.tracker_valid)
@@ -1300,23 +1315,23 @@ class CoreApplication:
         result_timeout_ms = self.settings.runtime.vision_status_max_age_ms
         if not result_expected:
             self._vision_result_missing_since_ms = None
-            vision_fault &= ~(1 << 5)
+            vision_fault &= ~VisionFaultMask.RESULT_TIMEOUT
         elif snapshot.result_ready is False:
             if getattr(self, "_vision_result_missing_since_ms", None) is None:
                 self._vision_result_missing_since_ms = timestamp_ms
             if timestamp_ms - self._vision_result_missing_since_ms > result_timeout_ms:
-                vision_fault |= 1 << 5
+                vision_fault |= VisionFaultMask.RESULT_TIMEOUT
         else:
             self._vision_result_missing_since_ms = None
             if snapshot.result_ready is True:
-                vision_fault &= ~(1 << 5)
+                vision_fault &= ~VisionFaultMask.RESULT_TIMEOUT
         if result_expected and snapshot.result_age_seconds is not None:
             if snapshot.result_age_seconds * 1000 > result_timeout_ms:
-                vision_fault |= 1 << 5
+                vision_fault |= VisionFaultMask.RESULT_TIMEOUT
         if required_missing:
-            vision_fault |= 1 << 0
+            vision_fault |= VisionFaultMask.REQUIRED_CAMERA_UNAVAILABLE
         if snapshot.fault:
-            vision_fault |= 1 << 2
+            vision_fault |= VisionFaultMask.PIPELINE_STOPPED
         self.alarms.set_fault_word(
             DeviceSummaryBit.VISION_COMMON,
             vision_fault,
@@ -2011,7 +2026,7 @@ class CoreApplication:
                                code, seq, command, params.get("recipe_id"), params.get("point_id"),
                                getattr(exc, "code", None), exc)
                 self.command.status = CommandStatus.ERROR
-                self.command.message = str(exc)
+                self.command.message = str(exc) or type(exc).__name__
                 if code == CommandCode.CONTROLLER_RESTART:
                     self._controller_restart_request = None
                     self.command.result = CommandResult.INTERNAL_ERROR
@@ -2021,6 +2036,14 @@ class CoreApplication:
                         self.command.result = CommandResult.INTERNAL_ERROR
                         return
                     self.nutrunner_result = None
+                    if is_timeout_error(exc):
+                        self.vision_service.record_communication_error(exc)
+                        self.alarms.set_fault_word(
+                            DeviceSummaryBit.VISION_COMMON,
+                            self.alarms.fault_word(DeviceSummaryBit.VISION_COMMON, False)
+                            | VisionFaultMask.COMMUNICATION_TIMEOUT,
+                            self.settings.runtime.fault_latch_enabled,
+                        )
                     vision_error = getattr(exc, "code", None)
                     if vision_error in {"RECIPE_NOT_FOUND", "POINT_NOT_FOUND"}:
                         self.command.status = CommandStatus.REJECTED
@@ -2045,7 +2068,15 @@ class CoreApplication:
                 else:
                     self.command.result = CommandResult.INTERNAL_ERROR
                     if not preparing_laser:
-                        self.alarms.set_fault_word(DeviceSummaryBit.PAN_TILT_MOTOR, 1,
+                        communication_fault = PtmFaultMask.COMMUNICATION_LOST
+                        if is_timeout_error(exc):
+                            self.ptm_service.record_communication_error(exc)
+                            communication_fault = (
+                                self.alarms.fault_word(DeviceSummaryBit.PAN_TILT_MOTOR, False)
+                                & ~PtmFaultMask.COMMUNICATION_LOST
+                            ) | PtmFaultMask.COMMUNICATION_TIMEOUT
+                        self.alarms.set_fault_word(DeviceSummaryBit.PAN_TILT_MOTOR,
+                                                   communication_fault,
                                                    self.settings.runtime.fault_latch_enabled)
 
     def _progress_motion_command(self, timestamp_ms: int) -> None:
@@ -3056,6 +3087,11 @@ class CoreApplication:
                 ),
                 "primary_warning_code": self.alarms.primary_warning_code(),
                 "last_fault_code": self.alarms.visible_last_fault_code(),
+                "plc_fault_code": self.alarms.plc_fault_code(self.settings.runtime.fault_latch_enabled),
+                "plc_warning_code": self.alarms.plc_warning_code(),
+                "plc_last_fault_code": self.alarms.visible_last_plc_fault_code(),
+                "plc_alarm_format": "module_bytes_v7",
+                "plc_module_alarms": self.alarms.module_alarm_status(self.settings.runtime.fault_latch_enabled),
                 "alarm_sequence": self.alarms.alarm_sequence,
             },
         }

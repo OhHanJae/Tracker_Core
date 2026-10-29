@@ -222,3 +222,7 @@ PLC 반환 D+02 `CONTROLLER_STATE`는 기존 0~8을 유지하고 `9=TESTING`, `1
 RUN_ENABLE OFF 동안 Core는 출력 데이터를 커밋하지 않고 Gateway의 실제 PLC 재전송도 중지합니다. PLC에 이미 기록된 값과 응답 SEQ·heartbeat는 유지되며 입력 읽기는 계속됩니다. ON이면 최신 계산값을 커밋한 뒤 전송을 재개합니다. Core 웹에는 오류 대신 `RUN_ENABLE OFF · PLC 쓰기 중지`로 표시합니다. Core와 PLC Gateway를 함께 갱신해야 하며, 기존 64바이트 헤더와 양방향 100 WORD 주소는 유지합니다.
 
 PLC 레이저 모드와 고장·바이패스·Core 재시작·재점등 제한은 유지합니다. `LASER_MODE=0` 또는 PLC 통신 고장에서는 수동 점등도 허용하지 않습니다. 기존 `FORCE_STOP`은 PTM 정지 계약이며 전체 광원 차단 신호를 대신하지 않습니다.
+
+## PLC 알람 v7
+
+현재 규격은 v7이다. D+21 코어, D+22 PTM, D+23 비전, D+24 PLC가 각각 1 WORD이며 상위 BYTE=오류, 하위 BYTE=경고다. 모듈 안에서 오류·경고를 각각 우선순위 1건씩 표시한다. D+25는 알람 순번, D+27/28은 전체 원인 개수, D+20/26/50~79는 Reserved(0)다. 전체 전송은 방향별 100 WORD입니다. [코드 규격](docs/PLC_ALARM_CODES_V7.md)과 `1. 계획,설계/03_PLC_알람_v7_변경_안내서.docx`를 따릅니다. PLC/HMI도 v7의 모듈·오류/경고 BYTE로 해석해야 합니다.

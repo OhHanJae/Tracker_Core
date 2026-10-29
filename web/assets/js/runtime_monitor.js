@@ -100,7 +100,12 @@ export function renderRuntimeMonitor() {
         ['Core 적용 Recipe / Point', appliedRecipe > 0 && appliedPoint > 0
           ? `${appliedRecipe} / ${appliedPoint}${applied?.ptm_bypassed ? ' · PTM 바이패스' : ''}`
           : appliedRecipe === 0 || appliedPoint === 0 || targetContext?.applied === null ? '없음' : '미보고'],
-        ['현재 오류 / 경고 코드', `${alarms.primary_fault_code ?? '-'} / ${alarms.primary_warning_code ?? '-'}`],
+        ...(alarms.plc_module_alarms
+          ? Object.entries(alarms.plc_module_alarms).map(([module, alarm]) => [
+            `${module.toUpperCase()} 알람 · D+${alarm.word_offset}`,
+            `오류 ${alarm.fault_code} / 경고 ${alarm.warning_code} · 0x${Number(alarm.word).toString(16).toUpperCase().padStart(4, '0')}`,
+          ])
+          : [['이전 장치 대표 오류 / 경고', `${alarms.primary_fault_code ?? '-'} / ${alarms.primary_warning_code ?? '-'}`]]),
       ])}
     </div>
     <div class="grid two section-gap">

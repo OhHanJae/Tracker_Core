@@ -78,6 +78,13 @@ function currentAlarms() {
     const metric = data.core?.resources?.[key];
     if (metric?.warning) add('resource-' + key, 'Warning', `${label} 사용량 경고`, `${number(metric.value, 1, '%')} / 기준 ${metric.warning_threshold_percent}%`);
   }
+  for (const [module, alarm] of Object.entries(data.alarms?.plc_module_alarms || {})) {
+    for (const [severity, code] of [['Fault', alarm.fault_code], ['Warning', alarm.warning_code]]) {
+      if (code && !entries.some(entry => entry.module === module && entry.severity === severity && !entry.suppressed))
+        add(`module-${module}-${severity}`, severity, `${module.toUpperCase()} ${severity === 'Fault' ? '오류' : '경고'} 코드 ${code}`,
+          `D+${alarm.word_offset} · ${severity === 'Fault' ? '상위 오류' : '하위 경고'} BYTE. 전체 원인은 알람 이력에서 확인하세요.`);
+    }
+  }
   if (data.alarms?.fault_summary && !entries.some(entry => entry.severity === 'Fault' && !entry.suppressed))
     add('fault-summary', 'Fault', `장치 오류 코드 ${data.alarms.primary_fault_code}`, '상세 원인을 수신하지 못했습니다. 운전 모니터에서 장치 상태를 확인하세요.');
   if (data.alarms?.warning_summary && !entries.some(entry => entry.severity === 'Warning' && !entry.suppressed))
@@ -264,7 +271,7 @@ function updateAlarmList() {
     <td>${pill(row.severity === 'Fault' ? '오류' : '경고', row.suppressed ? 'muted' : row.severity === 'Fault' ? 'bad' : 'warn')}<strong>${esc(row.device_name || row.device || 'Core')}</strong><small>CODE ${esc(row.code ?? '—')}</small></td>
     <td><details${openDetails.has(row.occurrence_id) ? ' open=""' : ''}><summary>${esc(row.message || '상세 알람')}</summary><div class="im-alarm-detail"><p>${esc(row.description || '추가 설명이 없습니다.')}</p><dl>
       <dt>원인 상태</dt><dd>${row.suppressed || row.cause_observed === false ? '관측 중단 · 현재 원인 미확인' : row.cause_active === true ? '원인 발생 중' : row.cause_active === false ? '원인 복구됨' : '확인 불가'}</dd>
-      <dt>해제 기준</dt><dd>${esc(row.clear_policy || '—')}</dd><dt>PLC 주소</dt><dd>${esc(row.relative_address || '—')}${row.bit === undefined ? '' : ` · bit ${esc(row.bit)}`}</dd>
+      <dt>해제 기준</dt><dd>${esc(row.clear_policy || '—')}</dd><dt>PLC 주소</dt><dd>${esc(row.relative_address || '—')}${row.module ? ` · ${esc(row.module)} · ${row.byte === 'high' ? '오류' : '경고'} 코드 ${esc(row.byte_code)}` : row.plc_code === undefined ? (row.bit === undefined ? '' : ` · bit ${esc(row.bit)}`) : ` · 0x${Number(row.plc_code).toString(16).toUpperCase().padStart(4, '0')} (종류 ${esc(row.kind_code)} / 상세 ${esc(row.detail_code)})`}</dd>
       <dt>복구 시간</dt><dd>${esc(stamp(row.recovered_at))}</dd><dt>마지막 리셋</dt><dd>${esc(stamp(row.reset_result?.timestamp))}</dd></dl></div></details></td>
     <td>${esc(row.suppressed ? '바이패스 · 원인 미확인' : alarmStates[row.status] || row.status || '미확인')}</td><td>${esc(stamp(row.occurred_at))}</td></tr>`).join('')
     : `<tr><td colspan="4" class="im-empty-row">${!fresh() && active ? '현재 상태를 확인할 수 없습니다. 연결 상태와 마지막 수신 알람을 확인하세요.' : '조회 조건에 해당하는 알람이 없습니다.'}</td></tr>`);

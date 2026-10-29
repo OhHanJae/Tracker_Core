@@ -9,7 +9,6 @@ from src.common.status import (
     CommandRuntime,
     CommandStatus,
     ControllerState,
-    DeviceSummaryBit,
     TrackingState,
     bit,
 )
@@ -179,7 +178,6 @@ class PlcOutput:
         fault_summary = self.alarms.fault_summary(self.latch_faults)
         warning_active = warning_summary != 0
         fault_active = fault_summary != 0
-        process_stop = fault_active or self.flags.stop_active
 
         words[0] = (
             bit(self.flags.controller_online, 0)
@@ -219,65 +217,9 @@ class PlcOutput:
         words[17] = _u16(self.cameras.online)
         words[18] = _u16(self.cameras.valid)
 
-        vision_degraded = bool(
-            self.alarms.warning_word(DeviceSummaryBit.VISION_COMMON)
-            or any(
-                self.alarms.warning_word(device)
-                for device in (
-                    DeviceSummaryBit.CAMERA_1,
-                    DeviceSummaryBit.CAMERA_2,
-                    DeviceSummaryBit.CAMERA_3,
-                    DeviceSummaryBit.CAMERA_4,
-                )
-            )
-        )
-        vision_fault = bool(
-            self.alarms.fault_word(DeviceSummaryBit.VISION_COMMON, self.latch_faults)
-            or any(
-                self.alarms.fault_word(device, self.latch_faults)
-                for device in (
-                    DeviceSummaryBit.CAMERA_1,
-                    DeviceSummaryBit.CAMERA_2,
-                    DeviceSummaryBit.CAMERA_3,
-                    DeviceSummaryBit.CAMERA_4,
-                )
-            )
-        )
-        tracking_fault = bool(
-            self.alarms.fault_word(DeviceSummaryBit.TRACKER, self.latch_faults)
-        )
-        motion_fault = bool(
-            self.alarms.fault_word(DeviceSummaryBit.PAN_TILT_MOTOR, self.latch_faults)
-        )
-
-        words[20] = (
-            bit(process_stop, 0)
-            | bit(vision_degraded, 1)
-            | bit(vision_fault, 2)
-            | bit(tracking_fault, 3)
-            | bit(motion_fault, 4)
-            | bit(bool(self.alarms.fault_word(DeviceSummaryBit.LASER, self.latch_faults)), 5)
-            | bit(bool(self.alarms.fault_word(DeviceSummaryBit.CONTROLLER, self.latch_faults)), 6)
-            | bit(
-                bool(
-                    self.alarms.fault_word(
-                        DeviceSummaryBit.PLC_COMMUNICATION, self.latch_faults
-                    )
-                ),
-                7,
-            )
-            | bit(bool(self.alarms.fault_word(DeviceSummaryBit.RECIPE, self.latch_faults)), 8)
-            | bit(
-                bool(self.alarms.fault_word(DeviceSummaryBit.CALIBRATION, self.latch_faults)),
-                9,
-            )
-        )
-        words[21] = _u16(self.alarms.primary_fault_code(self.latch_faults))
-        words[22] = _u16(self.alarms.primary_warning_code())
-        words[23] = _u16(self.alarms.visible_last_fault_code())
-        words[24] = _u16(self.alarms.alarm_sequence)
-        words[25] = _u16(fault_summary)
-        words[26] = _u16(warning_summary)
+        for alarm in self.alarms.module_alarm_status(self.latch_faults).values():
+            words[alarm["word_offset"]] = alarm["word"]
+        words[25] = _u16(self.alarms.alarm_sequence)
         words[27] = _u16(self.alarms.active_fault_count(self.latch_faults))
         words[28] = _u16(self.alarms.active_warning_count())
         words[40] = (
@@ -285,24 +227,6 @@ class PlcOutput:
             | bit(self.vision_bypass, 1)
             | bit(self.laser_bypass or self.ptm_bypass, 2)
         )
-
-        detail_map = {
-            50: DeviceSummaryBit.CAMERA_1,
-            52: DeviceSummaryBit.CAMERA_2,
-            54: DeviceSummaryBit.CAMERA_3,
-            56: DeviceSummaryBit.CAMERA_4,
-            58: DeviceSummaryBit.VISION_COMMON,
-            60: DeviceSummaryBit.TRACKER,
-            62: DeviceSummaryBit.PAN_TILT_MOTOR,
-            66: DeviceSummaryBit.LASER,
-            68: DeviceSummaryBit.CONTROLLER,
-            70: DeviceSummaryBit.PLC_COMMUNICATION,
-            72: DeviceSummaryBit.RECIPE,
-            74: DeviceSummaryBit.CALIBRATION,
-        }
-        for word_index, device in detail_map.items():
-            words[word_index] = self.alarms.warning_word(device)
-            words[word_index + 1] = self.alarms.fault_word(device, self.latch_faults)
 
         return words
 
