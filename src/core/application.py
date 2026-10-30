@@ -2140,10 +2140,16 @@ class CoreApplication:
             self._safe_stop_applied = False
 
     def _set_motion_fault(self, bit_index: int) -> None:
+        device = DeviceSummaryBit.PAN_TILT_MOTOR
+        active = self.alarms.faults.get(int(device), 0)
         self.alarms.set_fault_word(
-            DeviceSummaryBit.PAN_TILT_MOTOR, 1 << bit_index,
+            device, active | (1 << bit_index),
             self.settings.runtime.fault_latch_enabled,
         )
+        if self.settings.runtime.fault_latch_enabled:
+            # A finished command failure is latched history, not a live device
+            # fault. Reset must clear it without hiding real equipment faults.
+            self.alarms.faults[int(device)] = active
 
     def _resolve_params(self, params: dict[str, Any]) -> dict[str, Any]:
         resolved: dict[str, Any] = {}
