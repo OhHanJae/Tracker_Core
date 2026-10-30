@@ -15,14 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.common.status import (
-    AUTO_RESET_FAULT_MASKS, FAULT_PRIORITY, WARNING_PRIORITY, AlarmBook, DeviceSummaryBit,
-    PLC_DEVICE_MODULES, PLC_MODULE_WORD_OFFSETS, plc_module_alarm_code,
-)
+from src.common.status import AUTO_RESET_FAULT_MASKS, FAULT_PRIORITY, WARNING_PRIORITY, AlarmBook, DeviceSummaryBit, PLC_V5_2_DETAIL_OFFSETS, plc_v5_2_detail_word
 
 
-MAP_VERSION = "v7"
-ALARM_DEVICES = (3, 4, 2, 7, 8, 0, 1, 11, 12)
+MAP_VERSION = "v5.2"
+ALARM_OFFSETS = {3: 50, 4: 52, 2: 58, 7: 60, 8: 62, 10: 66, 0: 68, 1: 70, 11: 72, 12: 74}
 
 
 def utc_stamp() -> str:
@@ -35,7 +32,7 @@ class AlarmHistory:
     def __init__(self, path: Path, map_path: Path, retention_days: int = 30) -> None:
         self.path = path
         self.retention_days = retention_days
-        self._metadata: dict[tuple[str, str, int], dict[str, Any]] = {}
+        self._metadata: dict[tuple[int, int], dict[str, Any]] = {}
         self._current: dict[str, dict[str, Any]] = {}
         self._pending: dict[str, dict[str, Any]] = {}
         self._queue: queue.Queue[Any] = queue.Queue(maxsize=128)
@@ -100,10 +97,11 @@ class AlarmHistory:
                 if len(row) < 9 or str(row[4]).lower().startswith("reserved"):
                     continue
                 try:
-                    code = int(row[3])
+                    offset = int(str(row[2]).replace("D+", ""))
+                    bit = int(str(row[3]), 16)
                 except ValueError:
                     continue
-                self._metadata[str(row[0]), str(row[1]), code] = {"message": row[4], "description": row[8],
+                self._metadata[offset, bit] = {"message": row[4], "description": row[8],
                                               "clear_policy": row[6], "device_name": row[0]}
 
     def capture(self, book: AlarmBook, latch_enabled: bool, *, reset: bool = False) -> None:
@@ -111,7 +109,7 @@ class AlarmHistory:
         stamp = utc_stamp()
         rows: dict[str, dict[str, Any]] = {}
         fault_codes, warning_codes = dict(FAULT_PRIORITY), dict(WARNING_PRIORITY)
-        for device in ALARM_DEVICES:
+        for device, offset in ALARM_OFFSETS.items():
             suppressed = device in book.suppressed_devices
             for severity, values, code_map in (("Warning", book.warnings, warning_codes),
                                                ("Fault", book.faults, fault_codes)):
@@ -136,19 +134,18 @@ class AlarmHistory:
                     if not cause and not latched and previous is None:
                         continue
                     if previous is None:
-                        module = PLC_DEVICE_MODULES[DeviceSummaryBit(device)]
-                        alarm_offset = PLC_MODULE_WORD_OFFSETS[module]
-                        byte_code = plc_module_alarm_code(DeviceSummaryBit(device), bit)
-                        packed_code = byte_code << 8 if severity == "Fault" else byte_code
-                        meta = self._metadata.get((module, severity, byte_code), {})
+                        encoded = plc_v5_2_detail_word(DeviceSummaryBit(device), 1 << bit, severity == "Fault")
+                        mapped_offset = PLC_V5_2_DETAIL_OFFSETS.get(DeviceSummaryBit(device))
+                        alarm_offset = mapped_offset + int(severity == "Fault") if mapped_offset is not None and encoded else None
+                        mapped_bit = encoded.bit_length() - 1 if encoded else bit
+                        meta = self._metadata.get((alarm_offset, mapped_bit), {})
                         row = {"occurrence_id": uuid.uuid4().hex, "alarm_key": key,
                                "session_id": self._session, "device": DeviceSummaryBit(device).name.lower(),
                                "severity": severity, "code": code_map.get(device),
-                               "relative_address": f"D+{alarm_offset}", "bit": bit,
-                               "plc_code": packed_code, "module": module,
-                               "byte_code": byte_code, "byte": "high" if severity == "Fault" else "low",
-                               "map_version": MAP_VERSION, "message": meta.get("message", f"{severity} detail {bit + 1}"),
-                               "description": meta.get("description", "Unmapped diagnostic code"),
+                               "relative_address": f"D+{alarm_offset}" if alarm_offset is not None else "", "bit": mapped_bit,
+                               "diagnostic_bit": bit,
+                               "map_version": MAP_VERSION, "message": meta.get("message", f"{severity} bit {bit}"),
+                               "description": meta.get("description", "Unmapped diagnostic bit"),
                                "clear_policy": meta.get("clear_policy", "unknown"),
                                "occurred_at": stamp, "recovered_at": None, "closed_at": None,
                                "reset_result": None}

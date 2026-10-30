@@ -193,6 +193,41 @@ def plc_module_alarm_code(device: DeviceSummaryBit, detail_bit: int) -> int:
     return PLC_MODULE_CODE_BASES[device] + detail_bit + 1
 
 
+# Active PLC v5.2 alarm layout. Camera 2~4 and the GPIO-only laser have no
+# allocated output alarms; their internal diagnostics are not changed here.
+PLC_V5_2_DETAIL_OFFSETS = {
+    DeviceSummaryBit.CAMERA_1: 50,
+    DeviceSummaryBit.VISION_COMMON: 58,
+    DeviceSummaryBit.TRACKER: 60,
+    DeviceSummaryBit.PAN_TILT_MOTOR: 62,
+    DeviceSummaryBit.CONTROLLER: 68,
+    DeviceSummaryBit.PLC_COMMUNICATION: 70,
+    DeviceSummaryBit.RECIPE: 72,
+    DeviceSummaryBit.CALIBRATION: 74,
+}
+PLC_V5_2_DETAIL_MASKS = {
+    DeviceSummaryBit.CAMERA_1: (0x00FF, 0x00FF),
+    DeviceSummaryBit.VISION_COMMON: (0x0016, 0x003D),
+    DeviceSummaryBit.TRACKER: (0x003F, 0x007F),
+    DeviceSummaryBit.PAN_TILT_MOTOR: (0x003F, 0x00FF),
+    DeviceSummaryBit.CONTROLLER: (0x00FF, 0x01FF),
+    DeviceSummaryBit.PLC_COMMUNICATION: (0x000F, 0x003F),
+    DeviceSummaryBit.RECIPE: (0x0007, 0x003F),
+    DeviceSummaryBit.CALIBRATION: (0x0007, 0x007F),
+}
+
+
+def plc_v5_2_detail_word(device: DeviceSummaryBit, word: int, fault: bool) -> int:
+    if device == DeviceSummaryBit.TILT_MOTOR:
+        device = DeviceSummaryBit.PAN_TILT_MOTOR
+    if fault:
+        if device == DeviceSummaryBit.PAN_TILT_MOTOR and word & PtmFaultMask.COMMUNICATION_TIMEOUT:
+            word |= PtmFaultMask.COMMUNICATION_LOST
+        if device == DeviceSummaryBit.VISION_COMMON and word & VISION_COMMUNICATION_FAULT_MASK:
+            word |= VisionFaultMask.RESULT_TIMEOUT
+    return word & PLC_V5_2_DETAIL_MASKS.get(device, (0, 0))[int(fault)]
+
+
 def now_ms() -> int:
     return int(time.monotonic() * 1000)
 
@@ -214,6 +249,19 @@ class AlarmBook:
     alarm_sequence: int = 0
     suppressed_devices: set[int] = field(default_factory=set)
     last_plc_fault_code: int = 0
+
+    def plc_v5_2(self, latch_enabled: bool = True) -> AlarmBook:
+        """Project diagnostics onto the wire contract without changing recovery/latches."""
+        last_code = self.visible_last_fault_code()
+        allowed_codes = {code for device, code in FAULT_PRIORITY if device in PLC_V5_2_DETAIL_OFFSETS}
+        return AlarmBook(
+            warnings={int(device): plc_v5_2_detail_word(device, self.warning_word(device), False)
+                      for device in PLC_V5_2_DETAIL_OFFSETS},
+            faults={int(device): plc_v5_2_detail_word(device, self.fault_word(device, latch_enabled), True)
+                    for device in PLC_V5_2_DETAIL_OFFSETS},
+            last_fault_code=last_code if last_code in allowed_codes else 0,
+            alarm_sequence=self.alarm_sequence,
+        )
 
     def set_warning_word(self, device: DeviceSummaryBit, word: int) -> None:
         canonical = DeviceSummaryBit.PAN_TILT_MOTOR if device == DeviceSummaryBit.TILT_MOTOR else device

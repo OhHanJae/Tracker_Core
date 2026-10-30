@@ -9,7 +9,9 @@ from src.common.status import (
     CommandRuntime,
     CommandStatus,
     ControllerState,
+    DeviceSummaryBit,
     TrackingState,
+    PLC_V5_2_DETAIL_OFFSETS,
     bit,
 )
 
@@ -178,6 +180,8 @@ class PlcOutput:
         fault_summary = self.alarms.fault_summary(self.latch_faults)
         warning_active = warning_summary != 0
         fault_active = fault_summary != 0
+        process_stop = fault_active or self.flags.stop_active
+        plc_alarms = self.alarms.plc_v5_2(self.latch_faults)
 
         words[0] = (
             bit(self.flags.controller_online, 0)
@@ -217,16 +221,77 @@ class PlcOutput:
         words[17] = _u16(self.cameras.online)
         words[18] = _u16(self.cameras.valid)
 
-        for alarm in self.alarms.module_alarm_status(self.latch_faults).values():
-            words[alarm["word_offset"]] = alarm["word"]
-        words[25] = _u16(self.alarms.alarm_sequence)
-        words[27] = _u16(self.alarms.active_fault_count(self.latch_faults))
-        words[28] = _u16(self.alarms.active_warning_count())
+        vision_degraded = bool(
+            plc_alarms.warning_word(DeviceSummaryBit.VISION_COMMON)
+            or any(
+                plc_alarms.warning_word(device)
+                for device in (
+                    DeviceSummaryBit.CAMERA_1,
+                    DeviceSummaryBit.CAMERA_2,
+                    DeviceSummaryBit.CAMERA_3,
+                    DeviceSummaryBit.CAMERA_4,
+                )
+            )
+        )
+        vision_fault = bool(
+            plc_alarms.fault_word(DeviceSummaryBit.VISION_COMMON, self.latch_faults)
+            or any(
+                plc_alarms.fault_word(device, self.latch_faults)
+                for device in (
+                    DeviceSummaryBit.CAMERA_1,
+                    DeviceSummaryBit.CAMERA_2,
+                    DeviceSummaryBit.CAMERA_3,
+                    DeviceSummaryBit.CAMERA_4,
+                )
+            )
+        )
+        tracking_fault = bool(
+            plc_alarms.fault_word(DeviceSummaryBit.TRACKER, self.latch_faults)
+        )
+        motion_fault = bool(
+            plc_alarms.fault_word(DeviceSummaryBit.PAN_TILT_MOTOR, self.latch_faults)
+        )
+
+        words[20] = (
+            bit(process_stop, 0)
+            | bit(vision_degraded, 1)
+            | bit(vision_fault, 2)
+            | bit(tracking_fault, 3)
+            | bit(motion_fault, 4)
+            | bit(bool(plc_alarms.fault_word(DeviceSummaryBit.LASER, self.latch_faults)), 5)
+            | bit(bool(plc_alarms.fault_word(DeviceSummaryBit.CONTROLLER, self.latch_faults)), 6)
+            | bit(
+                bool(
+                    plc_alarms.fault_word(
+                        DeviceSummaryBit.PLC_COMMUNICATION, self.latch_faults
+                    )
+                ),
+                7,
+            )
+            | bit(bool(plc_alarms.fault_word(DeviceSummaryBit.RECIPE, self.latch_faults)), 8)
+            | bit(
+                bool(plc_alarms.fault_word(DeviceSummaryBit.CALIBRATION, self.latch_faults)),
+                9,
+            )
+        )
+        words[21] = _u16(plc_alarms.primary_fault_code(self.latch_faults))
+        words[22] = _u16(plc_alarms.primary_warning_code())
+        words[23] = _u16(plc_alarms.visible_last_fault_code())
+        words[24] = _u16(plc_alarms.alarm_sequence)
+        words[25] = _u16(plc_alarms.fault_summary())
+        words[26] = _u16(plc_alarms.warning_summary())
+        words[27] = _u16(plc_alarms.active_fault_count(self.latch_faults))
+        words[28] = _u16(plc_alarms.active_warning_count())
         words[40] = (
             bit(self.ptm_bypass, 0)
             | bit(self.vision_bypass, 1)
             | bit(self.laser_bypass or self.ptm_bypass, 2)
         )
+
+        detail_map = {offset: device for device, offset in PLC_V5_2_DETAIL_OFFSETS.items()}
+        for word_index, device in detail_map.items():
+            words[word_index] = plc_alarms.warning_word(device)
+            words[word_index + 1] = plc_alarms.fault_word(device, self.latch_faults)
 
         return words
 

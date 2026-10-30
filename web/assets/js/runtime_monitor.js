@@ -105,7 +105,7 @@ export function renderRuntimeMonitor() {
             `${module.toUpperCase()} 알람 · D+${alarm.word_offset}`,
             `오류 ${alarm.fault_code} / 경고 ${alarm.warning_code} · 0x${Number(alarm.word).toString(16).toUpperCase().padStart(4, '0')}`,
           ])
-          : [['이전 장치 대표 오류 / 경고', `${alarms.primary_fault_code ?? '-'} / ${alarms.primary_warning_code ?? '-'}`]]),
+          : [['현재 오류 / 경고 코드', `${alarms.primary_fault_code ?? '-'} / ${alarms.primary_warning_code ?? '-'}`]]),
       ])}
     </div>
     <div class="grid two section-gap">

@@ -20,6 +20,10 @@ export function renderPlcDialog() {
 function metadata(direction) {
   const sheet = PLC_MAP.sheets.find(item => item.base === direction && item.key.startsWith(direction === 'read' ? '01_' : '02_'));
   const rows = (sheet?.rows || []).map(row => ({relative: row[1], bit: row[2], item: row[3], description: [row[4], row[5]].filter(Boolean).join('\n')}));
+  if (direction === 'write') {
+    const alarms = PLC_MAP.sheets.find(item => item.key === '03_Device_Alarm_Detail');
+    rows.push(...(alarms?.rows || []).map(row => ({relative: row[2], bit: row[3], item: row[4], description: [row[8], '해제: ' + row[6]].join('\n')})));
+  }
   return rows.flatMap(row => {
     const match = /^D\+(\d+)(?:~D\+(\d+))?$/.exec(row.relative || '');
     if (!match) return [];
@@ -50,8 +54,7 @@ function rowValue(row) {
     if (raw !== null) value = (raw >>> first) & (0xffff >>> (15 - last + first));
     address += '.' + row.bit;
   }
-  const packed = row.direction === 'write' && [21, 22, 23, 24].includes(row.offset) && raw !== null;
-  return {address, value: value === null ? '—' : packed ? `${value} (오류 ${raw >>> 8} / 경고 ${raw & 0xff})` : String(value), hex: raw === null ? '' : '0x' + raw.toString(16).toUpperCase().padStart(4, '0')};
+  return {address, value: value === null ? '—' : String(value), hex: raw === null ? '' : '0x' + raw.toString(16).toUpperCase().padStart(4, '0')};
 }
 
 function pane(direction) {
